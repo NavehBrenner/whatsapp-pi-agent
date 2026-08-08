@@ -1,0 +1,42 @@
+# Copy to config/config.toml and edit. config.toml is gitignored.
+# Secrets do NOT go in here — see docs/runbooks/04-agent-deploy.md.
+
+[whatsapp]
+# Waydroid's Android data dir on the host. Read-only, never opened read-write.
+databases_dir = "/var/lib/waydroid/data/data/com.whatsapp/databases"
+
+# Snapshot target. msgstore.db + -wal + -shm + wa.db are copied here together;
+# reading msgstore.db alone silently returns stale data (ADR 0003).
+snapshot_dir = "/var/lib/wpa/snapshot"
+
+# Pinned APK version. The msgstore schema is tied to it — update deliberately.
+# Fill in after the spike (OPEN-QUESTIONS Q2).
+pinned_version = ""
+
+# Only these chats are read. JIDs, from `SELECT raw_string_jid FROM chat`.
+# Empty = read nothing, which is the safe default.
+chats = [
+  # "1234567890-1234567890@g.us",
+]
+
+[signal]
+# The assistant's own dedicated account (ADR 0004), E.164.
+account = "+441234567890"
+
+# The ONLY sender allowed to trigger the privileged agent. Everything else is dropped.
+owner = "+447700900000"
+
+socket = "/run/user/1000/signal-cli/socket"
+
+[agent]
+# Recipients the agent may address. Anything outside this is refused before the
+# confirmation prompt is even shown (threat-model control 6).
+egress_allowlist = [
+  # "me@example.com",
+]
+
+# Confirmation gate. Leave on. If it fires constantly, the tool set is wrong, not the gate.
+confirm_outbound = true
+
+# ponytail: no [logging] section — journald handles it, and message content
+# must never be logged anyway (threat-model R4).

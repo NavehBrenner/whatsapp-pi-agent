@@ -1,0 +1,95 @@
+# 0003 — Read msgstore.db directly from the host
+
+**Status:** Accepted
+**Related:** [0002](0002-waydroid-companion-device.md), [architecture.md](../architecture.md)
+
+## Context
+
+WhatsApp is running in a container ([0002](0002-waydroid-companion-device.md)). The messages
+need to reach host-side code. How?
+
+**The key fact:** the live on-device database is **plain, unencrypted SQLite**. The
+`.crypt14` encryption that dominates every search result applies to *backups* — the files
+written to `/sdcard/WhatsApp/Databases/` and uploaded to Google Drive. The working database
+at `/data/data/com.whatsapp/databases/msgstore.db` has no application-layer encryption at
+all.
+
+The only thing protecting it on a normal phone is the Android app sandbox — UID-based
+filesystem isolation. In an LXC container whose rootfs the host owns, that protection is
+bypassed by reading the file as root. There is nothing to break and nothing to extract.
+
+This kills the "extract the encryption key" instinct on two counts: there is no key to
+extract for the live DB, and any key-extraction technique is an in-process attack against
+WhatsApp's anti-tamper (detection layer L3) to obtain access we already have.
+
+Alternatives considered:
+
+- **ADB pull from the container** — works, but requires a debuggable path into app-private
+  storage and adds a moving part. Direct filesystem read is simpler.
+- **Accessibility service scraping the UI** — lossy, brittle, fires only on visible chats,
+  and touches WhatsApp's UI surface. Strictly worse.
+- **Notification content as the feed** — see below; rejected as a data source.
+- **Frida hooking the message pipeline** — L3, and returns exactly what the DB already has.
+
+## Decision
+
+Read the container's filesystem directly from the host, **read-only**:
+
+| Path (under `/var/lib/waydroid/data/data/com.whatsapp/databases/`) | Use |
+|---|---|
+| `msgstore.db` (+ `-wal`, `-shm`) | messages, chats, JIDs |
+| `wa.db` → `wa_contacts` | display names, joined on JID |
+
+Two implementation requirements, both non-optional:
+
+**1. Contact names require `wa.db`.** `msgstore.db` stores JIDs
+(`447...@s.whatsapp.net`, `...@g.us`), not names. Human-readable names live in `wa.db`'s
+`wa_contacts` table. Any useful output joins the two databases on JID.
+
+**2. Read WAL-aware.** WhatsApp holds the DB open with WAL journaling; recent messages live
+in `msgstore.db-wal`, not yet in the main file. Either open read-only with the `-wal`/`-shm`
+files present and let SQLite replay the log, or snapshot all three files together and read
+the copy.
+
+`immutable=1` is **wrong** here — it tells SQLite to ignore the WAL and silently returns
+stale data. That failure looks like "the agent is a few minutes behind" and is unpleasant
+to diagnose.
+
+Never open the live DB read-write. Never let the reader hold a write lock on a file
+WhatsApp depends on.
+
+**Notifications are a doorbell, not the feed.** A `NotificationListenerService` APK inside
+Waydroid tells the host *that* something happened; the host then queries the DB for
+everything after its cursor. Notification payloads are never used as content, because
+Android collapses them under volume ("3 new messages"), muted chats may not fire at all,
+and the text is truncated. The DB is ground truth; a slow periodic sweep covers missed
+doorbells so correctness never depends on one arriving.
+
+## Consequences
+
+**Accepted:**
+
+- **Schema is unversioned and undocumented.** It migrates occasionally (`messages` →
+  `message` around 2021) — not per-release, but without warning. Mitigated by pinning the
+  APK and updating deliberately. See [OPEN-QUESTIONS Q2](../OPEN-QUESTIONS.md).
+- Reading app-private storage from the host means the reader runs privileged enough to read
+  the container rootfs. Confined at the systemd level (no network, read-only mounts, no
+  credentials) — see [threat-model.md](../threat-model.md).
+- Media is stored as files referenced by path, not inline. Out of scope for v1; text only.
+- Deleted-for-everyone messages leave a tombstone row. We may see the fact of a deletion.
+- Real message content — including other people's — lives on the Pi. Handled as an
+  obligation in [threat-model.md](../threat-model.md) R4.
+
+**Gained:**
+
+- Nothing touches the WhatsApp process. Zero exposure to detection layer L3.
+- Complete, structured, exact message history — better data than any scraping or
+  notification-based approach would give.
+- No key extraction, no decryption, no cryptography in this project at all.
+
+## Prior art
+
+- [`B16f00t/whapa`](https://github.com/B16f00t/whapa) — WhatsApp forensics toolkit; the
+  msgstore/wa.db parsing is directly relevant.
+- [`andreas-mausch/whatsapp-viewer`](https://github.com/andreas-mausch/whatsapp-viewer) —
+  has the msgstore schema committed as SQL, useful as a reference point when pinning.

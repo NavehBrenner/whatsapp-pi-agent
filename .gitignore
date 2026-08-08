@@ -1,0 +1,36 @@
+# secrets and live config
+config/config.toml
+*.env
+.env*
+!.env.example
+
+# anything pulled off the device — real message content, never commit
+data/
+*.db
+*.db-wal
+*.db-shm
+*.crypt14
+snapshots/
+
+# signal-cli state (contains account keys)
+signal-data/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# android
+android/**/build/
+android/**/.gradle/
+*.apk
+*.keystore
+local.properties
+
+# editors / os
+.idea/
+.vscode/
+.DS_Store
