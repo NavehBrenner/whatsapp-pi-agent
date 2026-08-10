@@ -106,6 +106,13 @@ this?"** `create_draft`, never `send_email`. Calendar events without dispatching
 invites. The failure mode for this project isn't a clever attack — it's
 `send_email` appearing one day because drafting got tedious.
 
+**The agent reads and writes exactly one Signal conversation.** Anything from
+another sender, a group, or a new thread is dropped before dispatch. A phone
+number is not a secret — anyone who learns the assistant's number can message it
+— so this check, not the number, is what refuses an unauthorized invocation. It
+holds whether the assistant runs on a dedicated account or a linked device.
+([ADR 0004](docs/decisions/0004-signal-control-channel.md))
+
 **The reader's cursor keys on `_id`, never `timestamp`.** Companion devices
 deliver messages out of order (worst observed lag 823s) and backfill inserts
 years-old rows. A timestamp cursor silently drops messages. There is a test

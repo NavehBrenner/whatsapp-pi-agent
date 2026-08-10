@@ -40,6 +40,43 @@ The control channel is the **trusted** input side of the system. Only a Signal m
 my number triggers the privileged agent ([0006](0006-two-process-privilege-split.md)), and
 the sender is verified against a configured allowlist before anything runs.
 
+### One conversation, and nothing else
+
+**The agent reads and writes exactly one Signal conversation: the one with my number.**
+Everything else that arrives — any other sender, any group, any request to start a new
+thread — is dropped before dispatch, not filtered somewhere downstream. The agent has no
+capability to address a Signal recipient it was not configured with, in the same way it has
+no `send_email` ([0006](0006-two-process-privilege-split.md), control 1).
+
+This holds regardless of which account the assistant runs on. It is the control that carries
+the weight, and it does not depend on the number being secret.
+
+### What the dedicated number does and does not buy
+
+**It does not prevent unauthorized invocation.** Anyone who learns the number can send the
+assistant a message. Nothing about registering a separate account changes that. The control
+that refuses those messages is the sender allowlist above, and it would be exactly the same
+check on a linked device. A phone number is not a secret and must never be treated as one.
+
+What the separate account buys is **blast radius**, and it is worth being precise that this
+is the whole of it:
+
+- **Key material.** The Pi runs Waydroid, WhatsApp, and a credential-holding agent; it is the
+  most attackable component in this design. With a linked device, its key material is derived
+  from my account, so root on the Pi means reading my entire Signal history and sending as
+  me. With a separate account, it means an inbox with nothing in it.
+- **Untrusted text reaching the privileged process.** A linked device receives every Signal
+  message anyone sends me. A dedicated account receives messages from people who know a
+  number given to nobody. Both are dropped by the same allowlist; the difference is how much
+  attacker-controlled text passes through the privileged process on its way to being dropped,
+  and therefore what a bug in that check would cost.
+- **Revocability.** Killing the assistant doesn't touch my Signal.
+
+None of that is a security absolute, and the cost is real: a number to source and keep alive
+([Q3](../OPEN-QUESTIONS.md)). If that cost ever exceeds the blast-radius benefit, the linked
+device is a legitimate choice — but it is a *blast-radius* trade, not a loosening of the
+invocation control, and the one-conversation restriction above stays either way.
+
 ## Consequences
 
 **Accepted:**
@@ -62,6 +99,8 @@ the sender is verified against a configured allowlist before anything runs.
 - Its key material is not my key material.
 - A trusted channel structurally distinct from the untrusted one (WhatsApp), which is what
   makes trigger asymmetry possible: WhatsApp content can never initiate a privileged action
-  because it arrives on a different wire entirely.
+  because it arrives on a different wire entirely. Note the asymmetry is *between* the two
+  wires — there is no WhatsApp-to-trigger path at all. It is not a claim about senders
+  within Signal, where the allowlist is the only thing separating me from anyone else.
 - End-to-end encrypted transport for confirmation prompts, which carry the descriptions of
   actions about to be taken with my credentials.
