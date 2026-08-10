@@ -14,6 +14,30 @@ why it mattered.
 Record the unflattering findings too — a limitation discovered on hardware is
 worth more to the next reader than another line about a feature landing.
 
+## `.local/` — private context, never committed
+
+`.local/` is gitignored. It holds machine-local knowledge that a new session
+needs but a public repo must not carry: which Linear project this repo maps to,
+how to reach the Pi, scratch notes mid-investigation.
+
+**Read `.local/` at the start of a session.** It is the answer to "which Linear
+project is this?" and "what's the Pi's address?" without having to ask.
+
+Current contents:
+
+| File | What |
+|---|---|
+| `.local/linear.md` | Linear workspace, project, milestones, current issue |
+| `.local/pi.md` | Pi address, SSH alias, paths, running services |
+
+Keep it small and current. Anything that turns out to matter to the project
+rather than to this machine belongs in the repo proper — an ADR, the changelog,
+or an issue. `.local/` is for coordinates, not decisions.
+
+**Never put secrets here.** It's untracked, not encrypted, and sits in a
+directory you might one day copy somewhere. Credentials belong in systemd
+`LoadCredential=` or a root-owned `0600` file outside the repo.
+
 ## Branch and PR flow
 
 `main` is protected. It applies to admins, so there is no bypass:

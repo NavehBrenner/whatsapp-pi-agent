@@ -25,6 +25,9 @@ several of them are the kind of thing that costs an evening to rediscover.
   cannot pass on something the Pi would reject.
 - **Branch protection** on `main` — PR required, CI must pass, linear history,
   no force-push, applies to admins.
+- **`.local/`** — gitignored directory for machine-local context a new session
+  needs but a public repo must not carry (Linear project link, Pi connection
+  details). Documented in `AGENTS.md`; never holds secrets.
 - **`AGENTS.md`** — conventions for anyone changing this repo: the changelog
   rule, PR flow, CI setup, and the invariants that mean reopening an ADR rather
   than editing code (no WhatsApp write path, no shared context between reader and
