@@ -44,8 +44,18 @@ run acceptably in Waydroid on a Pi 5 and complete companion pairing there.
 
 **Accepted:**
 
-- **Unverified core assumption.** If the spike fails, this ADR and most of the architecture
-  are reopened. That's why nothing is built on it yet.
+- **History is bounded to roughly 6 months.** Measured after pairing (2026-08-10): backfill
+  completed at ~42,000 messages across 561 chats, but the distribution shows history
+  effectively begins **February 2026** — 381 messages total for 2020–2025 versus 41,636 for
+  2026. Companion devices receive a bounded sync window, not the full archive.
+
+  Consequence for the product: the assistant can never answer "what did we agree last
+  year." Its context is the last ~6 months, growing forward from the pairing date. If deeper
+  history is ever needed it must come from a phone backup export, which is a separate
+  mechanism and out of scope here.
+
+  Backfill itself took roughly one hour and then stopped cleanly; after that all inserts are
+  live traffic.
 - Operational weight: a container to keep running, an Android session that can get logged
   out, a UI that occasionally needs a human (updates, permission prompts, re-pairing).
 - Companion devices can be unlinked from the phone, including accidentally. Recovery is a
