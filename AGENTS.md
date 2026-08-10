@@ -63,9 +63,18 @@ why. Don't loosen the global config.
 Run locally before pushing:
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install mypy pytest
-.venv/bin/mypy && .venv/bin/pytest
+uv run mypy && uv run pytest
 ```
+
+**Tooling is [uv](https://docs.astral.sh/uv/).** It creates `.venv`, installs the dev
+dependency group from `pyproject.toml`, and — the reason it's worth having — installs the
+Python named in `.python-version` (3.11) rather than whatever the dev box happens to have.
+That file, `pyproject.toml` and `uv.lock` are the whole configuration; don't `pip install`
+into `.venv` by hand, the next `uv run` will undo it.
+
+`uv.lock` is committed and CI runs `--locked`, so a stale lock fails the build instead of
+quietly resolving a different dependency set. Change dependencies with `uv add` / `uv lock`
+and commit the result.
 
 ## Dev environment
 

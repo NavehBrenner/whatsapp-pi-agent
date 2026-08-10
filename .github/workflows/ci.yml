@@ -19,17 +19,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v9
         with:
-          # Match the Pi (Raspberry Pi OS Bookworm ships 3.11.2). Testing on a
-          # newer Python than we deploy on would hide real breakage.
-          python-version: "3.11"
+          enable-cache: true
 
-      - name: Install dev tooling
-        run: python -m pip install --upgrade pip mypy pytest
-
+      # The Python version comes from .python-version — 3.11, matching the Pi
+      # (Raspberry Pi OS Bookworm ships 3.11.2), and uv installs it here and on
+      # the dev box alike. Testing on a newer Python than we deploy on would
+      # hide real breakage, and it used to: the dev venv was 3.12.
+      #
+      # --locked fails if uv.lock is stale rather than silently resolving
+      # something else, so CI can't pass on a dependency set nobody has.
       - name: mypy (strict)
-        run: mypy
+        run: uv run --locked mypy
 
       - name: pytest
-        run: pytest
+        run: uv run --locked pytest

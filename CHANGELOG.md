@@ -47,6 +47,11 @@ several of them are the kind of thing that costs an evening to rediscover.
   a test for it.
 - Cursor moved to `/var/lib/wpa-reader/cursor`; `deploy/bootstrap.sh` no longer
   creates `/var/lib/wpa`.
+- **Dev tooling is [uv](https://docs.astral.sh/uv/)** — `uv run mypy && uv run
+  pytest` locally, `uv run --locked` in CI, `uv.lock` committed. The point isn't
+  speed: `.python-version` pins 3.11 and uv installs it, so local runs match the
+  Pi. They didn't before — the dev venv was 3.12 while CI and the Pi were 3.11,
+  which is exactly the gap the CI comment warned about.
 
 ### Verified on hardware — 2026-08-10 (reader on a timer)
 
