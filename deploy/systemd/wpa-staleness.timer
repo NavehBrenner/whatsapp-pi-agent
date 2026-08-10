@@ -1,0 +1,12 @@
+[Unit]
+Description=Check hourly that WhatsApp messages are still arriving
+
+[Timer]
+# Hourly against a threshold measured in hours. Polling this any harder would
+# only add journal lines: the failure it detects lasts until a human fixes it.
+OnBootSec=15min
+OnUnitActiveSec=1h
+Persistent=false
+
+[Install]
+WantedBy=timers.target
