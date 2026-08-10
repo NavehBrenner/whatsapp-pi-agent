@@ -32,6 +32,94 @@ Write these down before you start, so you don't rationalise a partial result:
 
 ---
 
+## 0.5. Pi 5 kernel prerequisites — DO THIS FIRST
+
+**Verified on hardware 2026-08-10.** Two Pi 5-specific kernel issues stop Waydroid dead.
+Neither is mentioned in the Waydroid docs, and both produce failure signatures that look
+like something else entirely. Fix both before `waydroid init`, then reboot once.
+
+### (a) Page size: 16KB kernel vs 4KB Android images
+
+Raspberry Pi OS boots Pi 5 with `kernel_2712.img`, which uses a **16KB page size**. Every
+Android/LineageOS system image is compiled for **4KB pages**. The mismatch means Android's
+`/init` segfaults the instant it's exec'd.
+
+*Symptom:* container never reaches RUNNING; `waydroid session start` reports only
+`OSError: container failed to start`. The real cause is visible **only** in an LXC debug
+log you have to know to turn on:
+
+```bash
+sudo lxc-start -P /var/lib/waydroid/lxc -n waydroid -F -l DEBUG -o /tmp/lxc.log
+grep -i 'signal' /tmp/lxc.log
+#   Child <NNNN> ended on signal Segmentation fault(11)
+```
+
+*Check and fix:*
+
+```bash
+getconf PAGESIZE                     # 16384 = broken, 4096 = good
+sudo cp /boot/firmware/config.txt /boot/firmware/config.txt.bak-preway
+# add to /boot/firmware/config.txt:
+#   kernel=kernel8.img
+```
+
+`kernel8.img` is the stock generic arm64 kernel and is already present. Cost: you lose the
+Pi 5-tuned kernel's slightly better TLB behaviour. There is no alternative — Android will
+not run on 16KB pages.
+
+### (b) PSI and the memory cgroup are disabled
+
+Android's `lmkd` (lowmemorykiller daemon) requires **PSI** (Pressure Stall Information).
+Pi OS ships `CONFIG_PSI=y` with `CONFIG_PSI_DEFAULT_DISABLED=y`, so `/proc/pressure` does
+not exist, and the firmware injects `cgroup_disable=memory` into the boot cmdline.
+
+*Symptom:* far more misleading than (a) — Android boots **successfully** through
+`system_server`, ActivityManager, and the boot animation, then dies after ~15 seconds. Only
+`waydroid logcat` shows why:
+
+```
+E libpsi  : No kernel psi monitor support (errno=2)
+I lowmemorykiller: No kernel memory.pressure_level support (errno=2)
+E lowmemorykiller: Kernel does not support memory pressure events
+I lowmemorykiller: exiting
+E libc++abi: terminating          ← init dies, container stops
+```
+
+*Check and fix:*
+
+```bash
+ls /proc/pressure/                   # missing = broken
+sudo cp /boot/firmware/cmdline.txt /boot/firmware/cmdline.txt.bak-prepsi
+```
+
+Append to the **single line** in `/boot/firmware/cmdline.txt` (it must stay one line — a
+newline here makes the Pi unbootable):
+
+```
+ psi=1 cgroup_enable=memory cgroup_memory=1
+```
+
+`cgroup_enable=memory` overrides the firmware's `cgroup_disable=memory`; both end up on the
+cmdline and the enable wins.
+
+### Verify after reboot
+
+```bash
+getconf PAGESIZE                     # 4096
+ls /proc/pressure/                   # cpu  io  memory
+cat /sys/fs/cgroup/cgroup.controllers # must include: memory
+```
+
+All three correct → proceed. Any wrong → fix before continuing; the failures downstream
+are much harder to read than these checks.
+
+### Note on manual `lxc-start`
+
+While debugging you may be tempted to drive LXC directly. It will fail with
+`Failed to attach "vethXXXX" to bridge "waydroid0", bridge interface doesn't exist` —
+the `waydroid0` bridge is created by the *session* manager. Always start via
+`waydroid session start`, not `lxc-start`.
+
 ## 1. Install Waydroid
 
 ```bash

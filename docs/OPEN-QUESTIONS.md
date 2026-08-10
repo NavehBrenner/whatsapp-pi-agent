@@ -6,7 +6,43 @@ Things not yet decided or not yet verified. Q1 blocks everything.
 
 ## Q1 — Does WhatsApp run in Waydroid on a Pi 5, and will companion pairing succeed?
 
-**Status:** UNVERIFIED. **Blocks:** all of `src/`.
+**Status:** **Q1a ANSWERED — PASS (2026-08-10).** Q1b still unverified. **Blocks:** all of `src/`.
+
+### Q1a result: Android runs on the Pi 5 — verified on hardware
+
+Waydroid 1.6.2, LineageOS 20.0 VANILLA (`waydroid_arm64`, build 20260403), Android 13 /
+SDK 33, `arm64-v8a`. Boots to a rendered home screen in ~40s. `boot_completed=1`.
+Networking works inside the container (16ms to 1.1.1.1; DNS resolves
+`www.whatsapp.com` → `mmx-ds.cdn.whatsapp.net`, 73ms). `screencap` produces a valid
+1080×1884 PNG, which is the mechanism for capturing the pairing QR without attaching a
+monitor. Host at 1.4GB used of 7.8GB, 55°C, `throttled=0x0`.
+
+Two Pi 5-specific kernel blockers had to be fixed first — both now documented in
+[runbook 02 §0.5](runbooks/02-waydroid-whatsapp.md):
+
+1. **16KB vs 4KB page size.** `kernel_2712.img` uses 16KB pages; Android images are built
+   for 4KB. `/init` segfaults instantly. Fixed with `kernel=kernel8.img` in `config.txt`.
+2. **PSI + memory cgroup disabled.** `lmkd` needs PSI; Pi OS ships
+   `CONFIG_PSI_DEFAULT_DISABLED=y` and boots `cgroup_disable=memory`. Android reaches the
+   boot animation, then init terminates after ~15s. Fixed with
+   `psi=1 cgroup_enable=memory cgroup_memory=1` in `cmdline.txt`.
+
+Neither is documented upstream and both have misleading symptoms. Worth the runbook space.
+
+### Q1b: companion pairing — still the open risk
+
+Unchanged and untested. Note one new data point relevant to it — the container advertises
+itself clearly:
+
+```
+ro.product.manufacturer = Waydroid
+ro.build.fingerprint    = waydroid/lineage_waydroid_arm64/...:userdebug/test-keys
+```
+
+`userdebug/test-keys` and a `Waydroid` manufacturer string are exactly the fields a
+container check would read. Whether WhatsApp's pairing flow looks at them is the question.
+
+**Blocked on:** the WhatsApp APK (see below), then the QR scan.
 
 This is the single assumption the architecture rests on. Everything in
 [architecture.md](architecture.md) follows from "the official app runs in a container on the
