@@ -14,7 +14,8 @@ if ! command -v waydroid >/dev/null; then
   sudo apt-get install -y waydroid
 fi
 
-sudo install -d -m 0755 /var/lib/wpa/snapshot /var/lib/wpa/cursor
+# Reader state (cursor, message spool) is created by systemd StateDirectory=,
+# and the snapshot lives on tmpfs — nothing to create here.
 
 cat <<'EOF'
 

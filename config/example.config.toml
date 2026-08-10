@@ -16,8 +16,12 @@ snapshot_dir = "/dev/shm/wpa-snapshot"
 # Fill in after the spike (OPEN-QUESTIONS Q2).
 pinned_version = ""
 
-# Only these chats are read. JIDs, from `SELECT raw_string_jid FROM chat`.
-# Empty = read nothing, which is the safe default.
+# Only these chats are read. Chat JIDs — NOT group names, which anyone in the
+# group can change. List them with:
+#   sudo sqlite3 /dev/shm/wpa-snapshot/msgstore.db \
+#     'SELECT j.raw_string, c.subject FROM chat c JOIN jid j ON j._id=c.jid_row_id'
+# Empty = read nothing, which is the safe default. The reader refuses to start
+# without this file rather than falling back to reading everything.
 chats = [
   # "1234567890-1234567890@g.us",
 ]

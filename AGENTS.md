@@ -103,6 +103,12 @@ years-old rows. A timestamp cursor silently drops messages. There is a test
 asserting this; if it fails, read [ADR 0003](docs/decisions/0003-local-db-read.md)
 before "fixing" the test.
 
+**The chat allowlist keys on JIDs, and there is no "read everything" default.** Group
+subjects are chosen by whoever is in the group, so a name-keyed allowlist can be renamed
+into. The reader refuses to start without a config rather than falling back to reading every
+chat. Filtering happens in SQL, not on the returned rows — filter in Python and a batch with
+no allowlisted messages stalls the cursor forever.
+
 **Snapshots include `-wal` and `-shm`, and land on tmpfs.** Copying
 `msgstore.db` alone returns stale data. `/tmp` is *not* tmpfs on Raspberry Pi OS
 — it's on the SD card, merely cleared at boot. Use `/dev/shm`.

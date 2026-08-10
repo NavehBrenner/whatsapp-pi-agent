@@ -13,6 +13,7 @@ from pathlib import Path
 from reader.msgstore import (
     Message,
     _truncate,
+    load_chats,
     load_cursor,
     read_since,
     save_cursor,
@@ -107,10 +108,61 @@ def test_group_subject_used_as_chat_name(tmp_path: Path) -> None:
     assert read_since(db, 0)[0].chat == "Rideshare"
 
 
-def test_chat_filter_excludes_everything_else(tmp_path: Path) -> None:
+def test_chat_filter_keys_on_jid_not_subject(tmp_path: Path) -> None:
+    """The allowlist is JIDs. Group subjects are attacker-settable — anyone in a
+    group can rename it, so a name-keyed allowlist can be talked into."""
     db = _build(tmp_path)
-    assert read_since(db, 0, chats=frozenset({"Rideshare"})) != []
-    assert read_since(db, 0, chats=frozenset({"Other"})) == []
+    assert read_since(db, 0, chats=frozenset({"1234567890-1@g.us"})) != []
+    assert read_since(db, 0, chats=frozenset({"other@g.us"})) == []
+    assert read_since(db, 0, chats=frozenset({"Rideshare"})) == [], "subject must not match"
+
+
+def test_allowlist_does_not_stall_the_cursor(tmp_path: Path) -> None:
+    """The filter runs in SQL so the cursor advances past non-allowlisted rows.
+
+    Filtered in Python instead, a batch of purely non-allowlisted messages comes
+    back empty, the caller has no id to advance to, and the reader re-reads the
+    same rows every 30s forever.
+    """
+    db = _build(tmp_path)
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO jid(_id,user,server,raw_string) VALUES (4,'other','g.us','other@g.us')")
+    conn.execute("INSERT INTO chat(_id,jid_row_id,subject) VALUES (2,4,'Other')")
+    # Noise in the allowlisted chat's id range, then one real message above it.
+    conn.executemany(
+        "INSERT INTO message(_id,chat_row_id,from_me,key_id,sender_jid_row_id,timestamp,text_data)"
+        " VALUES (?,?,?,?,?,?,?)",
+        [(_id, 2, 0, f"n{_id}", 2, 1_700_000_400_000, "noise") for _id in range(5, 10)]
+        + [(10, 1, 0, "k10", 2, 1_700_000_500_000, "the one we want")],
+    )
+    conn.commit()
+    conn.close()
+
+    allowed = frozenset({"1234567890-1@g.us"})
+    batch = read_since(db, 0, chats=allowed, limit=2)
+    cursor = batch[-1].id
+    assert read_since(db, cursor, chats=allowed, limit=2)[-1].id == 10, "must reach past the noise"
+
+
+def test_empty_allowlist_reads_nothing(tmp_path: Path) -> None:
+    db = _build(tmp_path)
+    assert read_since(db, 0, chats=frozenset()) == []
+    assert read_since(db, 0, chats=None) != [], "None still means every chat"
+
+
+def test_load_chats(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[whatsapp]\nchats = ["1234567890-1@g.us"]\n')
+    assert load_chats(cfg) == frozenset({"1234567890-1@g.us"})
+
+    cfg.write_text("[whatsapp]\n")
+    assert load_chats(cfg) == frozenset(), "no chats key means read nothing"
+
+    try:
+        load_chats(tmp_path / "absent.toml")
+    except FileNotFoundError:
+        return
+    raise AssertionError("a missing config must fail, not silently read everything")
 
 
 def test_limit_is_respected(tmp_path: Path) -> None:
@@ -154,6 +206,18 @@ def test_snapshot_copies_wal_parts_together(tmp_path: Path) -> None:
     assert out.is_file()
     assert (dest / "msgstore.db-wal").read_bytes() == b"wal", "WAL must be copied"
     assert (dest / "msgstore.db-shm").read_bytes() == b"shm"
+
+
+def test_snapshot_is_a_noop_when_src_is_dest(tmp_path: Path) -> None:
+    """Under systemd the privileged unit has already copied; copying a directory
+    onto itself would raise SameFileError."""
+    src = tmp_path / "dbs"
+    src.mkdir()
+    _build(src)
+    (src / "msgstore.db-wal").write_bytes(b"wal")
+    out = snapshot(src, tmp_path / "dbs")
+    assert out == src / "msgstore.db"
+    assert (src / "msgstore.db-wal").read_bytes() == b"wal"
 
 
 def test_snapshot_rejects_missing_db(tmp_path: Path) -> None:

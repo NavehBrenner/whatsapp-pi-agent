@@ -1,0 +1,14 @@
+[Unit]
+Description=Poll WhatsApp for new messages every 30s
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30s
+# Default accuracy is 1 minute, which would quietly turn a 30s timer into a 60s
+# one. Companion delivery already lags minutes, so 30s is ample — but it should
+# be the 30s we asked for.
+AccuracySec=1s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
