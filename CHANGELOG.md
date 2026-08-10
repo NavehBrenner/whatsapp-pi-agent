@@ -13,6 +13,86 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ### Added
 
+- **The reader runs unattended** (`deploy/systemd/`) — a `.service` + `.timer`
+  pair polling every 30s, plus a separate root-run `wpa-snapshot.service` that
+  copies the databases to `/dev/shm/wpa-snapshot` and hands them to
+  `wpa-reader`. The privileged half is four `install` calls in a shell script;
+  the process that reads untrusted text has no privilege at all. Installed with
+  `deploy/install-reader.sh`, code deployed to `/opt/wpa` rather than a home
+  directory because the reader runs with `ProtectHome=yes` and cannot see
+  `/home`.
+- **ADR 0006 confinement is now enforced by the OS**, not just documented:
+  `PrivateNetwork=yes`, `ProtectSystem=strict`, `ProtectHome=yes`,
+  `PrivateTmp=yes`, `NoNewPrivileges=yes`, and no credential environment
+  variables. Verified on hardware — see below.
+- **Chat allowlist wired up** — `[whatsapp] chats` in `config.toml` is read via
+  `tomllib` and applied. **Shipped default is allowlist-only**: the reader
+  refuses to start without a config rather than falling back to reading every
+  chat, and a config with an empty `chats` reads nothing. It looks broken until
+  you fill it in, which is the intent.
+- **Message output goes to `/var/lib/wpa-reader/messages.jsonl`**, never to
+  journald — other people's messages in the system log would violate
+  threat-model R4. Grepped journald for 150 distinct strings taken from real
+  message bodies and chat names: zero hits.
+
+### Changed
+
+- **The chat allowlist keys on the chat JID, not the group subject.** Subjects
+  are attacker-settable — anyone in a group can rename it — so a name-keyed
+  allowlist can be talked into. `read_since(chats=…)` now takes JIDs.
+- **The allowlist filters in SQL rather than in Python.** Filtering the returned
+  rows was a stall: the caller advances the cursor to the last message it
+  received, so a batch containing no allowlisted messages returned nothing, the
+  cursor never moved, and the reader re-read the same 500 rows forever. There is
+  a test for it.
+- Cursor moved to `/var/lib/wpa-reader/cursor`; `deploy/bootstrap.sh` no longer
+  creates `/var/lib/wpa`.
+- **Dev tooling is [uv](https://docs.astral.sh/uv/)** — `uv run mypy && uv run
+  pytest` locally, `uv run --locked` in CI, `uv.lock` committed. The point isn't
+  speed: `.python-version` pins 3.11 and uv installs it, so local runs match the
+  Pi. They didn't before — the dev venv was 3.12 while CI and the Pi were 3.11,
+  which is exactly the gap the CI comment warned about.
+
+### Verified on hardware — 2026-08-10 (reader on a timer)
+
+- Backfilled 5,082 messages from the allowlisted group in 11 batches at ~0.3s
+  per run, then sat idle at head. Survives a reboot: the timer is active and the
+  snapshot is rebuilt on tmpfs within ~90s of boot. A message sent to a
+  monitored chat was picked up by the timer and written as JSON with nobody
+  touching anything.
+- **Waydroid freezes the container when no app is displayed, which is always
+  true on a headless Pi — and WhatsApp then receives nothing.** Cost 1h40m of
+  silence after a reboot before it was noticed, because everything looks
+  healthy: both services active, `com.whatsapp` in the process list, the reader
+  polling happily. The only symptom is that the newest `_id` in `msgstore.db`
+  stops moving. `waydroid status` reports `Container: FROZEN` and
+  `IP address: UNKNOWN`.
+
+  Fixed with `waydroid prop set persist.waydroid.suspend false` plus a session
+  restart; verified across a reboot. Note `suspend_action = none` in
+  `waydroid.cfg` was already set and did **not** prevent it, so the earlier
+  "autostart survives an unattended reboot" finding was true about the units and
+  wrong about the thing that matters. **"Services are running" is not
+  "messages are arriving", and only the second one is worth checking.**
+- **`sudo -u wpa-reader curl https://example.com` succeeds, and that is not a
+  bug** — `PrivateNetwork=` is a property of the unit's namespace, not of the
+  user, so the acceptance test as originally written would have passed while
+  proving nothing. Tested inside the sandbox instead: DNS fails, a raw IP fails
+  (`curl` exit 7), and `ip addr` shows loopback only.
+- **`StateDirectory=` cannot host a `StandardOutput=append:` target.** systemd
+  opens stdout before creating the state directory, so a fresh install fails
+  with `209/STDOUT`. The installer creates `/var/lib/wpa-reader` instead.
+- **`rsync --delete` on deploy silently wiped the live `config.toml`**, and the
+  installer then wrote a fresh one with an empty allowlist — a reader that runs,
+  succeeds, and reads nothing. Now excluded.
+- **systemd's start limit is a silent-death trap here.** Five failures in 10s
+  latch a unit into `start-limit-hit` and it stops being retried, which looks
+  exactly like "nobody messaged me today". `StartLimitIntervalSec=0` on both
+  units; a failed poll is recoverable because the cursor doesn't move.
+- A stale `-wal` from a previous poll would be applied to a newer `.db`, so the
+  snapshot clears the old parts before copying — including `wa.db-wal`/`-shm`,
+  which the reader's own read-only open leaves behind.
+
 - **Reader** (`src/reader/msgstore.py`) — turns new WhatsApp messages into
   fixed-schema JSON lines (`{id, chat, sender, timestamp, excerpt}`). The
   unprivileged half of [ADR 0006](docs/decisions/0006-two-process-privilege-split.md):

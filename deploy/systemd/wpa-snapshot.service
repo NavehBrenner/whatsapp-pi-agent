@@ -1,0 +1,23 @@
+[Unit]
+Description=Snapshot WhatsApp databases for the reader (privileged half, ADR 0006)
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/decisions/0006-two-process-privilege-split.md
+After=waydroid-container.service
+ConditionPathIsDirectory=/home/navehbrenner/.local/share/waydroid/data/data/com.whatsapp/databases
+# Without this, five failures inside 10s (a Waydroid restart, say) latch the unit
+# into 'start-limit-hit' and the reader stays dead until someone resets it by
+# hand. A copy that fails is fine; one that stops being retried is not.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+# Waydroid bind-mounts Android's /data from the SESSION USER's home, not from
+# /var/lib/waydroid (verified on hardware 2026-08-10). Change the user here if
+# the Pi's login name is not navehbrenner.
+ExecStart=/opt/wpa/deploy/snapshot.sh /home/navehbrenner/.local/share/waydroid/data/data/com.whatsapp/databases /dev/shm/wpa-snapshot wpa-reader
+
+# Runs as root because nothing else can read Waydroid's app-private directory.
+# It gets no network anyway: this unit copies files, it never talks to anything.
+PrivateNetwork=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes

@@ -1,0 +1,46 @@
+[Unit]
+Description=Read new WhatsApp messages into JSON (unprivileged half, ADR 0006)
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/decisions/0006-two-process-privilege-split.md
+Requires=wpa-snapshot.service
+After=wpa-snapshot.service
+# A run that fails is recoverable — the cursor doesn't move and the next poll
+# re-reads. A unit latched into 'start-limit-hit' is not: it stops polling
+# entirely and looks exactly like "nobody messaged me today".
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+User=wpa-reader
+Group=wpa-reader
+WorkingDirectory=/opt/wpa
+Environment=PYTHONPATH=/opt/wpa/src PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m reader.msgstore /dev/shm/wpa-snapshot /var/lib/wpa-reader/cursor /dev/shm/wpa-snapshot /opt/wpa/config/config.toml
+
+# The output IS the product — JSON lines for the formatter that M3 will add.
+# It must not go to journald: other people's messages would end up in the system
+# log, and "no message content in logs" is threat-model R4.
+# ponytail: unbounded append. The M3 consumer truncates it; until then, watch it.
+StandardOutput=append:/var/lib/wpa-reader/messages.jsonl
+StandardError=journal
+UMask=0077
+
+# ADR 0006's confinement contract. This process sees untrusted text and must be
+# unable to do anything with it. If it ever needs any of these relaxed, the
+# design upstream is wrong — re-read the ADR before editing this block.
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# The snapshot is writable because SQLite needs to touch -shm to read a WAL
+# database. It is a tmpfs copy; the live msgstore is never opened by this unit.
+ReadWritePaths=/dev/shm/wpa-snapshot /var/lib/wpa-reader
+# StateDirectory= would be the obvious way to get /var/lib/wpa-reader, but
+# systemd creates it AFTER opening StandardOutput=, so an append: target inside
+# it fails with 209/STDOUT on a fresh install. The installer makes it instead.
+# NO credential environment variables. Not one.

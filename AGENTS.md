@@ -63,9 +63,18 @@ why. Don't loosen the global config.
 Run locally before pushing:
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install mypy pytest
-.venv/bin/mypy && .venv/bin/pytest
+uv run mypy && uv run pytest
 ```
+
+**Tooling is [uv](https://docs.astral.sh/uv/).** It creates `.venv`, installs the dev
+dependency group from `pyproject.toml`, and — the reason it's worth having — installs the
+Python named in `.python-version` (3.11) rather than whatever the dev box happens to have.
+That file, `pyproject.toml` and `uv.lock` are the whole configuration; don't `pip install`
+into `.venv` by hand, the next `uv run` will undo it.
+
+`uv.lock` is committed and CI runs `--locked`, so a stale lock fails the build instead of
+quietly resolving a different dependency set. Change dependencies with `uv add` / `uv lock`
+and commit the result.
 
 ## Dev environment
 
@@ -102,6 +111,12 @@ deliver messages out of order (worst observed lag 823s) and backfill inserts
 years-old rows. A timestamp cursor silently drops messages. There is a test
 asserting this; if it fails, read [ADR 0003](docs/decisions/0003-local-db-read.md)
 before "fixing" the test.
+
+**The chat allowlist keys on JIDs, and there is no "read everything" default.** Group
+subjects are chosen by whoever is in the group, so a name-keyed allowlist can be renamed
+into. The reader refuses to start without a config rather than falling back to reading every
+chat. Filtering happens in SQL, not on the returned rows — filter in Python and a batch with
+no allowlisted messages stalls the cursor forever.
 
 **Snapshots include `-wal` and `-shm`, and land on tmpfs.** Copying
 `msgstore.db` alone returns stale data. `/tmp` is *not* tmpfs on Raspberry Pi OS
