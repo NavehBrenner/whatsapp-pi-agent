@@ -71,8 +71,10 @@ LIDs do not join to `wa_contacts.jid`. `msgstore.lid_display_name` (keyed on
 better populated than `display_name` (1000 vs 411 rows) — but combined coverage is only
 **~4.7% of received messages** (50% if restricted to `s.whatsapp.net` senders).
 
-Sender-name resolution for LID participants is unsolved — see
-[OPEN-QUESTIONS Q5](../OPEN-QUESTIONS.md). It affects output quality, not feasibility.
+Resolved 2026-08-11: `msgstore.jid_map` maps `lid_row_id → jid_row_id`, so the LID hops to
+a phone JID and joins the address book normally. Coverage went to **49.4%** overall, 100%
+in the allowlisted group. What is left has no name stored on the device at all — see
+[OPEN-QUESTIONS Q5](../OPEN-QUESTIONS.md) for the search that established that.
 
 **2. Read WAL-aware.** WhatsApp holds the DB open with WAL journaling; recent messages live
 in `msgstore.db-wal`, not yet in the main file. Either open read-only with the `-wal`/`-shm`

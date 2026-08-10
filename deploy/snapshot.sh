@@ -25,7 +25,9 @@ rm -f "$dest"/msgstore.db "$dest"/msgstore.db-wal "$dest"/msgstore.db-shm \
 # Explicit names, no glob: as a non-root user msgstore.db* silently expands to
 # nothing (the directory is traversable but not listable), and that failure mode
 # looks exactly like "no new messages".
-for f in msgstore.db msgstore.db-wal msgstore.db-shm wa.db; do
+# wa.db gets its -wal/-shm too: contact and LID-name edits land in the WAL, so
+# the .db on its own is as stale as msgstore.db would be (ADR 0003).
+for f in msgstore.db msgstore.db-wal msgstore.db-shm wa.db wa.db-wal wa.db-shm; do
   if [[ -f "$src/$f" ]]; then
     install -m 0600 -o "$owner" -g "$owner" "$src/$f" "$dest/$f"
   fi
