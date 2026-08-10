@@ -11,6 +11,22 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Changed
+
+- **[ADR 0004](docs/decisions/0004-signal-control-channel.md) is explicit about
+  what the dedicated Signal number does and does not buy.** It does *not*
+  prevent unauthorized invocation — anyone who learns the number can message the
+  assistant, and the ADR previously implied more from the number than it
+  delivers. The control that refuses those messages is the sender allowlist, and
+  it is the same check on a linked device.
+
+  Added as an invariant: **the agent reads and writes exactly one Signal
+  conversation**, with anything from another sender, group, or new thread
+  dropped before dispatch. This holds regardless of which account the assistant
+  runs on. What the separate account buys is blast radius — key material, and
+  how much attacker-controlled text passes through the privileged process — and
+  the ADR now says only that.
+
 ### Added
 
 - **The reader runs unattended** (`deploy/systemd/`) — a `.service` + `.timer`
