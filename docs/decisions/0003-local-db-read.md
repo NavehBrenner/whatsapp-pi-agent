@@ -86,6 +86,29 @@ to diagnose.
 Never open the live DB read-write. Never let the reader hold a write lock on a file
 WhatsApp depends on.
 
+**3. The cursor MUST be `message._id`, never `timestamp`.** Measured on live data
+2026-08-10, and this one will bite silently if got wrong.
+
+Companion devices receive messages substantially later than they were sent — **808 of 812**
+messages with a populated `received_timestamp` arrived more than 60s after their
+`timestamp`. Observed worst case in a 20-minute window: 823s (nearly 14 minutes).
+
+Because of that, **rows are not inserted in `timestamp` order**:
+
+| `_id` | `timestamp` (sent) | `received_timestamp` |
+|---|---|---|
+| 45210 | 16:25:10 | 16:38:53 |
+| 45209 | 16:38:53 | 0 |
+
+The highest `_id` has an *older* `timestamp` than the row before it. A reader using
+`WHERE timestamp > last_seen` would process 45209, then silently drop 45210 forever —
+intermittent, unreproducible message loss that looks like a WhatsApp fault.
+
+`received_timestamp` is not a usable cursor either: it is `0` on most rows.
+
+Use `WHERE _id > cursor ORDER BY _id` — SQLite's rowid, monotonic with insertion. Keep
+`timestamp` for display and ordering *within* a batch only.
+
 **Notifications are a doorbell, not the feed.** A `NotificationListenerService` APK inside
 Waydroid tells the host *that* something happened; the host then queries the DB for
 everything after its cursor. Notification payloads are never used as content, because
