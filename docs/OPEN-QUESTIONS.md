@@ -29,7 +29,26 @@ Two Pi 5-specific kernel blockers had to be fixed first — both now documented 
 
 Neither is documented upstream and both have misleading symptoms. Worth the runbook space.
 
-### Q1b: companion pairing — still the open risk
+### Q1b result: companion pairing SUCCEEDS — verified on hardware
+
+Paired via QR scan from the phone. Chats synced. **The spike passes.** `src/` is unblocked.
+
+WhatsApp **does detect the container** and shows an alert on first launch:
+
+> "You have a custom ROM installed. Custom ROMs can cause problems with WhatsApp Messenger
+> and are unsupported by our customer service team."
+
+It is a **warning with an OK button, not a block**. Detection layer L6 is therefore
+"detected but permitted" rather than "avoided" — worth stating honestly in
+[detection-model.md](detection-model.md). Consequence: no support, and a standing risk that
+a future WhatsApp release hardens this from a warning into a refusal. That risk is real but
+not currently active, and the fallback (a physical Android phone read over ADB) is unchanged.
+
+Verified end to end: WhatsApp 2.26.31.72 (versionCode 263107230, `arm64-v8a`), host reads
+`msgstore.db` as plain SQLite with no key, 13,428 messages / 576 chats / 184 groups
+readable, Hebrew text intact through UTF-8.
+
+### Q1b: original risk assessment (kept for the record)
 
 Unchanged and untested. Note one new data point relevant to it — the container advertises
 itself clearly:
@@ -143,6 +162,37 @@ Lean: PAYG physical SIM. Boring, durable, and the failure modes are ones I under
 Decide before runbook 03; not urgent until the spike passes.
 
 ---
+
+## Q5 — Sender-name resolution for LID group participants
+
+**Status:** Open, found during the spike. **Blocks:** output quality, not feasibility.
+
+Measured on real data: only **~4.7%** of received messages resolve to a human sender name.
+The cause is that WhatsApp identifies most group participants by **LID** (`...@lid`,
+18,287 rows) rather than phone JID (`s.whatsapp.net`, 9,698 rows), and LIDs don't join to
+`wa_contacts`. Restricted to `s.whatsapp.net` senders, coverage is 50%.
+
+Best combination found so far — `COALESCE(lid_display_name.display_name,
+wa_contacts.wa_name, wa_contacts.display_name)` — barely moves it, because the senders in
+question are strangers in large public groups who were never in the address book.
+
+This matters for the product: "Dan asked about a ride tomorrow" is useful,
+"249808233197636 asked about a ride tomorrow" is not.
+
+The WhatsApp UI *does* display these people's profile names (pushnames), so the data
+exists somewhere. Not yet located. Candidates to check:
+
+- `group_participant_user` / `group_past_participant_user` — may carry per-group names.
+- `integrator_display_name`, `message_system_username_change` — unexamined.
+- Names may be fetched live and cached outside `msgstore.db` (check `wa.db` more fully, and
+  the app's other databases such as `chatsettings.db`).
+- Worst case: pushname arrives on the wire per-message and is only in a protobuf blob.
+
+Prior art to check first: [`B16f00t/whapa`](https://github.com/B16f00t/whapa) handles
+multiple schema generations and may already solve this.
+
+Acceptable interim behaviour: fall back to the LID, and let the agent refer to
+"an unnamed participant". Ugly but not wrong.
 
 ## Q4 — OpenClaw vs. a custom Agent SDK build
 

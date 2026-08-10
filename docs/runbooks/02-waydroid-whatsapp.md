@@ -238,7 +238,8 @@ ADB, which preserves ADRs 0003–0006 and only replaces 0002.
 This is [ADR 0003](../decisions/0003-local-db-read.md)'s premise, and it's cheap to confirm.
 
 ```bash
-sudo ls -la /var/lib/waydroid/data/data/com.whatsapp/databases/
+sudo ls -la ~/.local/share/waydroid/data/data/com.whatsapp/databases/
+# NOTE: path is under the SESSION USER'S HOME, not /var/lib/waydroid (verified 2026-08-10)
 # expect: msgstore.db, msgstore.db-wal, msgstore.db-shm, wa.db, ...
 ```
 
@@ -247,8 +248,8 @@ hold a lock on a file WhatsApp depends on:
 
 ```bash
 mkdir -p /tmp/spike && cd /tmp/spike
-sudo cp /var/lib/waydroid/data/data/com.whatsapp/databases/msgstore.db* .
-sudo cp /var/lib/waydroid/data/data/com.whatsapp/databases/wa.db .
+sudo cp ~/.local/share/waydroid/data/data/com.whatsapp/databases/msgstore.db* .
+sudo cp ~/.local/share/waydroid/data/data/com.whatsapp/databases/wa.db .
 sudo chown $USER: ./*
 ```
 
@@ -293,7 +294,7 @@ The one that catches people. Send a message to a group **right now**, then:
 
 ```bash
 # re-snapshot ALL THREE files, then re-run the query above
-sudo cp /var/lib/waydroid/data/data/com.whatsapp/databases/msgstore.db* /tmp/spike/
+sudo cp ~/.local/share/waydroid/data/data/com.whatsapp/databases/msgstore.db* /tmp/spike/
 ```
 
 The new message should appear. If you copy only `msgstore.db` and omit `-wal`/`-shm`, it

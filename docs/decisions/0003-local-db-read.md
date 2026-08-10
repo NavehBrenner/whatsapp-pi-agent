@@ -35,16 +35,44 @@ Alternatives considered:
 
 Read the container's filesystem directly from the host, **read-only**:
 
-| Path (under `/var/lib/waydroid/data/data/com.whatsapp/databases/`) | Use |
+**Verified on hardware 2026-08-10.** The real path is under the *session user's home*, not
+`/var/lib/waydroid` as originally written:
+
+```
+~/.local/share/waydroid/data/data/com.whatsapp/databases/
+```
+
+(`/var/lib/waydroid` holds images, rootfs and overlays; Android's `/data` is bind-mounted
+from the user's home. Confirm with `waydroid shell -- df | grep /data` if it moves again.)
+
+| File | Use |
 |---|---|
 | `msgstore.db` (+ `-wal`, `-shm`) | messages, chats, JIDs |
-| `wa.db` → `wa_contacts` | display names, joined on JID |
+| `wa.db` → `wa_contacts` | contact names, joined on JID |
+
+Verified contents on a live companion-paired install: 13,428 messages, 576 chats (184 of
+them groups), 1,563 contacts. Schema generation is `message` (not the pre-2021 `messages`).
+Opens read-only with no key.
 
 Two implementation requirements, both non-optional:
 
-**1. Contact names require `wa.db`.** `msgstore.db` stores JIDs
-(`447...@s.whatsapp.net`, `...@g.us`), not names. Human-readable names live in `wa.db`'s
-`wa_contacts` table. Any useful output joins the two databases on JID.
+**1. Contact names require `wa.db` — and that is not sufficient.** `msgstore.db` stores JIDs,
+not names. Names live in `wa.db`'s `wa_contacts`, joined on JID. But measured on real data,
+**modern WhatsApp identifies most group participants by LID** (`...@lid`), not by phone JID:
+
+| jid server | rows |
+|---|---|
+| `lid` | 18,287 |
+| `s.whatsapp.net` | 9,698 |
+| `g.us` | 248 |
+
+LIDs do not join to `wa_contacts.jid`. `msgstore.lid_display_name` (keyed on
+`lid_row_id` → `jid._id`) maps some of them, and `wa_contacts.wa_name` (profile name) is
+better populated than `display_name` (1000 vs 411 rows) — but combined coverage is only
+**~4.7% of received messages** (50% if restricted to `s.whatsapp.net` senders).
+
+Sender-name resolution for LID participants is unsolved — see
+[OPEN-QUESTIONS Q5](../OPEN-QUESTIONS.md). It affects output quality, not feasibility.
 
 **2. Read WAL-aware.** WhatsApp holds the DB open with WAL journaling; recent messages live
 in `msgstore.db-wal`, not yet in the main file. Either open read-only with the `-wal`/`-shm`
