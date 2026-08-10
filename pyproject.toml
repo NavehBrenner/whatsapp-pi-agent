@@ -11,9 +11,8 @@ dev = ["mypy>=1.11", "pytest>=8.0"]
 [tool.mypy]
 # Pi runs 3.11.2 — target the deployment version, not the dev box's 3.12.
 python_version = "3.11"
-# `src` gets added here by the PR that introduces it — keeping it out until then
-# means CI is green-and-meaningful rather than red-for-a-missing-directory.
-files = ["tests"]
+files = ["src", "tests"]
+mypy_path = "src"
 
 strict = true
 
@@ -39,4 +38,5 @@ enable_error_code = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 addopts = "-q --strict-markers"

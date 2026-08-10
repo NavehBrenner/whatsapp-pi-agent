@@ -3,11 +3,14 @@
 
 [whatsapp]
 # Waydroid's Android data dir on the host. Read-only, never opened read-write.
-databases_dir = "/var/lib/waydroid/data/data/com.whatsapp/databases"
+# NOTE: under the session user's home, NOT /var/lib/waydroid (verified 2026-08-10).
+databases_dir = "~/.local/share/waydroid/data/data/com.whatsapp/databases"
 
 # Snapshot target. msgstore.db + -wal + -shm + wa.db are copied here together;
 # reading msgstore.db alone silently returns stale data (ADR 0003).
-snapshot_dir = "/var/lib/wpa/snapshot"
+# MUST be tmpfs or every poll writes ~60MB to the SD card. /tmp is NOT tmpfs on
+# Raspberry Pi OS — it is on the boot medium, merely cleared at boot. /dev/shm is.
+snapshot_dir = "/dev/shm/wpa-snapshot"
 
 # Pinned APK version. The msgstore schema is tied to it — update deliberately.
 # Fill in after the spike (OPEN-QUESTIONS Q2).
