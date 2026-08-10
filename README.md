@@ -66,22 +66,10 @@ Then follow the runbooks in order:
 | [03-signal-cli](docs/runbooks/03-signal-cli.md) | Dedicated number, signal-cli daemon |
 | [04-agent-deploy](docs/runbooks/04-agent-deploy.md) | Agent processes + systemd (post-spike) |
 
-## Changelog
+## Contributing
 
-[`CHANGELOG.md`](CHANGELOG.md) — including hardware-verified findings, because
-several of them cost an evening to discover and would cost another to rediscover.
-
-**Every PR that changes behaviour updates it.** `main` is protected, so changes
-arrive by PR anyway; adding the entry there keeps it honest rather than
-reconstructed from git log months later.
-
-## Development
-
-Repo is canonical on WSL (`~/projects/whatsapp-pi-agent`). Windows-side mounting was
-rejected — UNC paths didn't work with Cowork. `core.autocrlf` is set to `input`; the
-`.gitattributes` pins `eol=lf` so shell scripts survive the round trip to the Pi.
-
-Deploy to the Pi via `git pull` or `rsync -a --delete` over SSH.
+Conventions, invariants and CI setup: [AGENTS.md](AGENTS.md).
+What changed and what we learned on hardware: [CHANGELOG.md](CHANGELOG.md).
 
 ## Prior art
 
