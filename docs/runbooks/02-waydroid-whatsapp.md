@@ -323,9 +323,31 @@ sudo reboot
 After reboot: does the Waydroid session come back? Is WhatsApp still linked? (Session
 auto-start needs a Wayland session — this is where the headless question gets real.)
 
+**Check that the container is not frozen.** This is the failure that hides:
+
+```bash
+waydroid status     # want: Container: RUNNING, with an IP address
+```
+
+`Container: FROZEN` with `IP address: UNKNOWN` means Waydroid suspended the container
+because no app is being displayed — which is *always* true on a headless box. Every service
+reads as healthy, `com.whatsapp` is still in the process list, and WhatsApp receives
+nothing. Observed on 2026-08-10: 1h40m of silence after a reboot, and the only symptom was
+that the newest row in `msgstore.db` stopped moving.
+
+```bash
+waydroid prop set persist.waydroid.suspend false
+systemctl --user restart waydroid-session.service
+```
+
+Note `suspend_action = none` in `/var/lib/waydroid/waydroid.cfg` was already set and did
+**not** prevent this. The prop is the one that works, and it survives a reboot.
+
 Then leave it 24 hours and check:
 
-- [ ] Still linked; messages still arriving.
+- [ ] Still linked; messages still arriving. Compare `SELECT max(_id) FROM message` against
+      an hour earlier — "the service is running" is not the same as "messages are arriving".
+- [ ] `waydroid status` still shows `Container: RUNNING`, not `FROZEN`.
 - [ ] Memory stable — `free -h`, and remember signal-cli's JVM has to fit alongside.
 - [ ] `vcgencmd measure_temp` sane under sustained load.
 - [ ] No throttling: `vcgencmd get_throttled` → `0x0`.

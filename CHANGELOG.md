@@ -57,7 +57,23 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 - Backfilled 5,082 messages from the allowlisted group in 11 batches at ~0.3s
   per run, then sat idle at head. Survives a reboot: the timer is active and the
-  snapshot is rebuilt on tmpfs within ~90s of boot.
+  snapshot is rebuilt on tmpfs within ~90s of boot. A message sent to a
+  monitored chat was picked up by the timer and written as JSON with nobody
+  touching anything.
+- **Waydroid freezes the container when no app is displayed, which is always
+  true on a headless Pi — and WhatsApp then receives nothing.** Cost 1h40m of
+  silence after a reboot before it was noticed, because everything looks
+  healthy: both services active, `com.whatsapp` in the process list, the reader
+  polling happily. The only symptom is that the newest `_id` in `msgstore.db`
+  stops moving. `waydroid status` reports `Container: FROZEN` and
+  `IP address: UNKNOWN`.
+
+  Fixed with `waydroid prop set persist.waydroid.suspend false` plus a session
+  restart; verified across a reboot. Note `suspend_action = none` in
+  `waydroid.cfg` was already set and did **not** prevent it, so the earlier
+  "autostart survives an unattended reboot" finding was true about the units and
+  wrong about the thing that matters. **"Services are running" is not
+  "messages are arriving", and only the second one is worth checking.**
 - **`sudo -u wpa-reader curl https://example.com` succeeds, and that is not a
   bug** — `PrivateNetwork=` is a property of the unit's namespace, not of the
   user, so the acceptance test as originally written would have passed while
