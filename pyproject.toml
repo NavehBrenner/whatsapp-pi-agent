@@ -1,0 +1,42 @@
+[project]
+name = "whatsapp-pi-agent"
+version = "0.1.0"
+description = "Personal assistant that reads WhatsApp for context and is controlled over Signal"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = ["mypy>=1.11", "pytest>=8.0"]
+
+[tool.mypy]
+# Pi runs 3.11.2 — target the deployment version, not the dev box's 3.12.
+python_version = "3.11"
+# `src` gets added here by the PR that introduces it — keeping it out until then
+# means CI is green-and-meaningful rather than red-for-a-missing-directory.
+files = ["tests"]
+
+strict = true
+
+# Beyond strict: this repo handles untrusted input at a trust boundary, so
+# "we don't know the type here" should be a build failure, not a shrug.
+warn_unreachable = true
+disallow_any_unimported = true
+disallow_any_explicit = true
+disallow_any_decorated = true
+warn_no_return = true
+no_implicit_optional = true
+strict_equality = true
+enable_error_code = [
+    "redundant-expr",
+    "possibly-undefined",
+    "truthy-bool",
+    "ignore-without-code",
+    "unused-awaitable",
+]
+
+# sqlite3.Row and friends are typed well enough; if a third-party stub is ever
+# missing, add a targeted override here rather than loosening the global config.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
