@@ -1,3 +1,8 @@
+# Local-only scratch and context. Never committed, never leaves this machine.
+# See AGENTS.md — holds things like the Linear project link and Pi connection
+# details that a new session needs but a public repo must not carry.
+.local/
+
 # secrets and live config
 config/config.toml
 *.env
