@@ -32,7 +32,10 @@ CREATE TABLE message(
 CREATE TABLE chat(_id INTEGER PRIMARY KEY, jid_row_id INTEGER, subject TEXT);
 CREATE TABLE jid(_id INTEGER PRIMARY KEY, user TEXT, server TEXT, raw_string TEXT);
 CREATE TABLE lid_display_name(lid_row_id INTEGER, display_name TEXT, username TEXT);
+CREATE TABLE jid_map(lid_row_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, sort_id INTEGER);
 """
+
+CONTACTS_SCHEMA = "CREATE TABLE wa_contacts(jid TEXT, wa_name TEXT, display_name TEXT);"
 
 
 def _build(tmp_path: Path) -> Path:
@@ -45,10 +48,16 @@ def _build(tmp_path: Path) -> Path:
             (1, "1234567890-1", "g.us", "1234567890-1@g.us"),
             (2, "972500000001", "s.whatsapp.net", "972500000001@s.whatsapp.net"),
             (3, "249808233197636", "lid", "249808233197636@lid"),
+            # A LID that jid_map resolves to a phone JID in the address book.
+            (5, "555000111", "lid", "555000111@lid"),
+            (6, "972500000009", "s.whatsapp.net", "972500000009@s.whatsapp.net"),
         ],
     )
     conn.execute("INSERT INTO chat(_id,jid_row_id,subject) VALUES (1,1,'Rideshare')")
+    # A 1:1 chat: its messages carry sender_jid_row_id = 0, not a jid row.
+    conn.execute("INSERT INTO chat(_id,jid_row_id,subject) VALUES (3,6,NULL)")
     conn.execute("INSERT INTO lid_display_name(lid_row_id,display_name) VALUES (3,'Dana')")
+    conn.execute("INSERT INTO jid_map(lid_row_id,jid_row_id) VALUES (5,6)")
     conn.executemany(
         "INSERT INTO message(_id,chat_row_id,from_me,key_id,sender_jid_row_id,timestamp,text_data)"
         " VALUES (?,?,?,?,?,?,?)",
@@ -58,6 +67,8 @@ def _build(tmp_path: Path) -> Path:
             (2, 1, 0, "k2", 3, 1_700_000_050_000, "late arrival from a lid sender"),
             (3, 1, 1, "k3", None, 1_700_000_200_000, "something I sent"),
             (4, 1, 0, "k4", 2, 1_700_000_300_000, None),  # non-text: must be skipped
+            (11, 1, 0, "k11", 5, 1_700_000_600_000, "lid needing the jid_map hop"),
+            (12, 3, 0, "k12", 0, 1_700_000_700_000, "from a 1:1 chat"),
         ],
     )
     conn.commit()
@@ -65,10 +76,24 @@ def _build(tmp_path: Path) -> Path:
     return db
 
 
+def _contacts(tmp_path: Path) -> Path:
+    """A wa.db carrying one address-book entry, keyed on the phone JID."""
+    path = tmp_path / "wa.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(CONTACTS_SCHEMA)
+    conn.execute(
+        "INSERT INTO wa_contacts(jid,wa_name,display_name)"
+        " VALUES ('972500000009@s.whatsapp.net','Yossi',NULL)"
+    )
+    conn.commit()
+    conn.close()
+    return path
+
+
 def test_reads_all_from_cold_cursor(tmp_path: Path) -> None:
     db = _build(tmp_path)
     msgs = read_since(db, 0)
-    assert [m.id for m in msgs] == [1, 2, 3], "non-text row must be excluded"
+    assert [m.id for m in msgs] == [1, 2, 3, 11, 12], "non-text row must be excluded"
 
 
 def test_late_message_is_not_skipped(tmp_path: Path) -> None:
@@ -78,7 +103,7 @@ def test_late_message_is_not_skipped(tmp_path: Path) -> None:
     assert by_id[2].timestamp < by_id[1].timestamp, "fixture must model late delivery"
 
     # Having processed _id=1, the late row must still come back.
-    assert [m.id for m in read_since(db, 1)] == [2, 3]
+    assert [m.id for m in read_since(db, 1)] == [2, 3, 11, 12]
 
 
 def test_lid_sender_resolves_via_lid_display_name(tmp_path: Path) -> None:
@@ -95,6 +120,30 @@ def test_unresolvable_sender_falls_back_to_jid_user(tmp_path: Path) -> None:
     conn.close()
     msgs = read_since(db, 1)
     assert msgs[0].sender == "249808233197636", "must degrade to the LID, not crash"
+
+
+def test_lid_sender_resolves_through_jid_map(tmp_path: Path) -> None:
+    """LIDs don't join to wa_contacts; jid_map carries the LID -> phone JID hop.
+
+    Without it only ~5% of received messages on real data resolve to a name.
+    """
+    db = _build(tmp_path)
+    by_id = {m.id: m for m in read_since(db, 0, contacts=_contacts(tmp_path))}
+    assert by_id[11].sender == "Yossi"
+
+
+def test_one_to_one_sender_resolves_from_the_chat(tmp_path: Path) -> None:
+    """A 1:1 message has sender_jid_row_id = 0 — the sender is the chat itself."""
+    db = _build(tmp_path)
+    by_id = {m.id: m for m in read_since(db, 0, contacts=_contacts(tmp_path))}
+    assert by_id[12].sender == "Yossi"
+
+
+def test_jid_map_sender_degrades_to_the_lid_without_contacts(tmp_path: Path) -> None:
+    """No wa.db means no names — but it must still be a LID, not a crash."""
+    db = _build(tmp_path)
+    by_id = {m.id: m for m in read_since(db, 0)}
+    assert by_id[11].sender == "555000111"
 
 
 def test_own_messages_are_labelled_me(tmp_path: Path) -> None:

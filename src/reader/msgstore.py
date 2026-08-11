@@ -39,7 +39,9 @@ DEFAULT_DB_DIR = Path.home() / ".local/share/waydroid/data/data/com.whatsapp/dat
 
 # Copied as a set — the WAL holds recent messages that aren't in the .db yet.
 MSGSTORE_PARTS = ("msgstore.db", "msgstore.db-wal", "msgstore.db-shm")
-CONTACTS_DB = "wa.db"
+# Same rule for wa.db: contact edits sit in its WAL too, so the .db alone is stale.
+CONTACTS_PARTS = ("wa.db", "wa.db-wal", "wa.db-shm")
+CONTACTS_DB = CONTACTS_PARTS[0]
 
 EXCERPT_MAX = 200
 DEFAULT_BATCH = 500
@@ -49,14 +51,20 @@ DEFAULT_SNAPSHOT_DIR = Path("/dev/shm/wpa-snapshot")
 # systemd StateDirectory=wpa-reader creates and owns this; no install-time chown.
 DEFAULT_CURSOR_PATH = Path("/var/lib/wpa-reader/cursor")
 
-# Sender names come from three places, in descending quality. Group participants
-# are mostly @lid and resolve poorly (~5% coverage) — see OPEN-QUESTIONS Q5.
+# Sender names, in descending quality. The @lid -> phone-JID hop through jid_map
+# is what makes this usable: group participants are identified by LID, LIDs do not
+# join to wa_contacts, and without the hop only ~5% of received messages resolve
+# to a name (NVB-7). Names still absent after the hop are strangers in public
+# groups who were never in the address book — their pushname is not on the device
+# at all, so those degrade to the bare LID by design.
 _QUERY = """
 SELECT m._id,
        COALESCE(NULLIF(c.subject, ''), cj.user, '?')                    AS chat,
        COALESCE(NULLIF(ldn.display_name, ''),
                 NULLIF(w.wa_name, ''),
                 NULLIF(w.display_name, ''),
+                NULLIF(pw.wa_name, ''),
+                NULLIF(pw.display_name, ''),
                 sj.user)                                                AS sender,
        m.timestamp                                                      AS ts,
        m.text_data                                                      AS body,
@@ -65,9 +73,14 @@ SELECT m._id,
 FROM message m
 JOIN chat c              ON c._id  = m.chat_row_id
 LEFT JOIN jid cj         ON cj._id = c.jid_row_id
-LEFT JOIN jid sj         ON sj._id = m.sender_jid_row_id
+-- In a 1:1 chat sender_jid_row_id is 0 and there is no jid row: the sender is
+-- the chat. Resolving through the same joins names those too (13% of messages).
+LEFT JOIN jid sj         ON sj._id = COALESCE(NULLIF(m.sender_jid_row_id, 0), c.jid_row_id)
 LEFT JOIN lid_display_name ldn ON ldn.lid_row_id = sj._id
 LEFT JOIN wa.wa_contacts w     ON w.jid = sj.raw_string
+LEFT JOIN jid_map jm     ON jm.lid_row_id = sj._id
+LEFT JOIN jid pj         ON pj._id = jm.jid_row_id
+LEFT JOIN wa.wa_contacts pw    ON pw.jid = pj.raw_string
 WHERE m._id > ?
   AND m.text_data IS NOT NULL
 {chat_filter}
@@ -108,13 +121,18 @@ def snapshot(db_dir: Path, dest: Path) -> Path:
         raise FileNotFoundError(f"no msgstore.db under {db_dir}")
     if db_dir.resolve() == dest.resolve():
         return dest / MSGSTORE_PARTS[0]
+    # Clear before copying: a -wal left from a previous poll would be applied to
+    # a newer .db and silently return wrong rows (same reasoning as snapshot.sh).
+    for name in MSGSTORE_PARTS + CONTACTS_PARTS:
+        (dest / name).unlink(missing_ok=True)
     for name in MSGSTORE_PARTS:
         src = db_dir / name
         if src.is_file():
             shutil.copy2(src, dest / name)
-    contacts = db_dir / CONTACTS_DB
-    if contacts.is_file():
-        shutil.copy2(contacts, dest / CONTACTS_DB)
+    for name in CONTACTS_PARTS:
+        src = db_dir / name
+        if src.is_file():
+            shutil.copy2(src, dest / name)
     return dest / MSGSTORE_PARTS[0]
 
 

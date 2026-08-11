@@ -165,34 +165,59 @@ Decide before runbook 03; not urgent until the spike passes.
 
 ## Q5 — Sender-name resolution for LID group participants
 
-**Status:** Open, found during the spike. **Blocks:** output quality, not feasibility.
+**Status:** Answered 2026-08-11 (NVB-7). Coverage 5.3% → **49.4%**; the rest is
+not on the device.
 
-Measured on real data: only **~4.7%** of received messages resolve to a human sender name.
-The cause is that WhatsApp identifies most group participants by **LID** (`...@lid`,
-18,287 rows) rather than phone JID (`s.whatsapp.net`, 9,698 rows), and LIDs don't join to
-`wa_contacts`. Restricted to `s.whatsapp.net` senders, coverage is 50%.
+WhatsApp identifies most group participants by **LID** (`...@lid`, 18,287 rows)
+rather than phone JID (`s.whatsapp.net`, 9,698 rows), and `@lid` strings don't
+join to `wa_contacts`. The missing piece was never a name table — it was the
+**`msgstore.jid_map`** table, which maps `lid_row_id → jid_row_id`. Hop through
+it and the phone JID joins to the address book exactly as it always did.
 
-Best combination found so far — `COALESCE(lid_display_name.display_name,
-wa_contacts.wa_name, wa_contacts.display_name)` — barely moves it, because the senders in
-question are strangers in large public groups who were never in the address book.
+Measured on the live snapshot, 31,237 received messages:
 
-This matters for the product: "Dan asked about a ride tomorrow" is useful,
-"249808233197636 asked about a ride tomorrow" is not.
+| | Before | After |
+|---|---|---|
+| All chats | 5.30% | **49.41%** |
+| Allowlisted group (`120363303907512513@g.us`) | 23.87% | **100%** |
 
-The WhatsApp UI *does* display these people's profile names (pushnames), so the data
-exists somewhere. Not yet located. Candidates to check:
+Two changes got there, both in `_QUERY`:
 
-- `group_participant_user` / `group_past_participant_user` — may carry per-group names.
-- `integrator_display_name`, `message_system_username_change` — unexamined.
-- Names may be fetched live and cached outside `msgstore.db` (check `wa.db` more fully, and
-  the app's other databases such as `chatsettings.db`).
-- Worst case: pushname arrives on the wire per-message and is only in a protobuf blob.
+1. `LEFT JOIN jid_map` → `jid` → `wa_contacts` on the sender's LID.
+2. 1:1 chats carry `sender_jid_row_id = 0`, which points at no `jid` row and used
+   to yield `?` for 4,212 messages (13% of the corpus). Falling back to the
+   chat's own JID sends them through the same lookup.
 
-Prior art to check first: [`B16f00t/whapa`](https://github.com/B16f00t/whapa) handles
-multiple schema generations and may already solve this.
+### The remaining ~50% is unreachable, and that is the finding
 
-Acceptable interim behaviour: fall back to the LID, and let the agent refer to
-"an unnamed participant". Ugly but not wrong.
+All 1,464 still-unnamed senders **do** resolve through `jid_map` to a phone JID.
+They are strangers in large public groups who were never in the address book. The
+pushname the WhatsApp UI shows for them is not persisted anywhere on the device:
+
+- Not in `msgstore.db`, `wa.db`, `sync.db`, `chatsettings.db`, `status.db`,
+  `media.db`, `account_switcher.db` or `companion_devices.db`.
+- `lid_display_name` holds 1,332 rows, but for a different set of LIDs — none of
+  the unnamed senders.
+- `wa_contact_details` (which is keyed on `lid`) and `integrator_display_name`
+  are both **empty**.
+- `group_participant_user` has no name column at all — only `label`, unpopulated.
+- `grep -r` for a sample LID (`166872381132937`) and its phone number
+  (`972537213152`) across the entire `com.whatsapp` data directory hits exactly
+  one file, `msgstore.db`, and there only as the strings `166872381132937@lid`
+  and `166872381132937.1:0@lid`. No name is adjacent to it.
+
+So the name is fetched live and rendered, not stored. Getting it would mean
+asking a server, which the reader cannot do and should not be able to do
+([ADR 0006](decisions/0006-two-process-privilege-split.md), `PrivateNetwork=yes`).
+**Closed as far as it can go.** Those senders stay as bare LIDs.
+
+Two things fell out along the way:
+
+- `deploy/snapshot.sh` copied `wa.db` without its `-wal`/`-shm`. Same ADR 0003
+  staleness bug as `msgstore.db`, one database over — contact edits sitting in
+  the WAL were invisible. Fixed.
+- `snapshot()` in Python never cleared the destination first, so a leftover
+  `-wal` could be applied to a newer `.db`. Fixed.
 
 ## Q4 — OpenClaw vs. a custom Agent SDK build
 

@@ -94,6 +94,23 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ### Changed
 
+- **Sender names resolve through `msgstore.jid_map`, taking coverage from 5.3%
+  to 49.4% of received messages** (100% in the one allowlisted group, up from
+  23.9%). Measured on the live snapshot, 31,237 received messages. Group
+  participants are identified by LID, and `@lid` strings do not join to
+  `wa_contacts` — `jid_map` is the missing `lid_row_id → jid_row_id` hop, after
+  which the phone JID joins to the address book as it always did. Nothing was
+  missing from the schema; the join was.
+- **1:1 messages get a sender name too.** In a 1:1 chat `sender_jid_row_id` is
+  `0` and points at no `jid` row, so those messages resolved to `?` — 4,212 of
+  them, 13% of the corpus. Falling back to the chat's own JID runs them through
+  the same name lookup.
+- **The snapshot now copies `wa.db-wal` and `wa.db-shm`** (`deploy/snapshot.sh`
+  and the Python fallback in `snapshot()`). `msgstore.db` had its WAL from the
+  start; `wa.db` did not, so contact and LID-name edits sitting in its WAL were
+  invisible — the same ADR 0003 staleness bug, one database over. The Python
+  fallback also clears the destination before copying, which it never did: a
+  leftover `-wal` applied to a newer `.db` returns wrong rows silently.
 - **The chat allowlist keys on the chat JID, not the group subject.** Subjects
   are attacker-settable — anyone in a group can rename it — so a name-keyed
   allowlist can be talked into. `read_since(chats=…)` now takes JIDs.
@@ -226,7 +243,17 @@ Corrections to the original design docs, found by running on real hardware:
 
 ### Known limitations
 
-- Sender names resolve for ~5% of group messages; the reader falls back to the
-  LID rather than failing.
+- **The remaining ~50% of senders have no name anywhere on the device.** All
+  1,464 of them do resolve through `jid_map` to a phone JID — they are simply
+  strangers in large public groups who were never in the address book. Their
+  pushnames, which the WhatsApp UI does display, are not in `msgstore.db`,
+  `wa.db`, `sync.db`, `chatsettings.db`, `status.db`, `media.db`,
+  `account_switcher.db` or `companion_devices.db`; `lid_display_name` covers a
+  different 1,332 LIDs, and `wa_contact_details` and `integrator_display_name`
+  are empty. A `grep -r` of a sample LID and its phone number across the whole
+  `com.whatsapp` data directory hits `msgstore.db` and nothing else, and there
+  only as JID strings. The name is fetched live and not persisted, so it is out
+  of reach behind `PrivateNetwork=yes` (ADR 0006). Those senders stay as bare
+  LIDs, which is the accepted interim behaviour.
 - The reader must be run by hand — no timer, no confinement yet.
 - No Signal channel, no agent. The system reads but cannot yet be talked to.
