@@ -68,10 +68,19 @@ socket = "/run/wpa-signal/socket"
 # and is only a second key — the part a human can check by eye.
 #
 # GROUPS ARE KEYED BY ID, never by name: names are chosen by members, so a
-# name-keyed allowlist can be renamed into. List them with `listGroups` over the same
-# socket. `members` is the PINNED member set: the gate reads the live membership back
-# from the daemon and refuses the whole conversation when it differs, rather than
-# carrying on with an extra person in the room.
+# name-keyed allowlist can be renamed into. `members` is the PINNED member set: the
+# gate reads the live membership back from the daemon and refuses the whole
+# conversation when it differs, rather than carrying on with an extra person present.
+#
+# **The assistant is itself a member of the group**, so its own ACI belongs in that
+# list too (verified on hardware 2026-08-12 — omit it and the group refuses forever).
+# Generate the id and the members rather than typing them:
+#
+#   sudo -u wpa-signal python3 deploy/pin-group.py
+#
+# which prints a ready-to-paste `label`/`id`/`members` block for every group the
+# assistant is in. Read the label before pasting it — it is the current group name,
+# and the name is exactly the thing not to trust for identity.
 #
 # Check what any of this resolves to before restarting the gate:
 #   python3 -m gate.signal --check /opt/wpa/config/config.toml

@@ -85,16 +85,35 @@ several of them are the kind of thing that costs an evening to rediscover.
   instance and a directory under the outbox root, so this is a path-escape check, not
   a style rule.
 
+### Fixed
+
+- **A pinned member list would have had to name each person twice.** The group
+  fixtures shipped derived, and the capture the next day showed a `listGroups` member
+  is `{"number": …, "uuid": …, "isAdmin": …}` — carrying *both* identifiers for
+  anyone who shares their number, as the assistant's own row does. `_members_of` was
+  adding both to the set, so a `members = [...]` written the obvious way never
+  matched and the group would have refused forever. It takes the uuid now, falling
+  back to the number, and refuses a member it cannot name at all.
+- **`isMember: false` is drift.** The daemon still lists the members of a group the
+  assistant has been removed from, so the old comparison would have found them equal
+  and reported the room healthy.
+
 ### Unflattering
 
-- **The group fixtures are derived, not captured.** `listGroups` answered `[]` — the
-  assistant is in no Signal group — so there was no real group envelope to photograph
-  and the `group-*` fixtures were built by editing `group.json`. Two things are
-  therefore guessed: the member shape inside a `listGroups` result (both plausible
-  encodings are accepted, and anything else refuses) and what a membership change
-  looks like on the wire (used only as a hint to re-read early; the 15-minute refresh
-  remains the guarantee). `tests/fixtures/signal/README.md` records what to capture
-  to settle both, and NVB-12's acceptance is not met until that happens.
+- **Two things shipped as guesses and one of them was wrong** (above). The group
+  fixtures were derived because `listGroups` answered `[]` — the assistant was in no
+  group — and the member shape was the guess that mattered. The other guess held: a
+  group change really does arrive as `groupInfo.type: "UPDATE"`, with `message: null`
+  and an incremented `revision`, so it is dropped as `no body` and the membership
+  re-read has to be triggered on the drop path, which it was.
+- **`revision` was tempting and is not used.** It increments on every group change,
+  which looks like a cheaper drift signal than catching the update envelope — but
+  membership is re-read on every connect anyway, so a revision cursor would only
+  cover a change made while the gate was down. Written down because it will look like
+  an oversight to the next reader.
+- **One fixture is still derived: a message from an unlisted sender inside an
+  allowlisted group.** That is the `unlisted sender` counter, where probing in a
+  family room would appear, and there was no second person in the group to send it.
 
 ### Documented
 
