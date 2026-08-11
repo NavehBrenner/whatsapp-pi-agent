@@ -37,10 +37,31 @@ if [[ ! -d /var/lib/wpa-signal/data ]]; then
 fi
 
 install -m 0644 "$repo/deploy/systemd/signal-cli.service" /etc/systemd/system/
+
+# The gate: its own user, in the daemon's group so it can reach the socket and
+# nothing else. It must NOT be wpa-signal — /var/lib/wpa-signal is the account,
+# and the process that parses messages from strangers has no business reading it.
+id wpa-gate >/dev/null 2>&1 ||
+  useradd --system --no-create-home --shell /usr/sbin/nologin -G wpa-signal wpa-gate
+install -m 0644 "$repo/deploy/systemd/wpa-gate.service" /etc/systemd/system/
+
+# The code lives at /opt/wpa, put there by install-reader.sh — the gate runs with
+# ProtectHome=yes and cannot see a checkout in /home.
+if [[ ! -f /opt/wpa/src/gate/signal.py || ! -f /opt/wpa/config/config.toml ]]; then
+  echo "run deploy/install-reader.sh first: it puts the code and config in /opt/wpa" >&2
+  exit 1
+fi
+
 systemctl daemon-reload
 systemctl enable --now signal-cli.service
+# Restart rather than start: an already-running daemon still has the old 0077
+# umask, so the socket stays unreadable to the gate until it is recreated.
+systemctl restart signal-cli.service
+systemctl enable --now wpa-gate.service
 
 echo
 echo "installed. check with:"
-echo "  systemctl status signal-cli --no-pager"
-echo "  sudo ls -l /run/wpa-signal/socket"
+echo "  systemctl status signal-cli wpa-gate --no-pager"
+echo "  sudo ls -l /run/wpa-signal/socket        # srwxr-x--- wpa-signal wpa-signal"
+echo "  journalctl -u wpa-gate -n 20            # decisions and counts, never bodies"
+echo "  sudo tail /var/lib/wpa-gate/commands.jsonl"

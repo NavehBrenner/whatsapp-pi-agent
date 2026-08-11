@@ -26,8 +26,14 @@ Environment=JAVA_OPTS=-Xmx256m
 # on hardware 2026-08-11, the first test message landed in the log in plaintext.
 # Messages still reach JSON-RPC clients; they just stop being logged.
 # --scrub-log redacts identifiers from anything else it writes.
+# --receive-mode on-connection, not on-start. With on-start the daemon pulls from
+# Signal whether or not anything is listening, so a message arriving while the
+# gate is restarting is acked to the server, dropped for lack of a subscriber, and
+# gone — verified on hardware 2026-08-11, it does not replay on reconnect.
+# on-connection makes the daemon fetch only while a client is attached, so those
+# messages stay queued server-side and land when the gate comes back.
 ExecStart=/usr/local/bin/signal-cli --scrub-log --config %S/wpa-signal -a ${ASSISTANT_NUMBER} \
-    daemon --socket %t/wpa-signal/socket --receive-mode on-start --no-receive-stdout
+    daemon --socket %t/wpa-signal/socket --receive-mode on-connection --no-receive-stdout
 
 Restart=on-failure
 RestartSec=10
@@ -37,7 +43,15 @@ StateDirectory=wpa-signal
 StateDirectoryMode=0700
 RuntimeDirectory=wpa-signal
 RuntimeDirectoryMode=0750
-UMask=0077
+# 0007, not 0077: signal-cli creates the socket with this umask, and wpa-gate
+# talks to it as a member of the wpa-signal group. It must be group-WRITABLE —
+# connect(2) on a unix socket needs write permission, so 0027 (srwxr-x---) fails
+# with EACCES and looks exactly like a socket that isn't there yet.
+# Group membership buys the socket and nothing else: StateDirectoryMode below
+# keeps /var/lib/wpa-signal — which is the account itself — at 0700, and a
+# directory with no group execute bit cannot be traversed however its contents
+# are moded.
+UMask=0007
 
 # Unlike the reader, this one legitimately needs the network — it is the control
 # channel. Everything else still gets taken away.

@@ -1,0 +1,51 @@
+[Unit]
+Description=Signal trigger gate — decides which messages are commands (ADR 0004, ADR 0007)
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/decisions/0007-principals-on-the-control-channel.md
+# Wants=, not Requires=: the gate's connect loop already handles the socket not
+# being there yet, and it must survive the daemon restarting under it.
+Wants=signal-cli.service
+After=signal-cli.service
+# A gate latched into 'start-limit-hit' stops being retried, and the assistant
+# then looks like it is ignoring you rather than like it is broken.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=wpa-gate
+Group=wpa-gate
+# Only to reach /run/wpa-signal/socket, which is why signal-cli.service runs with
+# UMask=0027. The gate is deliberately NOT wpa-signal: /var/lib/wpa-signal is the
+# account itself, and the process parsing attacker-supplied JSON has no business
+# being able to read it.
+SupplementaryGroups=wpa-signal
+WorkingDirectory=/opt/wpa
+Environment=PYTHONPATH=/opt/wpa/src PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m gate.signal /opt/wpa/config/config.toml /var/lib/wpa-gate/commands.jsonl
+Restart=always
+RestartSec=5
+
+# Accepted commands land here, one JSON line each. Decisions and counts go to
+# journald; message bodies never do (threat model R4).
+StateDirectory=wpa-gate
+StateDirectoryMode=0700
+UMask=0077
+
+# ADR 0006's confinement contract. The gate speaks JSON-RPC over a unix socket
+# and nothing else, so it keeps PrivateNetwork as well — the network side of the
+# control channel belongs entirely to signal-cli.
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/wpa-gate
+# NO credential environment variables. Not one.
+
+[Install]
+WantedBy=multi-user.target

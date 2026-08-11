@@ -1,0 +1,24 @@
+{
+  "jsonrpc": "2.0",
+  "method": "receive",
+  "params": {
+    "envelope": {
+      "source": "99999999-9999-4999-8999-999999999999",
+      "sourceNumber": null,
+      "sourceUuid": "99999999-9999-4999-8999-999999999999",
+      "sourceName": "stranger",
+      "sourceDevice": 1,
+      "timestamp": 1786449987469,
+      "serverReceivedTimestamp": 1786449987063,
+      "serverDeliveredTimestamp": 1786449987075,
+      "dataMessage": {
+        "timestamp": 1786449987469,
+        "message": "ping",
+        "expiresInSeconds": 0,
+        "isExpirationUpdate": false,
+        "viewOnce": false
+      }
+    },
+    "account": "+15555550199"
+  }
+}
