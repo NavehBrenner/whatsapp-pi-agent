@@ -186,6 +186,72 @@ several of them are the kind of thing that costs an evening to rediscover.
   the line that must change is commented), any feedback channel back to the agent,
   sending to non-principals, retries, and an outbox disk quota.
 
+- **The Signal account state is backed up encrypted, off the Pi, on a timer, and
+  the restore has actually been run** (`deploy/backup-signal.sh`,
+  `deploy/systemd/wpa-signal-backup.{service,timer}`, runbook 03 §3). NVB-9.
+
+  `/var/lib/wpa-signal/` **is** the account, and the two ways to lose it don't
+  overlap. Lose the directory: re-registration, which costs another captcha,
+  another SMS, and a new identity key that every contact sees as a safety-number
+  change. Leak it: someone else can *be* the assistant — read the control channel
+  and send commands into it. Before this, the only copy was a **plaintext** tarball
+  in a home directory on the WSL box, taken before `setPin` and from the old
+  `~/.local/share/signal-cli` path, so it was simultaneously unencrypted, stale,
+  and pointed at a location a restore could no longer land on.
+
+  **The Pi cannot read its own backups.** `age` with a single recipient; the
+  private key was generated on the WSL box and lives in the password manager, not
+  on the Pi. This is the part that is easy to get wrong by encrypting with a key
+  stored beside the ciphertext, which protects against disk loss and nothing else.
+  Here a Pi compromise gets the live account — it was always going to — but not
+  the archive of every previous generation of it.
+
+  Destination is a **Backblaze B2 bucket**: off the Pi and off the WSL box, which
+  is the actual requirement. The WSL box is not a backup target, it is a second
+  thing that can die. Credentials go in `/etc/wpa-signal-backup.env` (root, 0600)
+  as `RCLONE_CONFIG_WPABACKUP_*` variables, so rclone needs no second config file
+  and no interactive `rclone config` to reproduce — same one-root-file pattern as
+  `/etc/wpa-signal.env`.
+
+  **The unit stops `signal-cli` for the copy.** The daemon holds the account lock
+  and rewrites session state as messages arrive, so a live copy is not guaranteed
+  coherent. Measured cost on hardware: the whole unit runs in ~1s and the socket
+  is back well inside the ~19s signal-cli needs to reach a listening state, once a
+  week, at 04:00 Sunday. Blobs are dated and never overwritten, so a corrupted
+  backup cannot land on top of the last good one — which is a real way to lose an
+  account, and the reason retention is by filename rather than by rotation.
+
+  **The restore drill was run, not assumed**, 2026-08-11 — and run from the B2
+  copy rather than a Pi-local file, so the download half was exercised too. Blob
+  fetched to the WSL box, decrypted with the key the Pi has never held, unpacked to
+  a scratch directory, and `signal-cli --config <scratch>/wpa-signal listAccounts`
+  reported `Number: +972552645702`. Nothing was sent or received from the restored
+  copy and no second daemon was started — Signal allows the account **one** primary
+  device, so a restored copy running while the Pi still runs is not a hot spare, it
+  is two clients claiming one identity. A restore is for when the Pi is gone.
+
+  Three things found doing it, none of them in any documentation:
+
+  - **`GODEBUG=netdns=cgo` is load-bearing.** rclone is Go, and Go's built-in
+    resolver cannot resolve `api.backblazeb2.com` through this network's router:
+    `no such host` on 3/3 attempts while `getent hosts` resolved the same name 5/5.
+    cgo worked immediately. The failure surfaces as what looks like a Backblaze
+    outage, weekly, on a unit nobody watches — the worst shape a bug can have here.
+  - **`ReadWritePaths=/var/backups/wpa-signal` fails the unit with 226/NAMESPACE**
+    on a fresh install. systemd builds the mount namespace before `ExecStart`, so
+    it cannot name a directory the script has not created yet. The unit points at
+    `/var/backups` and the script makes the subdir. Same trap as the
+    `StateDirectory=` note in `wpa-reader.service`, approached from the other side.
+  - **The restore machine needs a JRE 25 signal-cli of its own.** The WSL box had
+    Java 8, which cannot run signal-cli at all. A backup you hold the key to but
+    cannot open is not a restore path, so runbook 03 §3d now lists what the restore
+    machine needs — including that the B2 key belongs in the password manager next
+    to the age key, because the age key alone opens a blob you cannot download.
+    The x86_64 build needs no libsignal surgery; §1a is an arm64 problem only.
+
+  The registration PIN is not in the backup and not derivable from it. Password
+  manager, next to the age key.
+
 - **A trigger gate decides which Signal messages are commands** (`src/gate/signal.py`,
   `deploy/systemd/wpa-gate.service`). Until now the channel carried traffic in
   both directions and nothing said which of it counted; this is the half of M3

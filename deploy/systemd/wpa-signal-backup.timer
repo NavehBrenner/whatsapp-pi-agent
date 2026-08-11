@@ -1,0 +1,15 @@
+[Unit]
+Description=Back up the Signal account state weekly
+
+[Timer]
+OnCalendar=Sun 04:00
+# Weekly bounds how far the backup can drift from the live account without the
+# blobs piling up. The copy stops the control channel for ~30s, so put it where
+# nobody is messaging the assistant.
+RandomizedDelaySec=15min
+# The Pi is not on 24/7 forever. A missed Sunday runs at next boot rather than
+# waiting a week — the whole failure mode here is a backup that quietly stopped.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

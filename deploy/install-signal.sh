@@ -59,9 +59,25 @@ systemctl enable --now signal-cli.service
 systemctl restart signal-cli.service
 systemctl enable --now wpa-gate.service
 
+# The weekly encrypted backup (NVB-9). Installed here rather than with the reader
+# because it is part of owning this account, not part of reading WhatsApp. Runs
+# from /usr/local/bin so it does not go out of sync with an rsync of /opt/wpa.
+install -m 0755 "$repo/deploy/backup-signal.sh" /usr/local/bin/wpa-signal-backup
+install -m 0644 "$repo"/deploy/systemd/wpa-signal-backup.{service,timer} /etc/systemd/system/
+systemctl daemon-reload
+
+# Enabling it without credentials would fail every Sunday, and a backup that
+# fails quietly is indistinguishable from one that never ran.
+if [[ -f /etc/wpa-signal-backup.env ]]; then
+  systemctl enable --now wpa-signal-backup.timer
+else
+  echo "no /etc/wpa-signal-backup.env — backup timer installed but NOT enabled (runbook 03 section 3)" >&2
+fi
+
 echo
 echo "installed. check with:"
 echo "  systemctl status signal-cli wpa-gate --no-pager"
+echo "  systemctl list-timers wpa-signal-backup.timer"
 echo "  sudo ls -l /run/wpa-signal/socket        # srwxr-x--- wpa-signal wpa-signal"
 echo "  journalctl -u wpa-gate -n 20            # decisions and counts, never bodies"
 echo "  sudo tail /var/lib/wpa-gate/commands.jsonl"
