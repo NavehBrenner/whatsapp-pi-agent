@@ -58,6 +58,14 @@ several of them are the kind of thing that costs an evening to rediscover.
   **never bodies, never numbers** (threat model R4) — the drop counter is what
   will show someone probing the number.
 
+  **Survives a reboot**, verified 2026-08-11: boot at 16:09:22, `wpa-gate` started
+  16:09:38, the socket appeared ~26s after that, gate connected and a message sent
+  from the phone was accepted with the ack arriving. Waydroid came back
+  `Container: RUNNING` — not FROZEN — and no unit failed. The connect backoff caps
+  at **10s rather than 30s** because that ceiling is the worst-case delay between
+  the socket existing and the assistant answering: on this reboot the first
+  connect landed ~25s after the socket appeared, all of it spent asleep.
+
   It reconnects. `active` is not `ready`: `Type=simple` marks signal-cli started
   when the JVM launches and the socket appeared ~19s later on a cold boot, and the
   daemon's own `Restart=on-failure` takes the socket away under a live gate. So

@@ -50,10 +50,15 @@ DEFAULT_SOCKET = Path("/run/wpa-signal/socket")
 DEFAULT_COMMANDS = Path("/var/lib/wpa-gate/commands.jsonl")
 
 # `active` is not `ready`: Type=simple marks signal-cli started when the JVM
-# launches, and the socket appeared ~19s later on a cold boot. So connecting is a
-# retry loop, not a single attempt — otherwise the gate dies at every reboot while
-# looking perfectly healthy. Same loop covers the daemon's own Restart=on-failure.
-BACKOFF_SECONDS = (1.0, 2.0, 5.0, 10.0, 30.0)
+# launches, and the socket appeared ~26s later on a cold boot (2026-08-11). So
+# connecting is a retry loop, not a single attempt — otherwise the gate dies at
+# every reboot while looking perfectly healthy. Same loop covers the daemon's own
+# Restart=on-failure.
+#
+# The ceiling is 10s and not 30s because it is the worst-case delay between the
+# socket existing and the assistant answering: at 30s the first post-reboot
+# connect landed ~25s after the socket appeared, all of it spent asleep.
+BACKOFF_SECONDS = (1.0, 2.0, 5.0, 10.0)
 
 
 @dataclass(frozen=True)
