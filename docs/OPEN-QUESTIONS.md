@@ -219,11 +219,13 @@ Two things fell out along the way:
 - `snapshot()` in Python never cleared the destination first, so a leftover
   `-wal` could be applied to a newer `.db`. Fixed.
 
-## Q4 — OpenClaw vs. a custom Agent SDK build
+## Q4 — how to build the agent processes
 
-**Status:** Open. **Blocks:** [runbook 04](runbooks/04-agent-deploy.md), not the spike.
+**Status:** Open, and **its own revisit trigger has fired** — see below. **Blocks:**
+[runbook 04](runbooks/04-agent-deploy.md), all of M4, and it is tracked for decision in
+NVB-13. **Not** the spike.
 
-Two ways to build the agent processes.
+Three ways to build the agent processes.
 
 **Hard constraint first:** Anthropic's Feb 2026 policy prohibits using subscription OAuth
 tokens in third-party tools. So the paste-your-token-into-OpenClaw path is out regardless of
@@ -244,7 +246,32 @@ privilege split is unusual enough that fitting it into someone else's agent fram
 cost more than it saves, and the confirmation-gate hook has to be *reliable*, which means
 understanding the framework's interception points properly.
 
-Lean: **custom Agent SDK build.** Capability shaping is the load-bearing control in this
-system and it's not something to inherit from a framework whose defaults are aimed at
-general usefulness. Revisit if the amount of Signal/session plumbing turns out to dwarf the
-agent logic.
+**Anthropic Managed Agents** — added 2026-08-11, and it ships much of what M4 was going to
+write: per-tool permission policies (`always_ask` pauses the session and waits for an
+allow/deny), vaults that keep credentials out of the sandbox entirely by substituting them at
+egress, per-session containers with environments as the trust boundary, and hard per-session
+spend budgets. A **self-hosted sandbox** (`config: {type: "self_hosted"}`) keeps tool
+execution on the Pi — the agent loop runs on Anthropic's orchestration, an outbound-polling
+worker executes the tools, no inbound connections.
+
+Its costs are equally concrete: self-hosted sandboxes support neither vault
+`environment_variable` credentials nor memory stores, so that work returns to us; and
+**session and event history persists on Anthropic's side**, which is a genuinely new fact for
+the threat model rather than a restatement of "the model sees the content". The ADR has to
+decide that deliberately.
+
+Lean: still **custom Agent SDK build**, on the same reasoning — capability shaping is the
+load-bearing control in this system and it's not something to inherit from a framework whose
+defaults are aimed at general usefulness.
+
+**But the revisit trigger has fired.** This question said to reconsider if the Signal and
+session plumbing turned out to dwarf the agent logic. M3 then built per-principal routing, a
+roster, an outbound path with recipient validation, per-conversation authority, and a
+confirmation-targeting design — with per-principal containers and a capability manifest still
+to come. That is the plumbing, and two of the three options ship parts of it. Decide in
+NVB-13, on evidence, before any agent code exists.
+
+Whatever wins, one piece stays ours: **confirmation targeting**. A platform can give you the
+pause and the allow/deny, but mapping a quoted Signal reply or a 👍 reaction to one specific
+pending action is Signal semantics, and no agent runtime knows what Signal is
+([ADR 0008](decisions/0008-authority-is-a-conversation-sender-pair.md)).

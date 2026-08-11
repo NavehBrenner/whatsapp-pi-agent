@@ -20,6 +20,31 @@ The second question was answered in [ADR 0007](0007-principals-on-the-control-ch
 a promise — no shared sessions, no profile holding credentials its principal does not own —
 without saying what enforces it.
 
+## Three directions of traffic
+
+Added 2026-08-11 as a clarification, not a change of decision. It is the frame that says what
+this ADR covers and, more usefully, what it cannot cover — the question "could an off-the-shelf
+permission layer replace the gate?" keeps arising, and the answer is legible only once the
+three arrows are named separately.
+
+| | Direction | Controls | Enforced by |
+|---|---|---|---|
+| 1 | World → agent | **Invocation**: who may trigger it, from which conversation, under which profile | The gate ([ADR 0004](0004-signal-control-channel.md), [0007](0007-principals-on-the-control-channel.md), [0008](0008-authority-is-a-conversation-sender-pair.md)) |
+| 2 | Agent → people | **Who it may address**: the agent asks by name, the gate resolves and refuses | The gate (this ADR) |
+| 3 | Agent → tools | **What it may do**: which capabilities exist, whose credentials, which chats are visible | The profile's capability manifest and the container (this ADR, and M4) |
+
+Arrows 1 and 2 are Signal semantics — ACIs, group ids, bodiless envelopes, quoted replies.
+No agent framework or tool-permission layer has a concept of any of them, so **nothing off the
+shelf can stand in for the gate**. Arrow 3 is the reverse: the gate deliberately knows nothing
+about tools, so it can never be the thing that stops `send_email` existing.
+
+The practical consequence is that the two must not be conflated when evaluating what to build
+versus adopt. A capability layer that governs arrow 3 is complementary to the gate, never a
+replacement — and any candidate for it has to answer one question this project cares about
+more than most: **how does it know which principal is calling?** If several agents share one
+tool server, roles and scopes must bind per connection, or the isolation enforced carefully at
+arrows 1 and 2 collapses quietly at arrow 3.
+
 ## Decision
 
 ### The gate is the only process that touches Signal
