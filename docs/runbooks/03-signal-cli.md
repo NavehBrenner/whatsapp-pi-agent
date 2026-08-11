@@ -223,6 +223,20 @@ after unit start on the Pi, cold. A client connecting at boot must retry rather 
 the socket is there. Yet another case where "the service is running" answers the wrong
 question.
 
+**Messages that arrive with no client attached are lost — unless the receive mode
+says otherwise.** Under `--receive-mode on-start` the daemon pulls from Signal
+regardless of whether anything is listening, acks the message, and drops it: it
+does not replay when a client reconnects. Verified 2026-08-11 by stopping the gate,
+detaching every client, sending one message and starting the gate again — it never
+appeared, then or later. The unit therefore uses **`--receive-mode on-connection`**,
+which fetches only while a client is attached and leaves the rest queued on
+Signal's servers; the same experiment then delivered the message one second after
+the gate reconnected.
+
+So: a restart of `wpa-gate` costs latency, not commands. A gate that is down for a
+long time still receives nothing — the daemon is only as live as its subscriber,
+which is why `wpa-gate` is `Restart=always`.
+
 **The daemon holds the account lock.** Once `signal-cli.service` is up, a second `signal-cli`
 invocation against the same account will conflict. Talk to it over the socket:
 

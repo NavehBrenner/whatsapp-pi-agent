@@ -90,6 +90,25 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ### Changed
 
+- **The daemon runs `--receive-mode on-connection`, and it is the difference
+  between losing commands and not.** With `on-start` signal-cli pulls from Signal
+  whether or not any client is attached, so a message arriving while the gate is
+  restarting is acked to the server, dropped for lack of a subscriber, and gone.
+  Established deliberately on hardware 2026-08-11 rather than assumed: gate
+  stopped, every client detached, one message sent, gate started — it never
+  arrived, and it never arrived later either. No error anywhere; the assistant
+  simply doesn't answer, which is the failure you least want to meet in
+  production.
+
+  `on-connection` makes the daemon fetch only while a client is attached, so
+  undelivered messages stay queued on Signal's servers. Same experiment, same
+  conditions, after the change: the message landed **one second** after the gate
+  reconnected and was accepted normally. A gate restart is now a delay rather
+  than a hole.
+
+  The cost is that nothing is received while no client is connected — including
+  receipts and typing indicators, which is no loss — and that the daemon is only
+  as live as its subscriber. `Restart=always` on `wpa-gate` covers that.
 - **`signal-cli.service` runs with `UMask=0007`** so the JSON-RPC socket is
   created `srwxrwx---` and `wpa-gate` can reach it through the `wpa-signal` group.
   The gate deliberately does not run *as* `wpa-signal`: `/var/lib/wpa-signal` is
