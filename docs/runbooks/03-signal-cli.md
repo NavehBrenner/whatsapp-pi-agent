@@ -337,11 +337,21 @@ Two consequences for this runbook:
   the gate can reach it as a member of the `wpa-signal` group. The gate deliberately does not
   run *as* `wpa-signal`: `/var/lib/wpa-signal` is the account, and the process parsing
   messages from strangers has no business being able to read it.
-- The principal list lives in `config.toml` under `[[signal.principals]]`. An empty list is a
-  startup refusal, not a permissive default.
+- The allowlist lives in `config.toml` under `[[signal.conversations]]` — one entry per room,
+  each naming its permitted senders and the profile that applies to each of them *there*
+  (ADR 0008). An empty table is a startup refusal, not a permissive default. Group entries
+  carry a pinned `members` list; the gate reads the live membership back with `listGroups` on
+  connect and every 15 minutes, and a group that differs refuses everything until config is
+  corrected. Print what any of it resolves to before restarting:
 
-See also [ADR 0004](../decisions/0004-signal-control-channel.md) and
-[ADR 0007](../decisions/0007-principals-on-the-control-channel.md).
+  ```bash
+  sudo -u wpa-gate python3 -m gate.signal --check /opt/wpa/config/config.toml
+  ```
+
+See also [ADR 0004](../decisions/0004-signal-control-channel.md),
+[ADR 0007](../decisions/0007-principals-on-the-control-channel.md),
+[ADR 0008](../decisions/0008-authority-is-a-conversation-sender-pair.md) and
+[ADR 0010](../decisions/0010-profiles-are-pre-bound-grant-bundles.md).
 
 ## Operational notes
 

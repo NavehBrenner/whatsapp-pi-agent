@@ -127,9 +127,11 @@ this?"** `create_draft`, never `send_email`. Calendar events without dispatching
 invites. The failure mode for this project isn't a clever attack — it's
 `send_email` appearing one day because drafting got tedious.
 
-**The gate forwards a closed set of known one-to-one Signal conversations, and
-nothing else.** Each carries a named principal and a profile; anything from an
-unlisted sender, a group, or a new thread is dropped before dispatch and counted.
+**The gate forwards a closed set of known Signal conversations, and nothing else.**
+Each names its permitted senders, and each (conversation, sender) pair carries its
+own profile; anything from an unlisted sender, an unlisted conversation, or a group
+whose membership has drifted from the pinned set is dropped before dispatch and
+counted.
 A phone number is not a secret — anyone who learns the assistant's number can
 message it — so this list, not the number, is what refuses an unauthorized
 invocation. It holds whether the assistant runs on a dedicated account or a
@@ -142,12 +144,25 @@ envelope.** Typing indicators and read receipts arrive on the same stream with n
 who can make the assistant's phone show "typing…" — and a sender check does not
 help on an envelope carrying no command. There are fixture tests for this.
 
-**No two principals share an agent session.** Own history, own tools, own
-credentials or none. A profile holds nothing its principal does not already own,
-which is what bounds an injection arriving through someone else's conversation.
-Enforced by one container per principal, not by agent code being careful.
+**No agent session spans two conversations.** Inside one room, senders may share an
+agent — a family agent anyone present can activate — because everyone there already
+reads everyone's messages, so the disclosure boundary and the injection surface are
+the room itself. Across rooms a shared session would carry one room's text into
+another and let an injection act with the other's credentials, so it is refused at
+load. Senders sharing an agent share its profile, because an agent *is* its tools and
+its mounted credentials.
 ([ADR 0007](docs/decisions/0007-principals-on-the-control-channel.md),
-[ADR 0009](docs/decisions/0009-agents-are-containers-that-ask-by-name.md))
+[ADR 0009](docs/decisions/0009-agents-are-containers-that-ask-by-name.md),
+[ADR 0010](docs/decisions/0010-profiles-are-pre-bound-grant-bundles.md))
+
+**A profile is a bundle of tool instances, and the container is the enforcement.**
+Grants are bound in config before an agent exists and compiled into its image and its
+mounted credentials, so a tool outside the bundle is *absent* rather than refused at
+runtime. The gate emits the profile name and never a capability list — a list
+travelling in a JSON line is a label the runner would have to trust. Nothing grants
+authority over the chat: the messages the agent reads are the injection surface, so
+permanent grants are a config edit on the Pi.
+([ADR 0010](docs/decisions/0010-profiles-are-pre-bound-grant-bundles.md))
 
 **Authority is a (conversation, sender) pair, never a sender alone.** The same
 person in a group and in their own chat is two principals with two profiles, and

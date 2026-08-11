@@ -5,14 +5,21 @@ redacted (see the README there). That matters more than usual here: the hole thi
 gate closes — a typing indicator arriving as a `receive` notification with no
 `dataMessage` — is not in signal-cli's documentation. It was found by watching the
 wire, so the test that it stays closed reads from the wire too.
+
+The `group-*` fixtures are **derived**, not captured: the assistant was in no Signal
+group when they were written, so `listGroups` returned `[]` and there was nothing to
+photograph. They are marked as such in the README and must be replaced with captured
+envelopes before this is trusted on hardware (NVB-12's acceptance says so).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import socket
 import threading
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -21,8 +28,10 @@ from gate.signal import (
     Command,
     Config,
     Outbound,
-    Principal,
+    Recipient,
+    _drifted,
     _record,
+    check,
     decide,
     drain,
     load_config,
@@ -32,19 +41,76 @@ from gate.signal import (
 
 FIXTURES = Path(__file__).parent / "fixtures" / "signal"
 
-OWNER = Principal(name="owner", profile="owner")
-MOM = Principal(name="mom", profile="family")
 OWNER_UUID = "11111111-1111-4111-8111-111111111111"
 MOM_UUID = "22222222-2222-4222-8222-222222222222"
-ROSTER = {"owner": OWNER_UUID, "mom": MOM_UUID}
-# Keyed by UUID because that is what actually arrives: current Signal does not
-# share phone numbers, so `sourceNumber` is null on real traffic and a
-# number-keyed allowlist matches nothing (hardware, 2026-08-11).
-PRINCIPALS = {
-    "11111111-1111-4111-8111-111111111111": OWNER,
-    "+15555550100": OWNER,
-    "22222222-2222-4222-8222-222222222222": MOM,
-}
+DAD_UUID = "44444444-4444-4444-8444-444444444444"
+STRANGER_UUID = "99999999-9999-4999-8999-999999999999"
+GROUP_ID = "Z3JvdXAtaWQtcmVkYWN0ZWQ="
+
+# One world, used by most tests and built through the real parser rather than by
+# constructing dataclasses — the validation in `load_config` is half of what this
+# module is testing, so bypassing it would test a config shape nothing accepts.
+#
+# It is deliberately the interesting arrangement: the owner has a private chat, the
+# family group runs one shared agent for everyone in it, and the owner overrides that
+# in the group to get their own session with a wider profile.
+WORLD = f"""
+[signal]
+socket = "/tmp/sock"
+
+[[agent.profiles]]
+name = "owner-full"
+tools = ["whatsapp.read", "calendar.personal.rw", "email.personal.draft"]
+send_to = ["self", "family"]
+
+[[agent.profiles]]
+name = "family-shared"
+tools = ["whatsapp.read", "calendar.family.rw"]
+
+[[agent.profiles]]
+name = "calendar-only"
+tools = ["calendar.family.create_event"]
+
+[[signal.conversations]]
+label = "owner-1to1"
+id = "{OWNER_UUID}"
+members = ["{OWNER_UUID}"]
+agent = "owner"
+profile = "owner-full"
+[[signal.conversations.senders]]
+uuid = "{OWNER_UUID}"
+number = "+15555550100"
+name = "owner"
+
+[[signal.conversations]]
+label = "family"
+id = "{GROUP_ID}"
+members = ["{OWNER_UUID}", "{MOM_UUID}", "{DAD_UUID}"]
+agent = "family"
+profile = "calendar-only"
+[[signal.conversations.senders]]
+uuid = "{MOM_UUID}"
+name = "mom-family"
+[[signal.conversations.senders]]
+uuid = "{DAD_UUID}"
+name = "dad-family"
+[[signal.conversations.senders]]
+uuid = "{OWNER_UUID}"
+name = "owner-family"
+agent = "owner-family"
+profile = "family-shared"
+"""
+
+
+def written(tmp_path: Path, body: str) -> Config:
+    path = tmp_path / "config.toml"
+    path.write_text(body, encoding="utf-8")
+    return load_config(path)
+
+
+@pytest.fixture
+def world(tmp_path: Path) -> Config:
+    return written(tmp_path, WORLD)
 
 
 def envelope(name: str) -> object:
@@ -52,21 +118,48 @@ def envelope(name: str) -> object:
     return parsed
 
 
-def test_a_message_from_a_principal_is_a_command() -> None:
-    verdict = decide(envelope("message"), PRINCIPALS)
+def test_a_message_from_a_principal_is_a_command(world: Config) -> None:
+    verdict = decide(envelope("message"), world)
     assert isinstance(verdict, Command)
+    assert verdict.conversation == "owner-1to1"
     assert verdict.principal == "owner"
-    assert verdict.profile == "owner"
+    assert verdict.profile == "owner-full"
+    assert verdict.agent == "owner"
     assert verdict.body == "ping"
     assert verdict.reply_to is None
 
 
-def test_each_principal_carries_its_own_profile() -> None:
-    """The whole extensibility claim, reduced to an assertion: adding a person is
-    a config row, and what they may do travels with the command."""
-    verdict = decide(envelope("family"), PRINCIPALS)
+def test_a_permitted_sender_in_a_group_is_a_command(world: Config) -> None:
+    """The refusal NVB-12 exists to lift: a group has no single sender, but a
+    (conversation, sender) pair does."""
+    verdict = decide(envelope("group-family"), world)
     assert isinstance(verdict, Command)
-    assert (verdict.principal, verdict.profile) == ("mom", "family")
+    assert verdict.conversation == "family"
+    assert verdict.principal == "mom-family"
+    assert verdict.profile == "calendar-only"
+    assert verdict.agent == "family"
+
+
+def test_the_same_person_is_two_principals_in_two_conversations(world: Config) -> None:
+    """ADR 0008's whole claim, as an assertion. The owner in the family group is not
+    the owner in their own chat, and the emitted command says which applied — a group
+    reply is read by everyone in the room, so it must be the narrower grant."""
+    private = decide(envelope("message"), world)
+    shared = decide(envelope("group"), world)
+    assert isinstance(private, Command) and isinstance(shared, Command)
+    assert (private.principal, private.profile) == ("owner", "owner-full")
+    assert (shared.principal, shared.profile) == ("owner-family", "family-shared")
+    assert private.agent != shared.agent, "two sessions, so the group cannot see the private one"
+
+
+def test_senders_may_share_one_agent_and_still_be_told_apart(world: Config) -> None:
+    """A family agent anyone in the room can activate. Sharing a session is allowed
+    inside one conversation; attribution survives it because the pair name travels
+    with the command."""
+    mom = decide(envelope("group-family"), world)
+    assert isinstance(mom, Command)
+    assert (mom.agent, mom.principal) == ("family", "mom-family")
+    assert world.agents["family"].conversation == "family"
 
 
 @pytest.mark.parametrize(
@@ -75,161 +168,241 @@ def test_each_principal_carries_its_own_profile() -> None:
         ("typing", "no body"),
         ("receipt", "no body"),
         ("stranger", "sender"),
-        ("group", "group"),
+        ("family", "sender"),
+        ("group-unknown", "group"),
+        ("group-stranger", "unlisted sender"),
     ],
 )
-def test_everything_else_is_dropped(fixture: str, reason: str) -> None:
-    assert decide(envelope(fixture), PRINCIPALS) == reason
+def test_everything_else_is_dropped(world: Config, fixture: str, reason: str) -> None:
+    """Four distinct counters, because they want four different reactions. `sender`
+    is a stranger at the door; `unlisted sender` is someone already inside an
+    allowlisted room trying the handle, which is where probing in a family group
+    shows up."""
+    assert decide(envelope(fixture), world) == reason
 
 
-def test_a_reply_remembers_what_it_answered() -> None:
+def test_a_drifted_group_refuses_everyone_including_listed_senders(world: Config) -> None:
+    """Refuses rather than degrades: the person added is not the only one who stops
+    being able to use it, because nobody can know what the extra member saw."""
+    assert decide(envelope("group-family"), world, frozenset({GROUP_ID})) == "membership"
+    assert decide(envelope("group"), world, frozenset({GROUP_ID})) == "membership"
+    # The owner's own chat is untouched: drift is a property of one room.
+    assert isinstance(decide(envelope("message"), world, frozenset({GROUP_ID})), Command)
+
+
+def test_a_reply_remembers_what_it_answered(world: Config) -> None:
     """A `YES` is a command, but only useful if it still points at the action it
-    authorises. The registry is M4's; not losing the link is this gate's job."""
-    verdict = decide(envelope("quote-reply"), PRINCIPALS)
+    authorises. The registry is NVB-16's; not losing the link is this gate's job."""
+    verdict = decide(envelope("quote-reply"), world)
     assert isinstance(verdict, Command)
     assert verdict.reply_to == 1754912300000
 
 
-def test_junk_never_raises_its_way_past_a_check() -> None:
+def test_a_confirmation_room_holds_no_commands_at_all(tmp_path: Path) -> None:
+    """Nothing in a confirmation conversation is authority-bearing unless it names
+    the thing it authorises. By construction, not by an agent choosing well."""
+    confirmations = written(tmp_path, WORLD.replace('label = "family"', 'label = "family"\npurpose = "confirmation"'))
+    assert decide(envelope("group"), confirmations) == "not a confirmation"
+    accepted = decide(envelope("group-quote-reply"), confirmations)
+    assert isinstance(accepted, Command)
+    assert accepted.reply_to == 1786449987000
+
+
+def test_junk_never_raises_its_way_past_a_check(world: Config) -> None:
     junk: list[object] = [None, [], "receive", {"method": "receive"}, {"params": 3}]
     for item in junk:
-        assert isinstance(decide(item, PRINCIPALS), str)
+        assert isinstance(decide(item, world), str)
 
 
-def test_a_config_with_no_principals_refuses_to_start(tmp_path: Path) -> None:
+# --- What the config refuses to start with --------------------------------------
+
+
+def test_a_config_with_no_conversations_refuses_to_start(tmp_path: Path) -> None:
     """An allowlist that defaults to everyone is not an allowlist, and one that
     defaults to nobody is a dead assistant that looks alive. Both are refusals."""
-    config = tmp_path / "config.toml"
-    config.write_text('[signal]\nsocket = "/run/wpa-signal/socket"\n', encoding="utf-8")
     with pytest.raises(ValueError):
-        load_config(config)
+        written(tmp_path, '[signal]\nsocket = "/run/wpa-signal/socket"\n')
 
 
-def test_config_keys_principals_by_number_and_uuid(tmp_path: Path) -> None:
-    config = tmp_path / "config.toml"
-    config.write_text(
-        '[signal]\nsocket = "/tmp/sock"\n\n'
-        "[[signal.principals]]\n"
-        'number = "+15555550100"\nname = "owner"\nprofile = "owner"\n'
-        'uuid = "11111111-1111-4111-8111-111111111111"\n',
-        encoding="utf-8",
-    )
-    loaded = load_config(config)
-    assert loaded.socket == Path("/tmp/sock")
-    assert loaded.principals["+15555550100"] is loaded.principals[OWNER_UUID]
-    # The uuid, not the number: an ACI is what arrives, and a re-registered number
-    # belongs to whoever holds it next.
-    assert loaded.roster == {"owner": OWNER_UUID}
-    assert loaded.principals[OWNER_UUID].send_to == ("self",)
+def test_a_sender_row_inherits_its_conversations_agent_and_profile(world: Config) -> None:
+    """The common case is meant to cost one line per person: a family group is one
+    agent and one profile, and everybody in it inherits both."""
+    family = world.by_label["family"]
+    assert family.senders[MOM_UUID].agent == "family"
+    assert family.senders[MOM_UUID].profile == "calendar-only"
 
 
-def _serve(path: Path, batches: list[bytes], started: threading.Event) -> None:
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server.bind(str(path))
-    server.listen(len(batches))
-    started.set()
-    for batch in batches:
-        conn, _ = server.accept()
-        conn.sendall(batch)
-        conn.shutdown(socket.SHUT_WR)
-        conn.close()
-    server.close()
+def test_a_number_alias_reaches_the_same_conversation(world: Config) -> None:
+    """The uuid is what arrives; the number is the part a human can check by eye."""
+    assert world.conversations["+15555550100"] is world.conversations[OWNER_UUID]
 
 
-def test_it_reconnects_when_the_daemon_goes_away(tmp_path: Path) -> None:
-    """signal-cli has Restart=on-failure, so the socket disappears under a live
-    gate. A gate that exits on the first EOF is a control channel that works until
-    the first restart and then silently isn't there."""
-    line = (FIXTURES / "message.json").read_text(encoding="utf-8").replace("\n", "") + "\n"
-    sock = tmp_path / "socket"
-    commands = tmp_path / "commands.jsonl"
-    started = threading.Event()
-    server = threading.Thread(
-        target=_serve, args=(sock, [line.encode(), line.encode()], started), daemon=True
-    )
-    server.start()
-    started.wait(timeout=5)
+@pytest.mark.parametrize(
+    ("edit", "expected"),
+    [
+        pytest.param(
+            ('agent = "family"\nprofile = "calendar-only"', 'profile = "calendar-only"'),
+            "agent",
+            id="conversation with no agent",
+        ),
+        pytest.param(
+            ('name = "mom-family"', 'name = "mom-family"\nprofile = "family-shared"'),
+            "share",
+            id="one agent, two profiles",
+        ),
+        pytest.param(
+            ('agent = "owner-family"', 'agent = "owner"'),
+            "span conversations",
+            id="one agent, two conversations",
+        ),
+        pytest.param(
+            ('name = "mom-family"', 'name = "Mom Family"'),
+            "lowercase",
+            id="a name that is not a safe directory or unit",
+        ),
+        pytest.param(
+            ('tools = ["calendar.family.create_event"]', 'tools = ["calendar.family.delete_all"]'),
+            "not a tool",
+            id="a tool that does not exist",
+        ),
+        pytest.param(
+            ('send_to = ["self", "family"]', 'send_to = ["self", "the-plumber"]'),
+            "the-plumber",
+            id="a send list naming nobody",
+        ),
+        pytest.param(
+            (f'members = ["{OWNER_UUID}"]', f'members = ["{OWNER_UUID}", "{MOM_UUID}", "{DAD_UUID}"]'),
+            "one-to-one",
+            id="a direct conversation whose duplicated halves disagree",
+        ),
+        pytest.param(
+            ('name = "owner-family"', 'name = "owner"'),
+            "two senders named owner",
+            id="two pairs with one name",
+        ),
+    ],
+)
+def test_a_config_mistake_refuses_to_start(
+    tmp_path: Path, edit: tuple[str, str], expected: str
+) -> None:
+    """Each of these would otherwise read as a silently different grant, which is
+    the failure that stays invisible until the day somebody relies on it."""
+    before, after = edit
+    assert before in WORLD, "the edit must actually apply"
+    with pytest.raises(ValueError, match=expected):
+        written(tmp_path, WORLD.replace(before, after, 1))
 
-    run(Config(socket=sock, principals=PRINCIPALS, roster=ROSTER), commands, cycles=2)
-    server.join(timeout=5)
 
-    written = [json.loads(entry) for entry in commands.read_text(encoding="utf-8").splitlines()]
-    assert len(written) == 2, "the second connection's command must arrive too"
-    assert written[0]["principal"] == "owner"
+# --- Membership pinning ---------------------------------------------------------
 
 
-# --- Outbound: the agent asks by name, the gate decides (ADR 0009) -------------
+def _listed(members: Sequence[object], group: str = GROUP_ID) -> object:
+    return {"jsonrpc": "2.0", "id": "groups-1", "result": [{"id": group, "members": list(members)}]}
 
 
-def _config(**send_to: tuple[str, ...]) -> Config:
-    """A two-principal config, with each principal's send list given by keyword."""
-    principals = {
-        OWNER_UUID: Principal("owner", "owner", send_to.get("owner", ("self",))),
-        MOM_UUID: Principal("mom", "family", send_to.get("mom", ("self",))),
-    }
-    return Config(socket=Path("/nonexistent"), principals=principals, roster=dict(ROSTER))
+def test_membership_matching_the_pinned_set_refuses_nothing(world: Config) -> None:
+    """Both member encodings are accepted, because the real one is unverified: no
+    group existed to answer `listGroups` with when this was written."""
+    as_objects = [{"uuid": uuid, "number": None} for uuid in (OWNER_UUID, MOM_UUID, DAD_UUID)]
+    assert _drifted(_listed([OWNER_UUID, MOM_UUID, DAD_UUID]), world) == frozenset()
+    assert _drifted(_listed(as_objects), world) == frozenset()
 
 
-def _entry(outbox: Path, principal: str, name: str, payload: object) -> Path:
-    directory = outbox / principal
+@pytest.mark.parametrize(
+    ("response", "why"),
+    [
+        pytest.param(_listed([OWNER_UUID, MOM_UUID, DAD_UUID, STRANGER_UUID]), "someone joined", id="joined"),
+        pytest.param(_listed([OWNER_UUID, MOM_UUID]), "someone left", id="left"),
+        pytest.param(_listed([], group="b3RoZXI="), "the group is not listed", id="absent"),
+        pytest.param({"jsonrpc": "2.0", "id": "groups-1", "result": []}, "no groups", id="empty"),
+        pytest.param({"error": {"code": -1}}, "the daemon refused", id="an error"),
+        pytest.param(_listed(["not-a-member-shape"]), "unreadable", id="a shape we do not know"),
+    ],
+)
+def test_anything_other_than_the_pinned_set_refuses(
+    world: Config, response: object, why: str
+) -> None:
+    """Fail closed in every direction, including "we could not tell". A response the
+    gate does not understand must not read as "membership is fine"."""
+    assert _drifted(response, world) == frozenset({GROUP_ID}), why
+
+
+def test_a_one_to_one_has_nothing_to_drift(world: Config) -> None:
+    """Its member set is pinned structurally — `members == [id]`, checked at load —
+    so the check degenerates rather than needing a special case."""
+    assert world.by_label["owner-1to1"].id not in _drifted(_listed([OWNER_UUID, MOM_UUID, DAD_UUID]), world)
+
+
+# --- Outbound: the agent asks by name, the gate decides (ADR 0009) --------------
+
+
+def _entry(outbox: Path, agent: str, name: str, payload: object) -> Path:
+    directory = outbox / agent
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / name
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
 
 
-def test_an_entry_is_resolved_through_the_roster(tmp_path: Path) -> None:
-    """The whole indirection in one assertion: the agent wrote a *name*, and what
-    goes on the wire is an identifier it has never seen."""
-    config = _config(owner=("self", "mom"))
-    _entry(tmp_path, "owner", "001.json", {"to": "mom", "text": "on my way"})
+def test_an_entry_is_resolved_through_the_conversation_table(
+    world: Config, tmp_path: Path
+) -> None:
+    """The whole indirection in one assertion: the agent wrote a *label*, and what
+    goes on the wire is an identifier it has never seen — here a group id, so the
+    reply lands in the room rather than in somebody's private chat."""
+    _entry(tmp_path, "owner", "001.json", {"to": "family", "text": "on my way"})
 
     refused: dict[str, int] = {}
-    ready = drain(tmp_path, config, refused)
+    ready = drain(tmp_path, world, refused)
 
     assert ready == [
         Outbound(
             entry="001",
-            principal="owner",
-            profile="owner",
-            recipient=MOM_UUID,
+            agent="owner",
+            profile="owner-full",
+            recipient=Recipient(id=GROUP_ID, group=True),
             text="on my way",
         )
     ]
     assert refused == {}
 
 
-def test_self_is_the_default_and_needs_no_configuration(tmp_path: Path) -> None:
-    """An agent granted nothing can still answer its own principal — and only it."""
-    config = _config()
-    assert config.principals[OWNER_UUID].send_to == ("self",)
-    _entry(tmp_path, "owner", "001.json", {"to": "self", "text": "done"})
+def test_self_is_the_default_and_needs_no_configuration(world: Config, tmp_path: Path) -> None:
+    """An agent granted nothing can still answer the conversation it serves — and
+    reach nowhere else."""
+    assert world.profiles["calendar-only"].send_to == ("self",)
+    _entry(tmp_path, "family", "001.json", {"to": "self", "text": "done"})
 
-    ready = drain(tmp_path, config, {})
-    assert [(item.principal, item.recipient) for item in ready] == [("owner", OWNER_UUID)]
+    ready = drain(tmp_path, world, {})
+    assert [(item.agent, item.recipient) for item in ready] == [
+        ("family", Recipient(id=GROUP_ID, group=True))
+    ]
 
 
-@pytest.mark.parametrize("name", ["mom", "owner", "nobody", "", "self "])
-def test_a_name_outside_the_send_list_is_refused(tmp_path: Path, name: str) -> None:
+@pytest.mark.parametrize("label", ["owner-1to1", "nobody", "", "self "])
+def test_a_label_outside_the_send_list_is_refused(
+    world: Config, tmp_path: Path, label: str
+) -> None:
     """Unlisted and unknown are the *same* refusal: the agent must not be able to
     learn who exists by watching which way it is told no."""
-    config = _config()
-    path = _entry(tmp_path, "owner", "001.json", {"to": name, "text": "hello"})
+    path = _entry(tmp_path, "family", "001.json", {"to": label, "text": "hello"})
 
     refused: dict[str, int] = {}
-    assert drain(tmp_path, config, refused) == []
+    assert drain(tmp_path, world, refused) == []
     assert refused == {"not in list": 1}
     assert not path.exists(), "a refused entry is consumed, not retried forever"
 
 
-def test_resolution_is_pure_and_never_invents_a_recipient() -> None:
-    listed = Principal("owner", "owner", ("self", "mom"))
-    assert resolve("self", listed, ROSTER) == OWNER_UUID
-    assert resolve("mom", listed, ROSTER) == MOM_UUID
-    assert resolve("mom", OWNER, ROSTER) is None
-    # A send list may name only principals, so this cannot happen through
+def test_resolution_is_pure_and_never_invents_a_recipient(world: Config) -> None:
+    owner = world.agents["owner"]
+    family = world.agents["family"]
+    assert resolve("self", owner, world) == Recipient(id=OWNER_UUID, group=False)
+    assert resolve("family", owner, world) == Recipient(id=GROUP_ID, group=True)
+    assert resolve("owner-1to1", family, world) is None
+    # A send list may name only conversations, so this cannot happen through
     # `load_config` — but resolution must not depend on that check having run.
-    assert resolve("ghost", Principal("owner", "owner", ("ghost",)), ROSTER) is None
+    ghosted = dataclasses.replace(world.profiles["owner-full"], send_to=("ghost",))
+    assert resolve("ghost", owner, dataclasses.replace(world, profiles={"owner-full": ghosted})) is None
 
 
 @pytest.mark.parametrize(
@@ -245,72 +418,66 @@ def test_resolution_is_pure_and_never_invents_a_recipient() -> None:
     ],
 )
 def test_a_malformed_entry_is_refused_rather_than_raising(
-    tmp_path: Path, payload: object, reason: str
+    world: Config, tmp_path: Path, payload: object, reason: str
 ) -> None:
-    config = _config()
     _entry(tmp_path, "owner", "001.json", payload)
     refused: dict[str, int] = {}
-    assert drain(tmp_path, config, refused) == []
+    assert drain(tmp_path, world, refused) == []
     assert refused == {reason: 1}
 
 
-def test_unparseable_bytes_are_refused(tmp_path: Path) -> None:
-    config = _config()
+def test_unparseable_bytes_are_refused(world: Config, tmp_path: Path) -> None:
     (tmp_path / "owner").mkdir(parents=True)
     (tmp_path / "owner" / "001.json").write_bytes(b"\xff\xfe not json")
     refused: dict[str, int] = {}
-    assert drain(tmp_path, config, refused) == []
+    assert drain(tmp_path, world, refused) == []
     assert refused == {"malformed": 1}
 
 
-def test_an_oversize_entry_is_refused_without_being_read(tmp_path: Path) -> None:
-    config = _config()
+def test_an_oversize_entry_is_refused_without_being_read(world: Config, tmp_path: Path) -> None:
     (tmp_path / "owner").mkdir(parents=True)
     (tmp_path / "owner" / "001.json").write_text(
         json.dumps({"to": "self", "text": "x" * (64 * 1024)}), encoding="utf-8"
     )
     refused: dict[str, int] = {}
-    assert drain(tmp_path, config, refused) == []
+    assert drain(tmp_path, world, refused) == []
     assert refused == {"too long": 1}
 
 
-def test_a_symlink_is_never_followed(tmp_path: Path) -> None:
+def test_a_symlink_is_never_followed(world: Config, tmp_path: Path) -> None:
     """`/var/lib/wpa-signal` is the Signal account, and the agent writing this
     directory is the least trusted thing on the box. O_NOFOLLOW, or a symlink is
     a read primitive pointed at whatever the gate can open."""
-    config = _config()
     secret = tmp_path / "account-state"
     secret.write_text(json.dumps({"to": "self", "text": "exfiltrated"}), encoding="utf-8")
     (tmp_path / "owner").mkdir(parents=True)
     (tmp_path / "owner" / "001.json").symlink_to(secret)
 
     refused: dict[str, int] = {}
-    assert drain(tmp_path, config, refused) == []
+    assert drain(tmp_path, world, refused) == []
     assert refused == {"malformed": 1}
     assert secret.exists(), "the link is consumed; its target is not touched"
 
 
-def test_a_fifo_cannot_stall_the_gate(tmp_path: Path) -> None:
+def test_a_fifo_cannot_stall_the_gate(world: Config, tmp_path: Path) -> None:
     """Opening a fifo read-only blocks until a writer appears. One `mkfifo` in the
     outbox would otherwise stop the whole control channel, inbound included."""
-    config = _config()
     (tmp_path / "owner").mkdir(parents=True)
     os.mkfifo(tmp_path / "owner" / "001.json")
 
     refused: dict[str, int] = {}
-    assert drain(tmp_path, config, refused) == []
+    assert drain(tmp_path, world, refused) == []
     assert refused == {"malformed": 1}
 
 
-def test_a_flood_keeps_the_oldest_and_refuses_the_newest(tmp_path: Path) -> None:
+def test_a_flood_keeps_the_oldest_and_refuses_the_newest(world: Config, tmp_path: Path) -> None:
     """Past the cap the likely explanation is a loop or an injection, not traffic —
     and the entries written before it went wrong are the ones worth keeping."""
-    config = _config()
     for index in range(40):
         _entry(tmp_path, "owner", f"{index:03d}.json", {"to": "self", "text": f"{index}"})
 
     refused: dict[str, int] = {}
-    ready = drain(tmp_path, config, refused)
+    ready = drain(tmp_path, world, refused)
 
     assert refused == {"too many": 8}, "40 written, 32 kept"
     assert [item.text for item in ready] == ["0", "1", "2", "3"], "oldest first, four per cycle"
@@ -318,69 +485,86 @@ def test_a_flood_keeps_the_oldest_and_refuses_the_newest(tmp_path: Path) -> None
     assert remaining == [f"{index:03d}.json" for index in range(4, 32)]
 
 
-def test_half_written_entries_are_not_read(tmp_path: Path) -> None:
+def test_half_written_entries_are_not_read(world: Config, tmp_path: Path) -> None:
     """The agent writes a dotfile and renames it, which is atomic. pathlib's glob
     matches dotfiles even though the shell's does not, so this is explicit."""
-    config = _config()
     directory = tmp_path / "owner"
     directory.mkdir(parents=True)
     (directory / ".tmp-1234.json").write_text('{"to": "self", "te', encoding="utf-8")
     (directory / "notes.txt").write_text("not an entry", encoding="utf-8")
 
     refused: dict[str, int] = {}
-    assert drain(tmp_path, config, refused) == []
+    assert drain(tmp_path, world, refused) == []
     assert refused == {}
     assert (directory / ".tmp-1234.json").exists()
     assert (directory / "notes.txt").exists()
 
 
-def test_an_outbox_that_does_not_exist_yet_is_not_an_error(tmp_path: Path) -> None:
-    assert drain(tmp_path / "absent", _config(), {}) == []
+def test_an_outbox_that_does_not_exist_yet_is_not_an_error(world: Config, tmp_path: Path) -> None:
+    assert drain(tmp_path / "absent", world, {}) == []
 
 
 def test_a_refusal_names_no_identifier_and_not_the_requested_name(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    world: Config, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Threat model R4. The name came out of a file the agent wrote: free text,
+    """Threat model R4. The label came out of a file the agent wrote: free text,
     chosen by the least trusted process here, on its way to journald."""
-    config = _config()
-    _entry(tmp_path, "owner", "001.json", {"to": MOM_UUID, "text": "leak me"})
-    drain(tmp_path, config, {})
+    _entry(tmp_path, "family", "001.json", {"to": MOM_UUID, "text": "leak me"})
+    drain(tmp_path, world, {})
 
     logged = capsys.readouterr().err
     assert "refused send: not in list (1 total)" in logged
-    for secret in (MOM_UUID, OWNER_UUID, "leak me", "+15555550100"):
+    for secret in (MOM_UUID, OWNER_UUID, GROUP_ID, "leak me", "+15555550100"):
         assert secret not in logged
 
 
-def test_a_send_list_naming_a_non_principal_refuses_to_start(tmp_path: Path) -> None:
-    """A send list may hold only principals (ADR 0009). A typo that quietly means
-    "grants nothing" is worse than one that stops the gate."""
-    config = tmp_path / "config.toml"
-    config.write_text(
-        '[signal]\nsocket = "/tmp/sock"\n\n'
-        "[[signal.principals]]\n"
-        f'uuid = "{OWNER_UUID}"\nname = "owner"\nprofile = "owner"\n'
-        'send_to = ["self", "the-plumber"]\n',
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="the-plumber"):
-        load_config(config)
+def test_an_entry_is_unlinked_before_it_is_sent(world: Config, tmp_path: Path) -> None:
+    """At-most-once on purpose. A crash between the two loses a reply; the other
+    order sends a person the same message twice, and only the gap is visible to
+    whoever asked."""
+    path = _entry(tmp_path, "owner", "001.json", {"to": "self", "text": "hi"})
+    ready = drain(tmp_path, world, {})
+    assert ready and not path.exists()
 
 
-def test_two_principals_may_not_share_a_name(tmp_path: Path) -> None:
-    """Once a name addresses a person, a duplicate has no answer to `to: "mom"`."""
-    config = tmp_path / "config.toml"
-    config.write_text(
-        '[signal]\nsocket = "/tmp/sock"\n\n'
-        "[[signal.principals]]\n"
-        f'uuid = "{OWNER_UUID}"\nname = "mom"\nprofile = "owner"\n\n'
-        "[[signal.principals]]\n"
-        f'uuid = "{MOM_UUID}"\nname = "mom"\nprofile = "family"\n',
-        encoding="utf-8",
+# --- The wire ------------------------------------------------------------------
+
+
+def _serve(path: Path, batches: list[bytes], started: threading.Event) -> None:
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(path))
+    server.listen(len(batches))
+    started.set()
+    for batch in batches:
+        conn, _ = server.accept()
+        conn.sendall(batch)
+        conn.shutdown(socket.SHUT_WR)
+        conn.close()
+    server.close()
+
+
+def test_it_reconnects_when_the_daemon_goes_away(world: Config, tmp_path: Path) -> None:
+    """signal-cli has Restart=on-failure, so the socket disappears under a live
+    gate. A gate that exits on the first EOF is a control channel that works until
+    the first restart and then silently isn't there."""
+    line = (FIXTURES / "message.json").read_text(encoding="utf-8").replace("\n", "") + "\n"
+    sock = tmp_path / "socket"
+    commands = tmp_path / "commands.jsonl"
+    started = threading.Event()
+    server = threading.Thread(
+        target=_serve, args=(sock, [line.encode(), line.encode()], started), daemon=True
     )
-    with pytest.raises(ValueError, match="two principals named mom"):
-        load_config(config)
+    server.start()
+    started.wait(timeout=5)
+
+    run(dataclasses.replace(world, socket=sock), commands, outbox=tmp_path / "out", cycles=2)
+    server.join(timeout=5)
+
+    written_lines = [
+        json.loads(entry) for entry in commands.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(written_lines) == 2, "the second connection's command must arrive too"
+    assert written_lines[0]["principal"] == "owner"
 
 
 # Both captured off the daemon on hardware, 2026-08-11, and redacted. A failure
@@ -442,16 +626,21 @@ def _serve_answering(
         request: object = json.loads(line)
         seen.append(request)
         request_id = request["id"] if isinstance(request, dict) else None
-        response = dict(SEND_OK) if isinstance(SEND_OK, dict) else {}
-        response["id"] = request_id
-        stream.write(json.dumps(response).encode() + b"\n")
+        method = request.get("method") if isinstance(request, dict) else None
+        if method == "listGroups":
+            body: object = {"jsonrpc": "2.0", "id": request_id, "result": []}
+        else:
+            response = dict(SEND_OK) if isinstance(SEND_OK, dict) else {}
+            response["id"] = request_id
+            body = response
+        stream.write(json.dumps(body).encode() + b"\n")
         stream.flush()
     conn.shutdown(socket.SHUT_WR)
     conn.close()
     server.close()
 
 
-def test_the_sent_timestamp_is_recorded_for_the_registry(tmp_path: Path) -> None:
+def test_the_sent_timestamp_is_recorded_for_the_registry(world: Config, tmp_path: Path) -> None:
     """End to end: an entry the agent wrote goes out under the resolved identifier,
     and the timestamp the daemon answers with is written down. Without that, a YES
     quoting this message cannot be matched to the prompt it answers (NVB-16)."""
@@ -459,19 +648,16 @@ def test_the_sent_timestamp_is_recorded_for_the_registry(tmp_path: Path) -> None
     commands = tmp_path / "commands.jsonl"
     outbox = tmp_path / "outbox"
     sent = tmp_path / "sent.jsonl"
-    _entry(outbox, "owner", "20260811-0001.json", {"to": "mom", "text": "on my way"})
+    _entry(outbox, "owner", "20260811-0001.json", {"to": "family", "text": "on my way"})
 
     started = threading.Event()
     seen: list[object] = []
-    server = threading.Thread(
-        target=_serve_answering, args=(sock, started, seen, 1), daemon=True
-    )
+    server = threading.Thread(target=_serve_answering, args=(sock, started, seen, 2), daemon=True)
     server.start()
     started.wait(timeout=5)
 
-    config = _config(owner=("self", "mom"))
     run(
-        Config(socket=sock, principals=config.principals, roster=config.roster),
+        dataclasses.replace(world, socket=sock),
         commands,
         outbox=outbox,
         sent=sent,
@@ -479,23 +665,58 @@ def test_the_sent_timestamp_is_recorded_for_the_registry(tmp_path: Path) -> None
     )
     server.join(timeout=5)
 
-    assert seen == [
+    sends = [
+        request
+        for request in seen
+        if isinstance(request, dict) and request.get("method") == "send"
+    ]
+    assert sends == [
         {
             "jsonrpc": "2.0",
             "id": "send-20260811-0001",
             "method": "send",
-            "params": {"recipient": [MOM_UUID], "message": "on my way"},
+            # A group goes out as `groupId`, never as a recipient — derived from the
+            # identifier itself, so config cannot get it wrong.
+            "params": {"groupId": GROUP_ID, "message": "on my way"},
         }
     ]
     recorded = [json.loads(line) for line in sent.read_text(encoding="utf-8").splitlines()]
     assert recorded == [
         {
             "timestamp": 1786473936544,
-            "principal": "owner",
-            "profile": "owner",
+            "agent": "owner",
+            "profile": "owner-full",
             "entry": "20260811-0001",
         }
     ]
+
+
+def test_the_gate_asks_who_is_in_the_groups_before_trusting_any_of_them(
+    world: Config, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Fail closed on connect. The daemon here answers `[]` — the group is not
+    listed, so it drifts, and the gate says so instead of carrying on."""
+    sock = tmp_path / "socket"
+    started = threading.Event()
+    seen: list[object] = []
+    server = threading.Thread(target=_serve_answering, args=(sock, started, seen, 1), daemon=True)
+    server.start()
+    started.wait(timeout=5)
+
+    run(
+        dataclasses.replace(world, socket=sock),
+        tmp_path / "commands.jsonl",
+        outbox=tmp_path / "outbox",
+        cycles=1,
+    )
+    server.join(timeout=5)
+
+    assert [request.get("method") for request in seen if isinstance(request, dict)] == [
+        "listGroups"
+    ]
+    logged = capsys.readouterr().err
+    assert "membership drift: family" in logged
+    assert GROUP_ID not in logged, "a group id is an identifier; threat model R4"
 
 
 def test_a_failed_send_is_not_recorded_as_delivered(
@@ -506,7 +727,9 @@ def test_a_failed_send_is_not_recorded_as_delivered(
     quoting nothing, matched to a pending action anyway."""
     sent = tmp_path / "sent.jsonl"
     awaiting = {
-        "send-20260811-0001": Outbound("20260811-0001", "owner", "owner", MOM_UUID, "hi")
+        "send-20260811-0001": Outbound(
+            "20260811-0001", "owner", "owner-full", Recipient(MOM_UUID, group=False), "hi"
+        )
     }
     refused: dict[str, int] = {}
 
@@ -526,11 +749,17 @@ def test_a_response_to_nothing_is_ignored(tmp_path: Path) -> None:
     assert not sent.exists()
 
 
-def test_an_entry_is_unlinked_before_it_is_sent(tmp_path: Path) -> None:
-    """At-most-once on purpose. A crash between the two loses a reply; the other
-    order sends a person the same message twice, and only the gap is visible to
-    whoever asked."""
-    config = _config()
-    path = _entry(tmp_path, "owner", "001.json", {"to": "self", "text": "hi"})
-    ready = drain(tmp_path, config, {})
-    assert ready and not path.exists()
+def test_check_prints_what_each_pair_may_actually_do(world: Config) -> None:
+    """The artefact for "what can this thing do", asked before a restart or asked by
+    a family member. Generated from what the gate runs on, so it cannot drift."""
+    printed = check(world)
+    assert "family (group, 3 pinned members)" in printed
+    assert "mom-family" in printed
+    assert "wpa-agent@family.service" in printed
+    assert "add an event to the family calendar" in printed
+    assert "email.personal.draft" in printed
+    # The narrower grant is visibly narrower, which is the point of printing it: the
+    # family room's block mentions no personal calendar and no mailbox.
+    family_block = printed[printed.index("family (group") :]
+    assert "calendar.personal.rw" not in family_block
+    assert "email.personal.draft" not in family_block

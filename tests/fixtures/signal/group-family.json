@@ -1,0 +1,28 @@
+{
+  "jsonrpc": "2.0",
+  "method": "receive",
+  "params": {
+    "envelope": {
+      "source": "22222222-2222-4222-8222-222222222222",
+      "sourceNumber": null,
+      "sourceUuid": "22222222-2222-4222-8222-222222222222",
+      "sourceName": "mom",
+      "sourceDevice": 1,
+      "timestamp": 1786449988001,
+      "serverReceivedTimestamp": 1786449987063,
+      "serverDeliveredTimestamp": 1786449987075,
+      "dataMessage": {
+        "timestamp": 1786449988001,
+        "message": "what's for dinner",
+        "expiresInSeconds": 0,
+        "isExpirationUpdate": false,
+        "viewOnce": false,
+        "groupInfo": {
+          "groupId": "Z3JvdXAtaWQtcmVkYWN0ZWQ=",
+          "type": "DELIVER"
+        }
+      }
+    },
+    "account": "+15555550199"
+  }
+}
