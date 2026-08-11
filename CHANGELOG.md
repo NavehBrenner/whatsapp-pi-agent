@@ -29,6 +29,18 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ### Added
 
+- **The Signal control channel is live** (`deploy/systemd/signal-cli.service`,
+  `deploy/install-signal.sh`) — signal-cli 0.14.7 as a JSON-RPC daemon on a unix
+  socket, running as its own `wpa-signal` user, heap capped at 256MB. The
+  assistant has its own Signal account on a dedicated eSIM line per
+  [ADR 0004](docs/decisions/0004-signal-control-channel.md), verified in both
+  directions. Q3 is answered: ₪19.80/month, bought 2026-08-10.
+
+  The number lives in `/etc/wpa-signal.env`, not in the unit — a phone number is
+  not a secret, but publishing a working one in a public repo invites traffic at
+  exactly the endpoint that triggers privileged actions. The account state
+  directory *is* the account, so it runs under its own user rather than out of a
+  human's home directory.
 - **A staleness check, because "services are running" is not "messages are
   arriving"** (`src/reader/staleness.py`, `wpa-staleness.{service,timer}`). It
   polls `max(_id)` from the snapshot hourly and fails — non-zero exit, a `<3>`
@@ -126,6 +138,56 @@ several of them are the kind of thing that costs an evening to rediscover.
   speed: `.python-version` pins 3.11 and uv installs it, so local runs match the
   Pi. They didn't before — the dev venv was 3.12 while CI and the Pi were 3.11,
   which is exactly the gap the CI comment warned about.
+
+### Verified on hardware — 2026-08-11 (signal-cli on arm64)
+
+- **signal-cli logs every received message body to journald by default.** In
+  daemon mode it prints envelopes, bodies included, to stdout — and under systemd
+  stdout is the journal, so the first test message landed in the system log in
+  plaintext. Fixed with `--no-receive-stdout` (messages still reach JSON-RPC
+  clients, they just stop being printed) plus `--scrub-log`, which redacts
+  identifiers; the account number now appears as `+**********02`.
+
+  Worth stating plainly, because the reader already solved this from the other
+  end: its output goes to a file precisely to keep content out of journald, and a
+  chatty control channel undoes that. In M4 this channel carries the confirmation
+  prompts, which by design describe the action about to be taken with real
+  credentials.
+- **Two arm64 blockers, both of which fail late.** signal-cli 0.14.7 requires
+  **JRE 25**; Bookworm ships openjdk-17 and has no backports configured, so the
+  JRE comes from Adoptium. And `libsignal-client-0.99.1.jar` bundles a macOS
+  arm64 `.dylib` and a Linux x86_64 `.so` but **no `libsignal_jni_aarch64.so`** —
+  the GraalVM native build is x86_64 only. `--version` and `listAccounts` work
+  without it, so the failure surfaces at `register`, after a captcha has been
+  spent. Solved with the matching prebuilt from `exquo/signal-libs-build` added
+  to the jar. **The libsignal version must match the jar exactly, so every
+  signal-cli upgrade means redoing it.**
+- The runbook's draft unit could not have started: `User=%i` in a non-template
+  unit, and `ExecStart` referencing `${ASSISTANT_NUMBER}` with nothing defining
+  it. Replaced with a real one in the repo.
+- The launcher honours `JAVA_OPTS` and `SIGNAL_CLI_OPTS`, not
+  `JAVA_TOOL_OPTIONS` — the heap cap was set on the wrong variable in the draft.
+- **Survives a reboot, tested the way that means something**: not "the unit is
+  active", but a message sent from the phone *after* the reboot arriving
+  unattended, and a reply going back out. Zero `Body:` lines in the journal for
+  that boot, so the logging fix holds across a restart. Waydroid came back
+  `RUNNING` again, and 6.2GB was available with the JVM and an unfrozen
+  container together.
+- **`active` is not `ready`.** `Type=simple` marks the unit started when the JVM
+  launches; the socket appeared ~19s later on a cold boot, and a first check at
+  45s uptime found `/run/wpa-signal/` empty. Anything connecting at boot has to
+  retry rather than assume.
+- **The receive stream carries typing indicators and read receipts, not just
+  messages** — a "someone is typing" arrives as a `receive` notification with no
+  `dataMessage` at all. This is a requirement on the M4 agent, not a bug here: an
+  agent that triggers on any `receive` envelope is invocable by a typing
+  indicator, which anyone who knows the number can produce at will, and checking
+  the sender does not help when the envelope carries no command. The daemon
+  cannot filter them (`--ignore-*` covers attachments, stories, avatars and
+  stickers only), so the consumer must require a non-empty
+  `envelope.dataMessage.message`. **No fix is implemented — there is no consumer
+  yet**; it is written into runbook 03's trust-boundary rules where the agent
+  will be built.
 
 ### Verified on hardware — 2026-08-10 (reader on a timer)
 

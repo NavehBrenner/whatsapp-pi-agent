@@ -23,12 +23,20 @@ retrying. See [Q3](../OPEN-QUESTIONS.md).
 
 ## 1. Install
 
-Needs a JRE (21+ for current signal-cli). Pin the version:
+**signal-cli 0.14.7 needs JRE 25.** Raspberry Pi OS Bookworm ships openjdk-17 and has no
+backports configured, so the JRE comes from Adoptium:
 
 ```bash
-sudo apt install -y openjdk-21-jre-headless
+sudo install -d -m 0755 /etc/apt/keyrings
+wget -qO- https://packages.adoptium.net/artifactory/api/gpg/key/public |
+  sudo gpg --dearmor -o /etc/apt/keyrings/adoptium.gpg
+echo "deb [signed-by=/etc/apt/keyrings/adoptium.gpg] https://packages.adoptium.net/artifactory/deb bookworm main" |
+  sudo tee /etc/apt/sources.list.d/adoptium.list
+sudo apt update && sudo apt install -y temurin-25-jre
+```
 
-SIGNAL_CLI_VERSION=0.13.x        # pin it; record what you used
+```bash
+SIGNAL_CLI_VERSION=0.14.7        # pin it; record what you used
 cd /tmp
 wget "https://github.com/AsamK/signal-cli/releases/download/v${SIGNAL_CLI_VERSION}/signal-cli-${SIGNAL_CLI_VERSION}.tar.gz"
 sudo tar xf "signal-cli-${SIGNAL_CLI_VERSION}.tar.gz" -C /opt
@@ -36,8 +44,39 @@ sudo ln -sf "/opt/signal-cli-${SIGNAL_CLI_VERSION}/bin/signal-cli" /usr/local/bi
 signal-cli --version
 ```
 
-On arm64 you may need the native `libsignal-client` for your architecture; if signal-cli
-errors about a missing native library at startup, that's the cause.
+### 1a. The aarch64 native library — required, and it fails late
+
+signal-cli bundles native libsignal builds for macOS arm64 and Linux **x86_64 only**. There
+is no `libsignal_jni_aarch64.so` in the jar, and the GraalVM native build is x86_64 too.
+
+The trap: `signal-cli --version` and `listAccounts` work fine without it. You find out at
+`register`, after you've spent a captcha.
+
+```bash
+# 1. Find the EXACT libsignal version this signal-cli expects.
+ls /opt/signal-cli-${SIGNAL_CLI_VERSION}/lib | grep libsignal-client   # e.g. 0.99.1
+
+# 2. Fetch the matching prebuilt from exquo/signal-libs-build (needs glibc 2.30+;
+#    Bookworm has 2.36).
+LIBSIGNAL=0.99.1
+cd /tmp
+wget "https://github.com/exquo/signal-libs-build/releases/download/libsignal_v${LIBSIGNAL}/libsignal_jni.so-v${LIBSIGNAL}-aarch64-unknown-linux-gnu.tar.gz"
+tar xf libsignal_jni.so-v${LIBSIGNAL}-aarch64-unknown-linux-gnu.tar.gz
+
+# 3. Sanity-check it before trusting it.
+file libsignal_jni.so     # want: ELF 64-bit LSB shared object, ARM aarch64
+ldd  libsignal_jni.so     # every dependency must resolve
+
+# 4. Add it to the jar under the name libsignal looks for, keeping the original.
+JAR=/opt/signal-cli-${SIGNAL_CLI_VERSION}/lib/libsignal-client-${LIBSIGNAL}.jar
+cp libsignal_jni.so libsignal_jni_aarch64.so
+sudo cp "$JAR" "$JAR.orig"
+sudo zip -j -q "$JAR" libsignal_jni_aarch64.so
+unzip -l "$JAR" | grep -i '\.so'
+```
+
+**The version must match the jar exactly.** Every signal-cli upgrade means redoing this with
+the new libsignal version, or the daemon stops working.
 
 ## 2. Register
 
@@ -100,53 +139,81 @@ Store that backup somewhere encrypted and **off the Pi**. It is in `.gitignore`
 
 ## 4. Run as a daemon
 
-JSON-RPC over a unix socket, so nothing listens on the network:
+JSON-RPC over a unix socket, so nothing listens on the network. The unit lives in the repo
+at [`deploy/systemd/signal-cli.service`](../../deploy/systemd/signal-cli.service); install it
+with:
 
 ```bash
-signal-cli -a "$ASSISTANT_NUMBER" daemon --socket
+sudo deploy/install-signal.sh +972XXXXXXXXX
 ```
 
-As a systemd unit — this one is worth setting up now since it's independent of the agent
-code:
+That creates the `wpa-signal` system user, migrates the account state out of whichever home
+directory `register` left it in, writes the number to `/etc/wpa-signal.env`, and enables the
+unit.
 
-```ini
-# /etc/systemd/system/signal-cli.service
-[Unit]
-Description=signal-cli JSON-RPC daemon
-After=network-online.target
-Wants=network-online.target
+Three things in that unit are load-bearing:
 
-[Service]
-Type=simple
-User=%i
-Environment=JAVA_TOOL_OPTIONS=-Xmx256m
-ExecStart=/usr/local/bin/signal-cli -a ${ASSISTANT_NUMBER} daemon --socket
-Restart=on-failure
-RestartSec=10
-NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=%h/.local/share/signal-cli
+**`--no-receive-stdout`, and it is not optional.** In daemon mode signal-cli prints every
+received message — body included — to stdout, and under systemd stdout is journald. Verified
+on hardware 2026-08-11: the first test message landed in the system log in plaintext.
+Messages still reach JSON-RPC clients; they just stop being logged. `--scrub-log` redacts
+identifiers from everything else, so the account number appears as `+**********02`.
 
-[Install]
-WantedBy=multi-user.target
-```
+This matters more than a tidy log. The reader deliberately writes to a file rather than
+stdout to keep message content out of journald ([threat model R4](../threat-model.md)); a
+chatty control channel undoes that from the other end. And in M4 this channel carries the
+confirmation prompts, which by design describe the action about to be taken with real
+credentials.
 
-Cap the JVM heap (`-Xmx256m`). It'll happily take more than it needs, and Waydroid wants the
-8GB.
+**The number is in `/etc/wpa-signal.env`, not in the unit.** Root-owned, `0640`, readable by
+`wpa-signal`. A phone number is not a secret, but this repo is public and publishing a
+working number invites traffic at exactly the endpoint that triggers privileged actions.
+
+**Its own user.** The account state directory *is* the account — anyone who can read it can
+be the assistant. It has no business sitting in a human's home directory.
+
+Cap the JVM heap (`-Xmx256m` via `JAVA_OPTS` — the launcher honours `JAVA_OPTS` and
+`SIGNAL_CLI_OPTS`, not `JAVA_TOOL_OPTIONS`). It'll happily take more than it needs, and
+Waydroid wants the 8GB.
 
 ## 5. Trust boundary
 
 The Signal channel is the **trusted** side of the system
-([threat-model.md](../threat-model.md)). Two rules for whatever consumes it:
+([threat-model.md](../threat-model.md)). Three rules for whatever consumes it:
 
 - **Verify the sender.** Only messages from my personal number trigger the privileged agent.
   Check the sender against a configured allowlist before anything runs, every time.
+- **A trigger is a `dataMessage` with a real body — not any envelope.** The receive stream
+  also carries `typingMessage` and `receiptMessage` envelopes, observed on hardware
+  2026-08-11: a plain "someone is typing" arrives as a `receive` notification with no
+  `dataMessage` at all. An agent that fires on every `receive` is invocable by a typing
+  indicator, which anyone who knows the number can produce at will, and no amount of sender
+  checking helps if the check runs on an envelope that carries no command. The daemon cannot
+  filter these — it has `--ignore-attachments`, `--ignore-stories`, `--ignore-avatars` and
+  `--ignore-stickers`, and nothing for typing or receipts. So the consumer must require
+  `envelope.dataMessage.message` to be non-empty before it looks at anything else.
 - **Confirmation replies are commands too.** A `YES` that authorises an action must be
   matched to the specific pending action it's answering, not treated as a global "proceed."
 
-Both belong in the agent code, not here — noted so they don't get lost between documents.
+All three belong in the agent code, not here — noted so they don't get lost between
+documents. See also the one-conversation restriction in
+[ADR 0004](../decisions/0004-signal-control-channel.md).
+
+## Operational notes
+
+**`active` is not `ready`.** `Type=simple` marks the unit started as soon as the JVM
+launches, but the socket only appears once signal-cli has initialised — measured at ~19s
+after unit start on the Pi, cold. A client connecting at boot must retry rather than assume
+the socket is there. Yet another case where "the service is running" answers the wrong
+question.
+
+**The daemon holds the account lock.** Once `signal-cli.service` is up, a second `signal-cli`
+invocation against the same account will conflict. Talk to it over the socket:
+
+```bash
+printf '%s\n' '{"jsonrpc":"2.0","method":"send","params":{"recipient":["+4477..."],"message":"hi"},"id":1}' |
+  sudo -u wpa-signal nc -U /run/wpa-signal/socket
+```
 
 ---
 
@@ -157,6 +224,11 @@ Both belong in the agent code, not here — noted so they don't get lost between
 - [ ] Messages send and receive both ways
 - [ ] Account state backed up off the Pi, encrypted
 - [ ] Daemon runs under systemd on a unix socket, restarts on failure
-- [ ] signal-cli version recorded
+- [ ] signal-cli version recorded, **and the matching libsignal aarch64 build**
+- [ ] **No message content in journald**: `sudo journalctl -u signal-cli | grep -i '^.*Body:'`
+      returns nothing
+- [ ] **Survives a reboot** — not just "the unit is active", but a message sent from the
+      phone after the reboot actually arrives. A daemon that starts and never reconnects
+      looks identical to one that works until you need it.
 
 **Next:** [04-agent-deploy.md](04-agent-deploy.md)
