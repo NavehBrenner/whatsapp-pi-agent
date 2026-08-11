@@ -24,8 +24,11 @@ ExecStart=/usr/bin/python3 -m gate.signal /opt/wpa/config/config.toml /var/lib/w
 Restart=always
 RestartSec=5
 
-# Accepted commands land here, one JSON line each. Decisions and counts go to
-# journald; message bodies never do (threat model R4).
+# Accepted commands land here, one JSON line each, alongside outbox/<principal>/
+# — which the gate drains and sends — and sent.jsonl, the timestamps a later
+# confirmation is matched against. Decisions and counts go to journald; message
+# bodies never do (threat model R4). The outbox directories are 0700 and
+# gate-owned until NVB-14/15 gives each principal's agent a group of its own.
 StateDirectory=wpa-gate
 StateDirectoryMode=0700
 UMask=0077

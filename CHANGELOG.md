@@ -94,6 +94,98 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ### Added
 
+- **An outbound path where the agent asks by name and the gate decides**
+  (`src/gate/signal.py`). The gate could read; now it can speak, and it is still
+  the only process that touches Signal ([ADR 0009](docs/decisions/0009-agents-are-containers-that-ask-by-name.md)).
+  An agent writes `{"to": "mom", "text": "..."}` into its own outbox directory;
+  the gate resolves the **name** through its own roster — the same
+  `[[signal.principals]]` rows the inbound allowlist is built from — checks it
+  against that principal's `send_to`, and sends.
+
+  The indirection is the point. The agent handles no identifier, so it cannot
+  forge or exfiltrate one, and the addressable set is exactly the roster rather
+  than "whatever the agent asked for, validated". Handing the agent the socket
+  instead was never an option: a JSON-RPC client of signal-cli receives the
+  inbound stream as well, so it would see every envelope the gate refused.
+
+  - **`send_to` defaults to `["self"]`** — an agent granted nothing can still
+    answer its own principal and reach no one else. Names in a send list must be
+    principals; one that isn't refuses to start, as does a duplicate principal
+    name, which would leave `to: "mom"` with two answers.
+  - **A spool directory per principal**, `/var/lib/wpa-gate/outbox/<principal>/`,
+    not one shared file. It makes *who wrote this* a filesystem fact rather than
+    a field the agent controls. 0700 and gate-owned today; NVB-14/15 gives each
+    principal its own group at 0730 — write and execute so an agent can create
+    and rename, no read so it cannot enumerate. **One group per principal, never
+    one shared**, or agent A drops an entry in B's directory and sends under B's
+    send list.
+  - **Delivery is at-most-once: the entry is unlinked before the send.** A crash
+    between the two loses a reply; the other order sends a person the same
+    message twice, and only the gap is visible to whoever asked.
+  - **The receive loop no longer blocks.** `for line in conn.makefile("r")`
+    cannot also poll a directory, so it is now `select` on a 250ms timeout with a
+    newline buffer, draining by the clock so a busy stream cannot starve the
+    outbox. Single-threaded: two threads sharing one socket, in the process whose
+    job is to be trustworthy, is a bad trade for a quarter second.
+  - **The `send` response is captured, not discarded.** Its `timestamp` is the id
+    a quoted reply carries back as `quote.id`, so without recording it a later
+    `YES` cannot be matched to the prompt it answers. Acks are registered the same
+    way — the message a person quotes when they confirm is usually the ack.
+    Appended to `sent.jsonl`, capped, and replaced by NVB-16's expiring registry.
+
+    Both response shapes were **captured off the daemon before the parser was
+    written** (2026-08-11), and the failure one is not what it looks like:
+
+    ```
+    {"result": {"timestamp": 1786473936544, "results": [{"type": "SUCCESS", …}]}}
+    {"error": {"code": -1, "message": "Failed to send message",
+               "data": {"response": {"results": [{"type": "UNREGISTERED_FAILURE", …}],
+                                     "timestamp": 1786473960560}}}}
+    ```
+
+    A failure **also carries a timestamp**, nested under `error.data.response` —
+    record that one and a confirmation gets keyed to a prompt that never arrived.
+    So the test is the presence of a *top-level* `result`, not of a timestamp. And
+    the reason worth logging is the per-recipient `type`; `code` is `-1` for every
+    failure there is.
+  - **Refusals are counted and logged with no identifier and not the requested
+    name either** (`refused send: not in list (n total)`) — that name is free text
+    an agent chose, on its way to journald (threat model R4). Reasons:
+    `not in list`, `malformed`, `too long`, `too many`, `send failed: <code>`.
+  - **Hostile entries are refused rather than obeyed:** `O_NOFOLLOW`, so a symlink
+    into `/var/lib/wpa-signal` is not a read primitive; `O_NONBLOCK` plus a
+    regular-file check, because opening a fifo read-only blocks forever and one
+    `mkfifo` would otherwise stop the whole control channel, inbound included;
+    64KB per entry; 32 pending per directory, **refusing the newest and keeping
+    the oldest**, since past that the likely explanation is a loop or an injection
+    rather than a person's traffic.
+
+  Verified end to end on hardware 2026-08-11: an entry naming an unlisted
+  recipient produced `refused send: not in list (1 total)` and was consumed with
+  nothing on the wire; an entry naming `self` was delivered to the phone and its
+  timestamp written to `sent.jsonl`; an entry placed while the gate was **stopped**
+  went out when it started; and a quoted reply to that message arrived carrying
+  `reply_to = 1786474114086`, **the exact timestamp recorded for it** — the link
+  NVB-16 needs, demonstrated rather than assumed. Waydroid stayed RUNNING and the
+  reader's `max_id` kept climbing throughout.
+
+  One finding from that run, which matters to NVB-16 and to nothing else yet:
+  **an inbound envelope's timestamp and an outbound send's timestamp come from
+  different clocks.** The ack for the quoted reply was recorded at
+  `1786474460760` against a command whose envelope said `1786474461529` — the ack
+  is stamped by Signal, the envelope by the sender's phone, and here the "reply"
+  precedes the message it answers by 769ms. The ids are handles, not an ordering;
+  a registry that sorts or expires by comparing across the two will be wrong by
+  however far the phone's clock has drifted.
+
+  Not built: a per-profile token bucket. The bounds above stop a burst, not a
+  steady loop — write one entry, watch it go, repeat — but nothing can write to an
+  outbox until NVB-14/15 grants an agent the directory, so there is no writer to
+  loop yet. Marked in the code and deferred to that issue. Also out of scope:
+  groups and (conversation, sender) pairs (NVB-12 — `self` is the 1:1 today and
+  the line that must change is commented), any feedback channel back to the agent,
+  sending to non-principals, retries, and an outbox disk quota.
+
 - **A trigger gate decides which Signal messages are commands** (`src/gate/signal.py`,
   `deploy/systemd/wpa-gate.service`). Until now the channel carried traffic in
   both directions and nothing said which of it counted; this is the half of M3
