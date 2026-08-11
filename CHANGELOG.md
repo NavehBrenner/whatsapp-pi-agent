@@ -36,9 +36,16 @@ several of them are the kind of thing that costs an evening to rediscover.
      authorises instead of being read as a global "proceed". The registry itself
      is M4's; not losing the link is the gate's.
 
-  The message and typing fixtures are **real envelopes captured off the socket**
-  and redacted; the other five are derived from the captured message by editing
-  one field, since those actions were not driven on the phone.
+  Verified end to end on hardware 2026-08-11, from a phone: typing indicator →
+  `dropped: no body (1 total)`; the message itself → `accepted principal=owner
+  profile=owner len=10 reply_to=None`, one line in `commands.jsonl`, and the ack
+  arriving on the phone; the phone's delivery and read receipts for that ack →
+  three more `dropped: no body`. The journal carries the decisions and the
+  counters and no message text.
+
+  The message, typing and receipt fixtures are **real envelopes captured off the
+  socket** and redacted; the other four are derived from the captured message by
+  editing one field, since those actions were not driven on the phone.
   `tests/fixtures/signal/README.md` says which is which, and carries the capture
   procedure. It matters that the two load-bearing ones are real: both facts they
   encode — a typing indicator arriving as a bare `receive`, and `sourceNumber`

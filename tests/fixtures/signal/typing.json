@@ -8,12 +8,12 @@
       "sourceUuid": "11111111-1111-4111-8111-111111111111",
       "sourceName": "owner",
       "sourceDevice": 1,
-      "timestamp": 1786449658791,
-      "serverReceivedTimestamp": 1786449658308,
-      "serverDeliveredTimestamp": 1786449658318,
+      "timestamp": 1786449984393,
+      "serverReceivedTimestamp": 1786449983891,
+      "serverDeliveredTimestamp": 1786449983900,
       "typingMessage": {
         "action": "STARTED",
-        "timestamp": 1786449658791
+        "timestamp": 1786449984393
       }
     },
     "account": "+15555550199"

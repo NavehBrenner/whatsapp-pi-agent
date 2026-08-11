@@ -6,7 +6,8 @@ Captured from `/run/wpa-signal/socket` on the Pi (signal-cli 0.14.7), 2026-08-11
 |---|---|
 | `message.json` | **captured** — a real message from the owner's phone |
 | `typing.json` | **captured** — the reason rule 2 exists: a `receive` notification with no `dataMessage` at all |
-| `receipt.json`, `quote-reply.json`, `group.json`, `family.json`, `stranger.json` | derived from `message.json` by editing one field, since those actions were not driven on the phone |
+| `receipt.json` | **captured** — the phone acknowledging the gate's own ack (`sourceDevice: 2`, `isDelivery: true`) |
+| `quote-reply.json`, `group.json`, `family.json`, `stranger.json` | derived from `message.json` by editing one field, since those actions were not driven on the phone |
 
 The captured pair is what makes the two facts below load-bearing rather than
 assumed, and both were invisible in the documentation:

@@ -7,17 +7,17 @@
       "sourceNumber": null,
       "sourceUuid": "11111111-1111-4111-8111-111111111111",
       "sourceName": "owner",
-      "sourceDevice": 1,
-      "timestamp": 1786449660720,
-      "serverReceivedTimestamp": 1786449660367,
-      "serverDeliveredTimestamp": 1786449660376,
+      "sourceDevice": 2,
+      "timestamp": 1786449989749,
+      "serverReceivedTimestamp": 1786449990892,
+      "serverDeliveredTimestamp": 1786449990902,
       "receiptMessage": {
-        "when": 1786449660720,
-        "isDelivery": false,
-        "isRead": true,
+        "when": 1786449989749,
+        "isDelivery": true,
+        "isRead": false,
         "isViewed": false,
         "timestamps": [
-          1786449655720
+          1786449987219
         ]
       }
     },
