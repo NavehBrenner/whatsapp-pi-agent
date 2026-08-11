@@ -802,15 +802,27 @@ def _prepare(outbox: Path, config: Config) -> None:
 
 
 def _members_of(group: object) -> frozenset[str] | None:
-    """The member identifiers in one `listGroups` entry, whatever shape they took.
+    """The member identifiers in one `listGroups` entry: **one per member**.
 
-    **The shape is unverified against hardware** — the assistant was in no group when
-    this was written, so `listGroups` returned `[]` and there was nothing to capture.
-    Both plausible encodings are therefore accepted: a list of strings, and a list of
-    objects carrying `uuid` and/or `number`. Anything else returns None, which the
-    caller treats as "cannot confirm", and refuses. Fail closed is the only safe
-    reading of a response we do not understand.
+    Captured on hardware 2026-08-12, once a group existed to ask about:
+
+        {"id": "…", "name": "…", "isMember": true, "members": [
+            {"number": "+15555550199", "uuid": "3333…", "isAdmin": false},
+            {"number": null, "uuid": "1111…", "isAdmin": true}], …}
+
+    So a member is an object, and it can carry **both** a uuid and a number. Taking
+    both would mean a pinned list has to contain both to match, which is not what
+    anybody would write; the uuid wins for the same reason it wins everywhere else
+    here — it names the account rather than the line. A plain list of strings is
+    still accepted because it costs one branch and older signal-cli may differ.
+
+    `isMember: false` is drift, not an absence: being removed from a group must stop
+    it working, loudly. Anything unreadable returns None, which the caller treats as
+    "cannot confirm" and refuses — fail closed is the only safe reading of a response
+    we do not understand.
     """
+    if _field(group, "isMember") is False:
+        return None
     listed = _field(group, "members")
     if not isinstance(listed, list):
         return None
@@ -819,10 +831,10 @@ def _members_of(group: object) -> frozenset[str] | None:
         if isinstance(member, str):
             members.add(member)
             continue
-        for key in ("uuid", "number"):
-            value = _field(member, key)
-            if isinstance(value, str):
-                members.add(value)
+        identifier = _field(member, "uuid") or _field(member, "number")
+        if not isinstance(identifier, str):
+            return None  # a member we cannot name is a member set we cannot check
+        members.add(identifier)
     return frozenset(members) if members else None
 
 
@@ -1198,11 +1210,18 @@ def _recipient_of(notification: object) -> Recipient | None:
 def _is_group_update(notification: object, config: Config) -> bool:
     """Whether this envelope suggests a group's membership just changed.
 
-    A delivered message carries `groupInfo.type == "DELIVER"`; anything else in that
-    field is some flavour of group change. **Unverified against hardware** — no group
-    existed to produce one — so this is treated as a hint that costs one `listGroups`
-    if it is wrong, and the 15-minute refresh remains the guarantee if it never
-    fires. Only groups the gate knows about can trigger it, so a stranger's group
+    A delivered message carries `groupInfo.type == "DELIVER"`; anything else is some
+    flavour of group change. Captured on hardware 2026-08-12 by renaming a group:
+
+        "groupInfo": {"groupId": "…", "groupName": "…", "revision": 1, "type": "UPDATE"}
+
+    with `message: null`, so the envelope is *also* dropped as `no body` — which is
+    why this is consulted on the drop path too, not only on an accepted command.
+
+    `revision` increments on every group change and is deliberately **not** tracked:
+    membership is re-read on every connect anyway, so a revision cursor would only
+    cover a change that happened while the gate was down, which the connect already
+    covers. Only groups the gate knows about can trigger this, so a stranger's group
     cannot be used to make the gate chat to the daemon.
     """
     envelope = _field(notification, "params", "envelope")

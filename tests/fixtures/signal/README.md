@@ -8,29 +8,37 @@ Captured from `/run/wpa-signal/socket` on the Pi (signal-cli 0.14.7), 2026-08-11
 | `typing.json` | **captured** — the reason rule 2 exists: a `receive` notification with no `dataMessage` at all |
 | `receipt.json` | **captured** — the phone acknowledging the gate's own ack (`sourceDevice: 2`, `isDelivery: true`) |
 | `reaction.json` | **captured** — a 👍 on an assistant message. Not used by a test yet; it is what [NVB-16](https://linear.app/naveh-brenner/issue/NVB-16) will build the reaction path on, and it costs a person with a phone to obtain again |
-| `quote-reply.json`, `group.json`, `family.json`, `stranger.json` | derived from `message.json` by editing one field, since those actions were not driven on the phone |
-| `group-family.json`, `group-stranger.json`, `group-unknown.json`, `group-quote-reply.json`, `group-update.json` | **derived** from `group.json` (see below) |
+| `quote-reply.json`, `family.json`, `stranger.json` | derived from `message.json` by editing one field, since those actions were not driven on the phone |
+| `group.json` | **captured** — a real message in a real group (2026-08-12) |
+| `group-quote-reply.json` | **captured** — a real quoted reply to the assistant's own message in a group |
+| `group-update.json` | **captured** — a group rename: `type: "UPDATE"`, `message: null`, `revision` bumped |
+| `group-family.json`, `group-stranger.json`, `group-unknown.json` | derived from `group.json` by editing the sender uuid or the group id — there was still only one other person to send from |
 
-## The group fixtures are derived, and that is a debt
+## What the group capture settled
 
-`listGroups` returned `[]` on 2026-08-11: the assistant is in no Signal group, so no
-real group envelope could be captured and the five `group-*` files above were built
-by editing `group.json`. They are enough to test the gate's logic and **not** enough
-to trust it on hardware, because the two things most likely to be wrong are exactly
-the parts that were guessed:
+Both were guesses in the first cut of NVB-12, and both were wrong or incomplete in
+ways that mattered:
 
-- **The member shape in a `listGroups` result.** `_members_of` accepts both a list of
-  strings and a list of objects carrying `uuid`/`number`, and refuses when it
-  recognises neither. One capture settles which it is.
-- **What a group membership change looks like on the wire.** `_is_group_update`
-  treats any `groupInfo.type` other than `DELIVER` as a hint to re-read membership.
-  If that never fires, drift is still caught — by the 15-minute refresh instead of in
-  seconds — so the guess is cheap either way, but it is a guess.
+- **A `listGroups` member carries a uuid *and* a number**, as
+  `{"number": …, "uuid": …, "isAdmin": …}`. The first implementation added both to
+  the member set, which would have required a pinned list to name each person twice
+  to match. It takes the uuid now, falling back to the number.
+- **The assistant is itself a member**, so a pinned `members` list must include the
+  assistant's own ACI or the group refuses forever. Generate the line rather than
+  typing it; the command is in `config/example.config.toml`.
+- **`isMember: false` still lists the members.** Being removed from a group must
+  therefore be read as drift, or a room the assistant is no longer in looks healthy.
+- **A group change arrives as `groupInfo.type: "UPDATE"` with `message: null`** and
+  an incremented `revision`. Since it has no body it is dropped as `no body`, which
+  is why the membership re-read is triggered on the drop path and not only on an
+  accepted command. `revision` is deliberately not tracked: membership is re-read on
+  every connect, so a cursor would only cover a change that happened while the gate
+  was down.
 
-Replace them with captured envelopes before relying on this in production: create a
-group with the assistant, the owner and one other person, run the capture recipe
-below, then send a message from each, add someone, and record a real `listGroups`
-response.
+Still missing, and honest about it: **a message from someone in an allowlisted group
+who is not a listed sender.** That is the `unlisted sender` counter, where probing
+inside a family room shows up, and it is derived by editing the sender uuid because
+there was no second person to send it. Capture it the next time a group has one.
 
 A reaction arrives as a `dataMessage` with `message: null` and a `reaction` block —
 `emoji`, `targetAuthorUuid`, `targetSentTimestamp`, `isRemove`. So the gate drops

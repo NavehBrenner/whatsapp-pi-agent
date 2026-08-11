@@ -8,17 +8,19 @@
       "sourceUuid": "99999999-9999-4999-8999-999999999999",
       "sourceName": "someone",
       "sourceDevice": 1,
-      "timestamp": 1786449988002,
-      "serverReceivedTimestamp": 1786449987063,
-      "serverDeliveredTimestamp": 1786449987075,
+      "timestamp": 1786482728002,
+      "serverReceivedTimestamp": 1786482726492,
+      "serverDeliveredTimestamp": 1786482726502,
       "dataMessage": {
-        "timestamp": 1786449988002,
+        "timestamp": 1786482728002,
         "message": "ping",
         "expiresInSeconds": 0,
         "isExpirationUpdate": false,
         "viewOnce": false,
         "groupInfo": {
           "groupId": "Z3JvdXAtaWQtcmVkYWN0ZWQ=",
+          "groupName": "family",
+          "revision": 0,
           "type": "DELIVER"
         }
       }

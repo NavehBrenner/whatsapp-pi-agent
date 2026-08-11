@@ -8,17 +8,19 @@
       "sourceUuid": "22222222-2222-4222-8222-222222222222",
       "sourceName": "mom",
       "sourceDevice": 1,
-      "timestamp": 1786449988001,
-      "serverReceivedTimestamp": 1786449987063,
-      "serverDeliveredTimestamp": 1786449987075,
+      "timestamp": 1786482728001,
+      "serverReceivedTimestamp": 1786482726492,
+      "serverDeliveredTimestamp": 1786482726502,
       "dataMessage": {
-        "timestamp": 1786449988001,
+        "timestamp": 1786482728001,
         "message": "what's for dinner",
         "expiresInSeconds": 0,
         "isExpirationUpdate": false,
         "viewOnce": false,
         "groupInfo": {
           "groupId": "Z3JvdXAtaWQtcmVkYWN0ZWQ=",
+          "groupName": "family",
+          "revision": 0,
           "type": "DELIVER"
         }
       }

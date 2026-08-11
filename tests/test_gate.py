@@ -6,10 +6,12 @@ gate closes — a typing indicator arriving as a `receive` notification with no
 `dataMessage` — is not in signal-cli's documentation. It was found by watching the
 wire, so the test that it stays closed reads from the wire too.
 
-The `group-*` fixtures are **derived**, not captured: the assistant was in no Signal
-group when they were written, so `listGroups` returned `[]` and there was nothing to
-photograph. They are marked as such in the README and must be replaced with captured
-envelopes before this is trusted on hardware (NVB-12's acceptance says so).
+The group fixtures were captured on 2026-08-12 once a group existed, and they moved
+two guesses into facts: a `listGroups` member carries **both** a uuid and a number,
+and a group change arrives as `groupInfo.type == "UPDATE"` with `message: null` — so
+it is dropped as `no body` and the membership re-read has to happen on the drop path.
+Only the sender identity is edited on three of them, because there was still only one
+other person to send from.
 """
 
 from __future__ import annotations
@@ -205,7 +207,9 @@ def test_a_confirmation_room_holds_no_commands_at_all(tmp_path: Path) -> None:
     assert decide(envelope("group"), confirmations) == "not a confirmation"
     accepted = decide(envelope("group-quote-reply"), confirmations)
     assert isinstance(accepted, Command)
-    assert accepted.reply_to == 1786449987000
+    # The timestamp of the assistant's own message, captured off a real quoted reply:
+    # this is the handle a pending action is matched on (NVB-16).
+    assert accepted.reply_to == 1786482619131
 
 
 def test_junk_never_raises_its_way_past_a_check(world: Config) -> None:
@@ -296,16 +300,40 @@ def test_a_config_mistake_refuses_to_start(
 # --- Membership pinning ---------------------------------------------------------
 
 
-def _listed(members: Sequence[object], group: str = GROUP_ID) -> object:
-    return {"jsonrpc": "2.0", "id": "groups-1", "result": [{"id": group, "members": list(members)}]}
+def _listed(members: Sequence[object], group: str = GROUP_ID, **extra: object) -> object:
+    entry: dict[str, object] = {"id": group, "isMember": True, "members": list(members)}
+    entry.update(extra)
+    return {"jsonrpc": "2.0", "id": "groups-1", "result": [entry]}
 
 
 def test_membership_matching_the_pinned_set_refuses_nothing(world: Config) -> None:
-    """Both member encodings are accepted, because the real one is unverified: no
-    group existed to answer `listGroups` with when this was written."""
-    as_objects = [{"uuid": uuid, "number": None} for uuid in (OWNER_UUID, MOM_UUID, DAD_UUID)]
+    """The object form is the real one, captured on hardware 2026-08-12. The bare
+    string form is still accepted because it costs one branch."""
+    as_objects = [
+        {"uuid": uuid, "number": None, "isAdmin": False}
+        for uuid in (OWNER_UUID, MOM_UUID, DAD_UUID)
+    ]
     assert _drifted(_listed([OWNER_UUID, MOM_UUID, DAD_UUID]), world) == frozenset()
     assert _drifted(_listed(as_objects), world) == frozenset()
+
+
+def test_a_member_with_both_a_uuid_and_a_number_counts_once(world: Config) -> None:
+    """The captured shape carries both for anyone who shares their number — the
+    assistant's own row did. Taking both would mean a pinned list has to name a
+    person twice to match, which nobody would write; the uuid wins."""
+    both = [
+        {"uuid": OWNER_UUID, "number": "+15555550100", "isAdmin": True},
+        {"uuid": MOM_UUID, "number": "+15555550101", "isAdmin": False},
+        {"uuid": DAD_UUID, "number": None, "isAdmin": False},
+    ]
+    assert _drifted(_listed(both), world) == frozenset()
+
+
+def test_being_removed_from_the_group_is_drift(world: Config) -> None:
+    """`isMember: false` still lists the members. Reading it as "membership matches"
+    would leave a room the assistant is no longer in looking perfectly healthy."""
+    members = [OWNER_UUID, MOM_UUID, DAD_UUID]
+    assert _drifted(_listed(members, isMember=False), world) == frozenset({GROUP_ID})
 
 
 @pytest.mark.parametrize(
@@ -316,7 +344,8 @@ def test_membership_matching_the_pinned_set_refuses_nothing(world: Config) -> No
         pytest.param(_listed([], group="b3RoZXI="), "the group is not listed", id="absent"),
         pytest.param({"jsonrpc": "2.0", "id": "groups-1", "result": []}, "no groups", id="empty"),
         pytest.param({"error": {"code": -1}}, "the daemon refused", id="an error"),
-        pytest.param(_listed(["not-a-member-shape"]), "unreadable", id="a shape we do not know"),
+        pytest.param(_listed([{"isAdmin": True}]), "unnameable", id="a member with no id"),
+        pytest.param({"result": [{"id": GROUP_ID}]}, "no member list", id="no members key"),
     ],
 )
 def test_anything_other_than_the_pinned_set_refuses(
