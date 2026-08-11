@@ -345,7 +345,10 @@ Two consequences for this runbook:
   corrected. Print what any of it resolves to before restarting:
 
   ```bash
-  sudo -u wpa-gate python3 -m gate.signal --check /opt/wpa/config/config.toml
+  # PYTHONPATH because the code is at /opt/wpa/src and there is no installed
+  # package — the unit sets the same variable, so this matches what actually runs.
+  sudo -u wpa-gate PYTHONPATH=/opt/wpa/src python3 -m gate.signal \
+    --check /opt/wpa/config/config.toml
   ```
 
 See also [ADR 0004](../decisions/0004-signal-control-channel.md),
