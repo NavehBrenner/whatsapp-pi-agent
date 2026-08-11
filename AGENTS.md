@@ -38,6 +38,27 @@ or an issue. `.local/` is for coordinates, not decisions.
 directory you might one day copy somewhere. Credentials belong in systemd
 `LoadCredential=` or a root-owned `0600` file outside the repo.
 
+## Work starts with a plan
+
+**Unless the request explicitly says otherwise, produce a plan and get it approved
+before changing anything.** Not a paragraph of intent — the plan names the files
+it will touch, the approach, what it deliberately leaves out, and how the result
+will be verified end to end.
+
+This is not ceremony. Most of the expensive mistakes in this repo would have been
+caught by someone reading the intent for thirty seconds: a socket mode that fails
+`connect(2)`, an allowlist keyed on an identifier the wire never sends, a deploy
+that quietly deletes half the reader. A plan is also where a scope change gets
+noticed — "family members can use this too" reopened an ADR, and that is a
+conversation to have before the code exists, not after.
+
+Two things a plan must not do: assume a fact that hardware can settle, and defer
+the unglamorous half. If something is unverified, the plan says so and the
+verification is a step in it.
+
+Exceptions are fine when they are stated: a typo, a one-line fix, or an explicit
+"just do it". Silence is not an exception.
+
 ## Branch and PR flow
 
 `main` is protected. It applies to admins, so there is no bypass:
@@ -124,7 +145,30 @@ help on an envelope carrying no command. There are fixture tests for this.
 **No two principals share an agent session.** Own history, own tools, own
 credentials or none. A profile holds nothing its principal does not already own,
 which is what bounds an injection arriving through someone else's conversation.
-([ADR 0007](docs/decisions/0007-principals-on-the-control-channel.md))
+Enforced by one container per principal, not by agent code being careful.
+([ADR 0007](docs/decisions/0007-principals-on-the-control-channel.md),
+[ADR 0009](docs/decisions/0009-agents-are-containers-that-ask-by-name.md))
+
+**Authority is a (conversation, sender) pair, never a sender alone.** The same
+person in a group and in their own chat is two principals with two profiles, and
+the group one is narrower — a reply in a group is disclosed to everyone in it,
+including people who did not ask. Groups are keyed by id, never by name, and
+membership is pinned: drift refuses rather than degrades.
+([ADR 0008](docs/decisions/0008-authority-is-a-conversation-sender-pair.md))
+
+**The gate is the only process that touches Signal.** The agent asks by name and
+the gate resolves it through its own roster — a JSON-RPC client of signal-cli
+receives the inbound stream as well as sending, so an agent holding that socket
+would see every envelope the gate refused. The agent handles no identifiers, and
+agents never talk to each other directly; requests between them go through the
+broker as confirmations.
+([ADR 0009](docs/decisions/0009-agents-are-containers-that-ask-by-name.md))
+
+**A confirmation names the action it authorises.** Quoted reply or a designated
+reaction, single-use, expiring, answerable only by the pair it was sent to. There
+is no "newest pending wins" — with two prompts outstanding that authorises the
+wrong one, silently.
+([ADR 0008](docs/decisions/0008-authority-is-a-conversation-sender-pair.md))
 
 **The reader's cursor keys on `_id`, never `timestamp`.** Companion devices
 deliver messages out of order (worst observed lag 823s) and backfill inserts

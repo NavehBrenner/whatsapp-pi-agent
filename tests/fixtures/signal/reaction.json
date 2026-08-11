@@ -1,0 +1,32 @@
+{
+  "jsonrpc": "2.0",
+  "method": "receive",
+  "params": {
+    "envelope": {
+      "source": "11111111-1111-4111-8111-111111111111",
+      "sourceNumber": null,
+      "sourceUuid": "11111111-1111-4111-8111-111111111111",
+      "sourceName": "owner",
+      "sourceDevice": 1,
+      "timestamp": 1786462084039,
+      "serverReceivedTimestamp": 1786462083340,
+      "serverDeliveredTimestamp": 1786462083351,
+      "dataMessage": {
+        "timestamp": 1786462084039,
+        "message": null,
+        "expiresInSeconds": 0,
+        "isExpirationUpdate": false,
+        "viewOnce": false,
+        "reaction": {
+          "emoji": "\ud83d\udc4d",
+          "targetAuthor": "+15555550199",
+          "targetAuthorNumber": "+15555550199",
+          "targetAuthorUuid": "00000000-0000-4000-8000-000000000000",
+          "targetSentTimestamp": 1786461549263,
+          "isRemove": false
+        }
+      }
+    },
+    "account": "+15555550199"
+  }
+}
