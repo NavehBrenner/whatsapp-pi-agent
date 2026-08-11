@@ -85,6 +85,22 @@ several of them are the kind of thing that costs an evening to rediscover.
   instance and a directory under the outbox root, so this is a path-escape check, not
   a style rule.
 
+### Verified on hardware
+
+- **NVB-12 ran end to end on the Pi, 2026-08-12.** The owner sent one message in a
+  Signal group and one in their own chat, and the same person arrived as two
+  principals: `conversation=family principal=owner-family agent=family
+  profile=owner-in-group` and `conversation=owner-1to1 principal=owner agent=owner
+  profile=owner-full`. That is ADR 0008's central claim, observed rather than
+  asserted. The ack landed in each conversation, and an outbox entry addressed to
+  `self` from the group's agent went out as a `groupId` send.
+- **No drift on connect**, with `members` pinned to what `deploy/pin-group.py`
+  printed — the first real exercise of the member comparison against a live
+  `listGroups`.
+- **The documented `--check` command did not run.** `/opt/wpa` holds no installed
+  package, so it needs `PYTHONPATH=/opt/wpa/src`, exactly as `wpa-gate.service`
+  sets it. Found by running it rather than by reading it.
+
 ### Fixed
 
 - **A pinned member list would have had to name each person twice.** The group
