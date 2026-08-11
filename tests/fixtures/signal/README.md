@@ -9,6 +9,28 @@ Captured from `/run/wpa-signal/socket` on the Pi (signal-cli 0.14.7), 2026-08-11
 | `receipt.json` | **captured** — the phone acknowledging the gate's own ack (`sourceDevice: 2`, `isDelivery: true`) |
 | `reaction.json` | **captured** — a 👍 on an assistant message. Not used by a test yet; it is what [NVB-16](https://linear.app/naveh-brenner/issue/NVB-16) will build the reaction path on, and it costs a person with a phone to obtain again |
 | `quote-reply.json`, `group.json`, `family.json`, `stranger.json` | derived from `message.json` by editing one field, since those actions were not driven on the phone |
+| `group-family.json`, `group-stranger.json`, `group-unknown.json`, `group-quote-reply.json`, `group-update.json` | **derived** from `group.json` (see below) |
+
+## The group fixtures are derived, and that is a debt
+
+`listGroups` returned `[]` on 2026-08-11: the assistant is in no Signal group, so no
+real group envelope could be captured and the five `group-*` files above were built
+by editing `group.json`. They are enough to test the gate's logic and **not** enough
+to trust it on hardware, because the two things most likely to be wrong are exactly
+the parts that were guessed:
+
+- **The member shape in a `listGroups` result.** `_members_of` accepts both a list of
+  strings and a list of objects carrying `uuid`/`number`, and refuses when it
+  recognises neither. One capture settles which it is.
+- **What a group membership change looks like on the wire.** `_is_group_update`
+  treats any `groupInfo.type` other than `DELIVER` as a hint to re-read membership.
+  If that never fires, drift is still caught — by the 15-minute refresh instead of in
+  seconds — so the guess is cheap either way, but it is a guess.
+
+Replace them with captured envelopes before relying on this in production: create a
+group with the assistant, the owner and one other person, run the capture recipe
+below, then send a message from each, add someone, and record a real `listGroups`
+response.
 
 A reaction arrives as a `dataMessage` with `message: null` and a `reaction` block —
 `emoji`, `targetAuthorUuid`, `targetSentTimestamp`, `isRemove`. So the gate drops

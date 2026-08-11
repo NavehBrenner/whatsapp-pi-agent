@@ -1,7 +1,7 @@
 # 0008 — Authority is a (conversation, sender) pair, and confirmations are targeted
 
-**Status:** Accepted — implementation tracked in [NVB-12](https://linear.app/naveh-brenner/issue/NVB-12) and [NVB-16](https://linear.app/naveh-brenner/issue/NVB-16)
-**Amends:** [0007](0007-principals-on-the-control-channel.md) · **Related:** [0004](0004-signal-control-channel.md), [0006](0006-two-process-privilege-split.md)
+**Status:** Accepted — pair authority implemented in [NVB-12](https://linear.app/naveh-brenner/issue/NVB-12); targeted confirmations remain [NVB-16](https://linear.app/naveh-brenner/issue/NVB-16)
+**Amends:** [0007](0007-principals-on-the-control-channel.md) · **Extended by:** [0010](0010-profiles-are-pre-bound-grant-bundles.md), which says what a profile *is* · **Related:** [0004](0004-signal-control-channel.md), [0006](0006-two-process-privilege-split.md)
 
 ## Context
 

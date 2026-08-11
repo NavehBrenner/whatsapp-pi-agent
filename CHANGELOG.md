@@ -11,6 +11,91 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added
+
+- **Authority became a (conversation, sender) pair, and groups are forwardable
+  (NVB-12).** The gate dropped every group message before this — a group has no
+  single sender, so it had no principal. It now holds a table of conversations,
+  each naming its permitted senders and the profile that applies to each of them
+  *there*. The same person in a group and in their own chat are two principals with
+  two profiles, and the emitted command says which applied.
+
+  **One shape for both kinds.** There is no `direct`/`group` switch: a one-to-one is
+  a conversation whose `id` is the other party's ACI and whose member set is exactly
+  that person. Which kind it is, is derived by parsing the id — an ACI is a UUID, a
+  group id is base64 — so config cannot contradict itself about what a room is, and
+  `load_config` checks the one-to-one's duplicated halves agree. The cost is a few
+  duplicated lines per DM; what it buys is one lookup table, one code path, and no
+  class of bug where a group is handled by one-to-one logic.
+
+- **Profiles are pre-bound grant bundles, and the container is the enforcement**
+  ([ADR 0010](docs/decisions/0010-profiles-are-pre-bound-grant-bundles.md)). A
+  profile lists tool instances from `src/agent/registry.py`, each already bound to
+  one account and one verb, so granularity is *which instances are listed* rather
+  than a scope language: `calendar.family.create_event` and `calendar.family.rw` are
+  two grants over one calendar, and `calendar.personal.rw` is a different account.
+
+  It is the GitHub fine-grained-PAT shape with one difference worth the ADR: a PAT is
+  presented at request time and can be stolen or replayed, whereas a profile is
+  compiled into the container. A tool outside the bundle is not refused at runtime —
+  it is absent, and its credential was never mounted. The gate therefore emits the
+  profile *name* and never the tool list, because a capability list travelling in a
+  JSON line is a label the runner would have to trust.
+
+- **A conversation names the agent that serves it; a sender may override it.** So a
+  family group can run one shared agent everyone in the room activates, while the
+  owner overrides it for their own session with a wider profile. Two rules, both
+  checked at load, are what keeps that safe — and they **amend ADR 0007's "no two
+  principals share an agent session"** rather than quietly contradicting it: an agent
+  may not span two conversations, and senders sharing an agent must share its
+  profile. Inside one room a shared session costs nothing already shared, since
+  everyone reads everyone's messages; across rooms it would carry one room's text
+  into another.
+
+- **`--check`**, printing the resolved matrix — conversation, sender, agent, unit,
+  profile, tools, credentials and who each may message. It is the pre-restart eyeball
+  check, and the artefact to show a family member who asks what the thing can see.
+
+- **Group membership is pinned, and drift refuses rather than degrades.** The gate
+  reads the live member set back with `listGroups` over the socket it already holds,
+  on connect and every 15 minutes, and immediately when an envelope looks like a
+  group update. A group whose membership differs from the pinned list refuses
+  everything, logs it, and — if `notify` names a conversation — says so in Signal
+  once, because a refusing group is otherwise indistinguishable from a quiet one.
+  It **fails closed**: every group refuses until the daemon has answered, so the
+  window between connecting and knowing is shut rather than open.
+
+### Changed
+
+- **`config.toml` is not backward compatible.** `[[signal.principals]]` is gone,
+  replaced by `[[signal.conversations]]` with `[[signal.conversations.senders]]`, and
+  `[[agent.profiles]]` is new and required. `send_to` moved from the sender row to
+  the profile, and its entries are now conversation labels rather than principal
+  names — messaging a person is messaging a conversation, which is also what decides
+  whether a send goes out as `recipient` or `groupId`. **The Pi's config must be
+  migrated before this deploys**, or the gate refuses to start (which is the intended
+  direction of failure, but it is a downtime).
+- **Drop counters split.** `sender` still means a stranger at the door; the new
+  `unlisted sender` means someone already inside an allowlisted room trying the
+  handle, which is where probing in a family group will appear. `membership` is
+  drift. They are kept apart because they want different reactions.
+- The ack now goes to the **conversation** rather than to the sender, so in a group
+  the message a confirmation quotes exists in the room where it will be typed.
+- Pair and agent names are held to `[a-z0-9-]`. An agent name becomes a systemd unit
+  instance and a directory under the outbox root, so this is a path-escape check, not
+  a style rule.
+
+### Unflattering
+
+- **The group fixtures are derived, not captured.** `listGroups` answered `[]` — the
+  assistant is in no Signal group — so there was no real group envelope to photograph
+  and the `group-*` fixtures were built by editing `group.json`. Two things are
+  therefore guessed: the member shape inside a `listGroups` result (both plausible
+  encodings are accepted, and anything else refuses) and what a membership change
+  looks like on the wire (used only as a hint to re-read early; the 15-minute refresh
+  remains the guarantee). `tests/fixtures/signal/README.md` records what to capture
+  to settle both, and NVB-12's acceptance is not met until that happens.
+
 ### Documented
 
 - **Three directions of traffic**, added to

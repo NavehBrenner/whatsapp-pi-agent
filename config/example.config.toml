@@ -21,7 +21,7 @@ pinned_version = ""
 #   sudo sqlite3 /dev/shm/wpa-snapshot/msgstore.db \
 #     'SELECT j.raw_string, c.subject FROM chat c JOIN jid j ON j._id=c.jid_row_id'
 # Empty = read nothing, which is the safe default. The reader refuses to start
-# without this file rather than falling back to reading everything.
+# without this file rather than falling back to reading every chat.
 chats = [
   # "1234567890-1234567890@g.us",
 ]
@@ -30,57 +30,150 @@ chats = [
 # The assistant's own dedicated account (ADR 0004), E.164.
 account = "+441234567890"
 
-# The daemon's JSON-RPC socket. Created by signal-cli.service with UMask=0027, so
+# The daemon's JSON-RPC socket. Created by signal-cli.service with UMask=0007, so
 # it is readable by the wpa-signal group and the gate joins that group.
 socket = "/run/wpa-signal/socket"
 
-# The ONLY senders the gate forwards. Anyone else is dropped before dispatch and
-# counted (ADR 0007) — a phone number is not a secret, so this list, not the
-# number, is what refuses an unauthorized invocation. `profile` is a label the
-# gate never interprets: M4 reads it for which tools, whose credentials, and who
-# authorises. Adding a row is a deliberate act with a blast radius.
+# Where a membership-drift notice goes: a conversation label from below. Unset means
+# the gate only logs it, and a refusing group is then indistinguishable from a quiet
+# one until somebody reads the journal.
+# notify = "owner-1to1"
+
+# ---------------------------------------------------------------------------
+# Conversations: the closed set of rooms the assistant will act in.
 #
-# KEY THIS ON THE UUID. Signal does not share phone numbers by default, so real
-# envelopes arrive with `sourceNumber: null` and a number-only row matches
-# nothing (verified on hardware 2026-08-11). Read the sender's ACI off the wire:
+# **Authority is a (conversation, sender) pair, never a sender alone** (ADR 0008).
+# The same person in a group and in their own chat are two principals with two
+# profiles, and the group one must be the narrower: a reply there is read by
+# everyone in the room, including people who did not ask.
+#
+# Every conversation has the SAME shape. There is no direct/group switch — a
+# one-to-one is a conversation whose `id` is the other party's ACI and whose member
+# set is exactly that one person. Which kind it is, is derived from the id (an ACI
+# parses as a UUID; a group id does not), so config cannot disagree with itself.
+#
+# `agent` and `profile` are required, and they are the room's default: everyone
+# listed talks to that agent holding that profile. A sender row may override either,
+# which is how one person gets their own session in a shared room.
+#
+# KEY SENDERS ON THE UUID. Signal does not share phone numbers by default, so real
+# envelopes arrive with `sourceNumber: null` and a number-only row matches nothing
+# (verified on hardware 2026-08-11). Read the sender's ACI off the wire:
 #
 #   sudo -u wpa-signal python3 -c 'import socket,sys
 #   s=socket.socket(socket.AF_UNIX); s.connect("/run/wpa-signal/socket")
 #   [sys.stdout.write(l) for l in s.makefile("r")]' | head -1
 #
-# then message the assistant from the phone you want to allow. `number` is
-# optional and is only a second key — the part a human can check by eye.
+# then message the assistant from the phone you want to allow. `number` is optional
+# and is only a second key — the part a human can check by eye.
 #
-# `name` is also the outbound roster (ADR 0009): the agent writes {"to": "mom"}
-# and the gate resolves the name here, so the agent never handles an identifier
-# and can address exactly these people and no one else. Names must be unique, and
-# because an ACI changes when a number is re-registered, a rebind is an edit to
-# the `uuid` line rather than an assistant that has forgotten who its family is.
-[[signal.principals]]
-uuid = "00000000-0000-0000-0000-000000000000"
-name = "owner"
-profile = "owner"
-# number = "+447700900000"
-# Who this principal's agent may message. Defaults to ["self"] — its own
-# principal, the conversation the command arrived from — which is what an agent
-# granted nothing can still do. Every other entry must be another principal's
-# name; a name that is not one refuses to start rather than quietly granting
-# nothing. Adding a row here is granting an agent the ability to message a person.
-# send_to = ["self", "mom"]
+# GROUPS ARE KEYED BY ID, never by name: names are chosen by members, so a
+# name-keyed allowlist can be renamed into. List them with `listGroups` over the same
+# socket. `members` is the PINNED member set: the gate reads the live membership back
+# from the daemon and refuses the whole conversation when it differs, rather than
+# carrying on with an extra person in the room.
+#
+# Check what any of this resolves to before restarting the gate:
+#   python3 -m gate.signal --check /opt/wpa/config/config.toml
+# ---------------------------------------------------------------------------
 
-# A second person, reaching an agent session of their own — never the owner's
-# (ADR 0007). Uncomment and fill in to add them.
-# [[signal.principals]]
-# uuid = "..."
-# name = "mom"
-# profile = "family"
-# confirm_via = "owner"   # M4 reads this. "self" once a profile carries only its
-#                         # own principal's credentials, so authorising an action
-#                         # can only affect that principal's own accounts.
+[[signal.conversations]]
+label   = "owner-1to1"
+id      = "00000000-0000-0000-0000-000000000000"   # the owner's ACI
+members = ["00000000-0000-0000-0000-000000000000"] # a one-to-one: exactly the id
+agent   = "owner"
+profile = "owner-full"
+[[signal.conversations.senders]]
+uuid = "00000000-0000-0000-0000-000000000000"
+name = "owner"                                     # the pair name: unique everywhere
+# number = "+447700900000"
+
+# A family group. Everyone listed reaches ONE shared agent holding a narrow profile,
+# except the owner, who overrides both to get their own session with more reach.
+# Uncomment and fill in to add it.
+#
+# [[signal.conversations]]
+# label   = "family"
+# id      = "<base64 groupId from listGroups>"
+# members = ["<owner uuid>", "<mom uuid>", "<dad uuid>"]
+# agent   = "family"
+# profile = "family-shared"
+# [[signal.conversations.senders]]
+# uuid = "<mom uuid>"
+# name = "mom-family"          # inherits agent "family" and profile "family-shared"
+# [[signal.conversations.senders]]
+# uuid = "<dad uuid>"
+# name = "dad-family"          # same agent, so the same session, on purpose
+# [[signal.conversations.senders]]
+# uuid = "<owner uuid>"
+# name = "owner-family"
+# agent   = "owner-family"     # own session in this room…
+# profile = "owner-in-group"   # …wider, but still only things the room may read
+
+# A conversation whose entire purpose is answering prompts. Nothing in it is ever a
+# command: only a reply quoting one of the assistant's own messages counts, so a
+# stray message here authorises nothing by construction (ADR 0008).
+#
+# [[signal.conversations]]
+# label   = "confirmations"
+# id      = "<base64 groupId>"
+# members = ["<owner uuid>", "<mom uuid>"]
+# agent   = "confirmations"
+# profile = "read-only"
+# purpose = "confirmation"
+# [[signal.conversations.senders]]
+# uuid = "<owner uuid>"
+# name = "owner-confirm"
 
 [agent]
-# Recipients the agent may address. Anything outside this is refused before the
-# confirmation prompt is even shown (threat-model control 6).
+# ---------------------------------------------------------------------------
+# Profiles: a named bundle of grants, bound to a pair before any agent exists.
+#
+# This is the GitHub-PAT shape — a coarse bundle for your own chat, a fine-grained
+# one for a single capability in a shared room — with one difference that matters: a
+# PAT is presented at request time and can be stolen or replayed, whereas a profile
+# is compiled into the container. A tool outside the bundle is not refused at
+# runtime, it is **absent**, and its credential was never mounted (ADR 0010).
+#
+# `tools` names entries in src/agent/registry.py, each already bound to one account
+# and one verb. Granularity is which instances you list — `calendar.family.rw` and
+# `calendar.family.create_event` are two grants over one calendar, and
+# `calendar.personal.rw` is a different account. A name that is not in the registry
+# refuses to start rather than granting nothing quietly.
+#
+# `send_to` is a capability too: which conversations an agent may message, by label.
+# Default is ["self"] — the conversation it serves, which is what an agent granted
+# nothing can still answer.
+# ---------------------------------------------------------------------------
+
+[[agent.profiles]]
+name  = "owner-full"
+tools = ["whatsapp.read", "calendar.personal.rw", "calendar.family.rw",
+         "email.personal.draft", "notes.rw"]
+# send_to = ["self", "family"]
+
+# The owner, in a room other people read. Narrower than owner-full on purpose: a
+# reply here is disclosed to everyone present, so this is an egress boundary and not
+# only an invocation one.
+# [[agent.profiles]]
+# name  = "owner-in-group"
+# tools = ["whatsapp.read", "calendar.family.rw", "notes.rw"]
+
+# [[agent.profiles]]
+# name  = "family-shared"
+# tools = ["whatsapp.read", "calendar.family.rw"]
+
+# The fine-grained end: one capability, one account.
+# [[agent.profiles]]
+# name  = "calendar-only"
+# tools = ["calendar.family.create_event"]
+
+# [[agent.profiles]]
+# name  = "read-only"
+# tools = []
+
+# Recipients the agent may address outside Signal. Anything outside this is refused
+# before the confirmation prompt is even shown (threat-model control 6).
 egress_allowlist = [
   # "me@example.com",
 ]
