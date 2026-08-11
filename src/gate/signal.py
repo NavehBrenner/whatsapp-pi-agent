@@ -63,9 +63,13 @@ class Principal:
     `profile` is a label this process never interprets — M4 decides what tools,
     whose credentials and which confirmation route it means (ADR 0007). Carrying
     it from here means adding a person is a config edit rather than a redesign.
+
+    No identifier lives here on purpose: the identifiers are the keys of the map
+    this is looked up in, and replies go back to the identifier the message
+    actually arrived from, never to a value copied from config. A typo in the
+    allowlist should mean "nobody matches", never "the ack went to a stranger".
     """
 
-    number: str
     name: str
     profile: str
 
@@ -106,11 +110,13 @@ def decide(notification: object, principals: Mapping[str, Principal]) -> Command
 
     envelope = _field(notification, "params", "envelope")
 
-    # sourceNumber is the usual one. sourceUuid covers a contact signal-cli knows
-    # only by ACI, and `source` is what older versions called it; a principal is
-    # keyed under whichever of these the config gave.
+    # `sourceUuid` is the identifier that actually arrives: current Signal does not
+    # share phone numbers by default, so `sourceNumber` is null on real traffic
+    # (hardware, 2026-08-11) and a number-keyed allowlist matches nothing. Both are
+    # accepted because a contact who does share a number sends both. `sourceName`
+    # is NOT consulted at any point — it is a profile name its owner chooses.
     principal: Principal | None = None
-    for key in ("sourceNumber", "sourceUuid", "source"):
+    for key in ("sourceUuid", "sourceNumber", "source"):
         value = _field(envelope, key)
         if isinstance(value, str) and value in principals:
             principal = principals[value]
@@ -141,10 +147,15 @@ def decide(notification: object, principals: Mapping[str, Principal]) -> Command
 def load_config(path: Path) -> tuple[Path, dict[str, Principal]]:
     """Read `[signal]` out of the config: the socket, and who may use it.
 
-    Keyed by number and, when given, by uuid — signal-cli identifies a contact by
-    whichever it knows. A missing file raises and an empty principal list raises:
-    running with no principals would mean either "accept everyone", which is not
-    an allowlist, or "accept nobody", which is a silently dead assistant.
+    A principal is keyed by `uuid` and/or `number`, and needs at least one. In
+    practice it needs the **uuid**: Signal stopped sharing phone numbers by
+    default, so real envelopes carry `sourceNumber: null` and nothing else will
+    ever match. The number is kept as a second key because it is the part a human
+    can check by eye, and because a contact who does share one sends both.
+
+    A missing file raises and an empty principal list raises: running with no
+    principals would mean either "accept everyone", which is not an allowlist, or
+    "accept nobody", which is a silently dead assistant.
     """
     with path.open("rb") as fh:
         raw = tomllib.load(fh)
@@ -159,16 +170,17 @@ def load_config(path: Path) -> tuple[Path, dict[str, Principal]]:
     principals: dict[str, Principal] = {}
     entries: object = section.get("principals")
     for entry in entries if isinstance(entries, list) else []:
-        number = _field(entry, "number")
         name = _field(entry, "name")
         profile = _field(entry, "profile")
-        if not (isinstance(number, str) and isinstance(name, str) and isinstance(profile, str)):
-            raise ValueError(f"principal in {path} needs number, name and profile")
-        who = Principal(number=number, name=name, profile=profile)
-        principals[number] = who
-        uuid = _field(entry, "uuid")
-        if isinstance(uuid, str):
-            principals[uuid] = who
+        if not (isinstance(name, str) and isinstance(profile, str)):
+            raise ValueError(f"principal in {path} needs a name and a profile")
+        who = Principal(name=name, profile=profile)
+        keys = [_field(entry, "uuid"), _field(entry, "number")]
+        if not any(isinstance(key, str) for key in keys):
+            raise ValueError(f"principal {name} in {path} needs a uuid or a number")
+        for key in keys:
+            if isinstance(key, str):
+                principals[key] = who
 
     if not principals:
         raise ValueError(f"no [[signal.principals]] in {path} — the gate would accept nobody")
@@ -231,7 +243,6 @@ def run(
     is what the unit file wants. Reconnection is not optional: signal-cli has
     Restart=on-failure, so the socket goes away and comes back under a live gate.
     """
-    numbers = {p.name: p.number for p in principals.values()}
     dropped: dict[str, int] = {}
     connections = 0
     # systemd's StateDirectory= makes this; by-hand runs need it made.
@@ -269,7 +280,11 @@ def run(
                     f"accepted principal={verdict.principal} profile={verdict.profile} "
                     f"len={len(verdict.body)} reply_to={verdict.reply_to}"
                 )
-                _ack(conn, numbers[verdict.principal], verdict)
+                # Reply to where it came from, never to an identifier out of the
+                # config: the message got here, so this address is known good.
+                sender = _field(notification, "params", "envelope", "source")
+                if isinstance(sender, str):
+                    _ack(conn, sender, verdict)
         except OSError as exc:
             _log(f"connection lost: {exc.strerror}")
         finally:

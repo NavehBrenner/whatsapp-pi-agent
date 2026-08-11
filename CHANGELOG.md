@@ -36,13 +36,14 @@ several of them are the kind of thing that costs an evening to rediscover.
      authorises instead of being read as a global "proceed". The registry itself
      is M4's; not losing the link is the gate's.
 
-  **The fixtures are provisional and that is a known gap.** They are built from
-  signal-cli's documented shape; the acceptance criterion is real envelopes
-  captured off the socket and redacted, because the typing-indicator hole is not in
-  the documentation — it was found by watching the wire, so the regression test for
-  it has to come from the wire. `tests/fixtures/signal/README.md` carries the
-  capture procedure and the redaction table. Until that swap, these tests assert
-  the gate is self-consistent, not that it matches reality.
+  The message and typing fixtures are **real envelopes captured off the socket**
+  and redacted; the other five are derived from the captured message by editing
+  one field, since those actions were not driven on the phone.
+  `tests/fixtures/signal/README.md` says which is which, and carries the capture
+  procedure. It matters that the two load-bearing ones are real: both facts they
+  encode — a typing indicator arriving as a bare `receive`, and `sourceNumber`
+  being null — are absent from the documentation and were found by watching the
+  wire.
 
   Accepted commands append to `/var/lib/wpa-gate/commands.jsonl` (0600) and the
   sender gets `ack <timestamp>` back, which is the handle a later confirmation
@@ -98,10 +99,31 @@ several of them are the kind of thing that costs an evening to rediscover.
   perfectly healthy. The gate now logs every tenth retry rather than only the
   first, so a permanent failure eventually says so instead of going quiet.
 - **`config.toml` gained `[[signal.principals]]` and lost `[signal] owner`.** Each
-  entry is a number (optionally a uuid), a name, and a profile. An empty list is a
+  entry is a uuid and/or a number, a name, and a profile. An empty list is a
   startup refusal rather than a permissive default, the same posture as the chat
   allowlist. The `socket` default was also wrong — it still said
   `/run/user/1000/signal-cli/socket`, which no longer exists.
+
+  **The allowlist keys on the ACI UUID, not the phone number.** Current Signal
+  does not share phone numbers by default: real envelopes arrive with
+  `sourceNumber: null`, `source` and `sourceUuid` both set to the sender's ACI.
+  A number-keyed allowlist matches *nothing* — verified on hardware 2026-08-11,
+  where the first two live messages were correctly dropped as `sender` and it
+  took reading the captured envelope to see why. The number stays supported as a
+  second key because it is the part a human can check by eye. This is the same
+  shape of problem as WhatsApp's LIDs in NVB-7: the identifier a person knows is
+  not the identifier the wire carries.
+
+  `sourceName` is never consulted. It is a display name its owner chooses, so
+  matching on it would be an allowlist anyone can enter by renaming themselves —
+  the same reason the chat allowlist keys on JIDs and not group subjects.
+
+  Two related traps found while wiring it up: the Pi's live `config.toml` still
+  carried the example's placeholder number (`+447700900000`), so the allowlist
+  had a row for somebody who was not the owner. And the ack now goes back to the
+  identifier the message *arrived from* rather than one copied out of config —
+  with a placeholder in the file, "reply to the owner" would have meant replying
+  to a stranger.
 - **[ADR 0004](docs/decisions/0004-signal-control-channel.md) is explicit about
   what the dedicated Signal number does and does not buy.** It does *not*
   prevent unauthorized invocation — anyone who learns the number can message the

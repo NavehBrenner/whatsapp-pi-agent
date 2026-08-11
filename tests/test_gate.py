@@ -20,12 +20,15 @@ from gate.signal import Command, Principal, decide, load_config, run
 
 FIXTURES = Path(__file__).parent / "fixtures" / "signal"
 
-OWNER = Principal(number="+15555550100", name="owner", profile="owner")
-MOM = Principal(number="+15555550101", name="mom", profile="family")
+OWNER = Principal(name="owner", profile="owner")
+MOM = Principal(name="mom", profile="family")
+# Keyed by UUID because that is what actually arrives: current Signal does not
+# share phone numbers, so `sourceNumber` is null on real traffic and a
+# number-keyed allowlist matches nothing (hardware, 2026-08-11).
 PRINCIPALS = {
-    OWNER.number: OWNER,
     "11111111-1111-4111-8111-111111111111": OWNER,
-    MOM.number: MOM,
+    "+15555550100": OWNER,
+    "22222222-2222-4222-8222-222222222222": MOM,
 }
 
 

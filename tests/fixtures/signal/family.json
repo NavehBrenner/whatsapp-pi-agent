@@ -3,22 +3,22 @@
   "method": "receive",
   "params": {
     "envelope": {
-      "source": "+15555550101",
-      "sourceNumber": "+15555550101",
+      "source": "22222222-2222-4222-8222-222222222222",
+      "sourceNumber": null,
       "sourceUuid": "22222222-2222-4222-8222-222222222222",
       "sourceName": "mom",
       "sourceDevice": 1,
-      "timestamp": 1754912345678,
-      "serverReceivedTimestamp": 1754912345718,
-      "serverDeliveredTimestamp": 1754912345798,
+      "timestamp": 1786449660720,
+      "serverReceivedTimestamp": 1786449660367,
+      "serverDeliveredTimestamp": 1786449660376,
       "dataMessage": {
-        "timestamp": 1754912345678,
+        "timestamp": 1786449660720,
         "message": "ping",
         "expiresInSeconds": 0,
+        "isExpirationUpdate": false,
         "viewOnce": false
       }
     },
-    "account": "+15555550199",
-    "subscription": 0
+    "account": "+15555550199"
   }
 }
