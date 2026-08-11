@@ -7,7 +7,14 @@ Captured from `/run/wpa-signal/socket` on the Pi (signal-cli 0.14.7), 2026-08-11
 | `message.json` | **captured** — a real message from the owner's phone |
 | `typing.json` | **captured** — the reason rule 2 exists: a `receive` notification with no `dataMessage` at all |
 | `receipt.json` | **captured** — the phone acknowledging the gate's own ack (`sourceDevice: 2`, `isDelivery: true`) |
+| `reaction.json` | **captured** — a 👍 on an assistant message. Not used by a test yet; it is what [NVB-16](https://linear.app/naveh-brenner/issue/NVB-16) will build the reaction path on, and it costs a person with a phone to obtain again |
 | `quote-reply.json`, `group.json`, `family.json`, `stranger.json` | derived from `message.json` by editing one field, since those actions were not driven on the phone |
+
+A reaction arrives as a `dataMessage` with `message: null` and a `reaction` block —
+`emoji`, `targetAuthorUuid`, `targetSentTimestamp`, `isRemove`. So the gate drops
+it as `no body` today, and honouring it later is a deliberate narrow exception:
+`targetSentTimestamp` names one prompt, and `isRemove: true` (un-reacting) must
+never count as approval ([ADR 0008](../../../docs/decisions/0008-authority-is-a-conversation-sender-pair.md)).
 
 The captured pair is what makes the two facts below load-bearing rather than
 assumed, and both were invisible in the documentation:

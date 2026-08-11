@@ -11,6 +11,48 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Decided, not yet built
+
+- **[ADR 0008](docs/decisions/0008-authority-is-a-conversation-sender-pair.md) —
+  authority is a (conversation, sender) pair.** The assistant should be usable in
+  a family group and answerable in a dedicated confirmation conversation, neither
+  of which the "one principal, one conversation" model can express. The same
+  person in a group and in their own chat becomes two principals with two
+  profiles, and **the group one is narrower**: a reply in a group is disclosed to
+  everyone in it, so "the owner asked, use the owner's capabilities" would read
+  the owner's calendar aloud to the family. Groups key on id, never name — names
+  are chosen by members. Membership is pinned and drift refuses rather than
+  degrades.
+
+  It also settles how a `YES` is matched. Not newest-pending-wins: with two
+  prompts outstanding that authorises the **wrong** action, silently. Confirmations
+  are targeted, single-use, expiring, and answerable only by the pair they were
+  sent to. Signal has no interactive messages, so the two mechanisms are quoted
+  replies and reactions — **both captured on hardware 2026-08-11**, `quote.id` and
+  `reaction.targetSentTimestamp` respectively, and a reaction arrives as a bodiless
+  `dataMessage` that the gate drops as `no body` today.
+- **[ADR 0009](docs/decisions/0009-agents-are-containers-that-ask-by-name.md) —
+  the gate is the only process that touches Signal, and agents are containers.**
+  The tempting design, letting the agent hold the socket, is wrong for a reason
+  worth writing down: a JSON-RPC client of signal-cli does not get a send-only
+  channel, it gets the receive stream too. The privileged process would see every
+  envelope the gate refused. Instead the agent writes `{"to": "<name>", ...}` and
+  the gate resolves the name through its own roster — so the agent handles no
+  identifiers and can address exactly the people its profile lists.
+
+  Isolation between principals stops being a promise: one container per principal,
+  no access to Waydroid, the snapshot or the socket, WhatsApp context served by a
+  broker per profile and defaulting to none. Agents never talk to each other
+  directly; a request between them becomes a confirmation prompt to the owner.
+  Measured on the Pi: `/dev/kvm` present, 6398MB available with everything running,
+  so microVMs are the documented upgrade rather than a fantasy — with a written
+  trigger for taking it.
+
+  Recorded because it is the likeliest way this breaks: **Waydroid runs its own
+  bridge and NAT**, so a container runtime that rewrites iptables could take the
+  WhatsApp side down. "Waydroid still RUNNING, messages still arriving" is an
+  acceptance criterion for that work, not an assumption.
+
 ### Added
 
 - **A trigger gate decides which Signal messages are commands** (`src/gate/signal.py`,
