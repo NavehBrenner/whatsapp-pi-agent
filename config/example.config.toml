@@ -50,11 +50,23 @@ socket = "/run/wpa-signal/socket"
 #
 # then message the assistant from the phone you want to allow. `number` is
 # optional and is only a second key — the part a human can check by eye.
+#
+# `name` is also the outbound roster (ADR 0009): the agent writes {"to": "mom"}
+# and the gate resolves the name here, so the agent never handles an identifier
+# and can address exactly these people and no one else. Names must be unique, and
+# because an ACI changes when a number is re-registered, a rebind is an edit to
+# the `uuid` line rather than an assistant that has forgotten who its family is.
 [[signal.principals]]
 uuid = "00000000-0000-0000-0000-000000000000"
 name = "owner"
 profile = "owner"
 # number = "+447700900000"
+# Who this principal's agent may message. Defaults to ["self"] — its own
+# principal, the conversation the command arrived from — which is what an agent
+# granted nothing can still do. Every other entry must be another principal's
+# name; a name that is not one refuses to start rather than quietly granting
+# nothing. Adding a row here is granting an agent the ability to message a person.
+# send_to = ["self", "mom"]
 
 # A second person, reaching an agent session of their own — never the owner's
 # (ADR 0007). Uncomment and fill in to add them.
