@@ -193,8 +193,12 @@ def connect(socket_path: Path, *, attempts: int = 0) -> socket.socket:
             tries += 1
             if attempts and tries >= attempts:
                 raise
-            if tries == 1:
-                _log(f"waiting for {socket_path}: {exc.strerror}")
+            # Every tenth attempt, not just the first: a permanent failure —
+            # EACCES because the socket isn't group-writable, say — otherwise
+            # prints one line at boot and then looks identical to a healthy gate
+            # sitting quietly. At the 30s cap that is a line every five minutes.
+            if tries == 1 or tries % 10 == 0:
+                _log(f"waiting for {socket_path}: {exc.strerror} (attempt {tries})")
             time.sleep(BACKOFF_SECONDS[delay_index])
             delay_index = min(delay_index + 1, len(BACKOFF_SECONDS) - 1)
 

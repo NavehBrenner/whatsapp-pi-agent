@@ -54,7 +54,10 @@ several of them are the kind of thing that costs an evening to rediscover.
   when the JVM launches and the socket appeared ~19s later on a cold boot, and the
   daemon's own `Restart=on-failure` takes the socket away under a live gate. So
   connecting is a backoff loop rather than one attempt, with a test that a gate
-  surviving one EOF still processes the next connection.
+  surviving one EOF still processes the next connection. Verified on hardware
+  2026-08-11: `systemctl restart signal-cli` under a live gate logged
+  `reconnecting` → `Connection refused` → `connected` 8s later, same PID, systemd
+  `NRestarts=0` — the gate rode it out rather than dying and being restarted.
 
 - **[ADR 0007](docs/decisions/0007-principals-on-the-control-channel.md) — the
   control channel carries principals, not one owner.** Family should be able to
@@ -79,12 +82,21 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ### Changed
 
-- **`signal-cli.service` runs with `UMask=0027`** so the JSON-RPC socket is
-  created `srwxr-x---` and `wpa-gate` can reach it through the `wpa-signal` group.
+- **`signal-cli.service` runs with `UMask=0007`** so the JSON-RPC socket is
+  created `srwxrwx---` and `wpa-gate` can reach it through the `wpa-signal` group.
   The gate deliberately does not run *as* `wpa-signal`: `/var/lib/wpa-signal` is
   the account itself, and the process parsing messages from strangers has no
   business being able to read it. Group membership buys the socket and nothing
-  else — the state directory stays 0700.
+  else — the state directory is 0700, and a directory with no group execute bit
+  cannot be traversed however its contents are moded.
+
+  **0027 was the obvious value and it is wrong:** `connect(2)` on a unix socket
+  needs *write* permission, so a group-readable `srwxr-x---` socket fails with
+  EACCES. Verified on hardware 2026-08-11, and the failure is nastier than it
+  sounds — it is indistinguishable from "the socket isn't there yet", which is a
+  state this gate is built to wait through. It sat in a retry loop looking
+  perfectly healthy. The gate now logs every tenth retry rather than only the
+  first, so a permanent failure eventually says so instead of going quiet.
 - **`config.toml` gained `[[signal.principals]]` and lost `[signal] owner`.** Each
   entry is a number (optionally a uuid), a name, and a profile. An empty list is a
   startup refusal rather than a permissive default, the same posture as the chat
