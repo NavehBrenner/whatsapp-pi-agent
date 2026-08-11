@@ -29,6 +29,47 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ### Added
 
+- **A staleness check, because "services are running" is not "messages are
+  arriving"** (`src/reader/staleness.py`, `wpa-staleness.{service,timer}`). It
+  polls `max(_id)` from the snapshot hourly and fails — non-zero exit, a `<3>`
+  line under `journalctl -p err`, the unit in `systemctl --failed` — when the id
+  has not moved in 6h. M3 can hang `OnFailure=` off it to push the alert to
+  Signal without changing anything else.
+
+  It checks the one fact nothing else did. During the 2026-08-10 freeze every
+  other signal looked fine: both waydroid units active, `com.whatsapp` running,
+  the timer polling every 30s and correctly reporting no new messages. So the
+  check deliberately does *not* ask `waydroid status` — container state was the
+  misleading signal, and a frozen container is caught anyway because `max(_id)`
+  stalls. Nor does it use the reader's cursor, which only advances for
+  allowlisted chats and would report a quiet group as a dead system every night.
+
+  State is one file, `/var/lib/wpa-reader/liveness`: its contents are the last
+  id, its mtime is when that id last changed. That only works because the write
+  is conditional on the value moving — rewriting it every run would keep the
+  mtime fresh forever and the alert could never fire. There is a test for it.
+
+  **The 6h threshold is a guess and the argument in the unit file is the knob.**
+  Nobody has measured what a genuinely quiet night looks like on this account;
+  the soak is what will say. Erring long is deliberate — the freeze persists
+  until a human intervenes, so a late alert costs little and a nightly false one
+  trains everybody to ignore the real thing.
+
+  Two things it does not cover. `vcgencmd get_throttled` is not collected: it
+  needs the `video` group, and the check keeps ADR 0006's confinement contract
+  (`PrivateNetwork`, `ProtectSystem=strict`, `User=wpa-reader`) rather than
+  taking privilege for one number — run it by hand during the soak. And an
+  unreadable snapshot returns "unknown", not "stale": wpa-snapshot rewrites
+  those files every 30s so an hourly reader will eventually catch one mid-copy.
+  The cost of that choice is that a *permanently* unreadable snapshot alerts
+  nothing here — it shows up as wpa-reader failing every 30s instead.
+
+  Verified on hardware 2026-08-11: status line
+  `max_id=45280 quiet=0.0h jsonl_bytes=1084259 mem_available_kb=6688324`, and a
+  backdated marker produced the alert and the failed unit as intended. 6.4GB
+  available with the container unfrozen, so signal-cli's JVM has room. **The 24h
+  soak itself is still outstanding** — one reboot verified the suspend fix, and
+  one reboot is not evidence the freeze cannot return another way.
 - **The reader runs unattended** (`deploy/systemd/`) — a `.service` + `.timer`
   pair polling every 30s, plus a separate root-run `wpa-snapshot.service` that
   copies the databases to `/dev/shm/wpa-snapshot` and hands them to

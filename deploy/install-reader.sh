@@ -31,9 +31,12 @@ fi
 install -m 0644 "$repo"/deploy/systemd/*.service "$repo"/deploy/systemd/*.timer /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now wpa-reader.timer
+systemctl enable --now wpa-staleness.timer
 
 echo
 echo "installed. check with:"
-echo "  systemctl list-timers wpa-reader.timer"
+echo "  systemctl list-timers 'wpa-*.timer'"
 echo "  systemctl start wpa-reader.service && journalctl -u wpa-reader -n 20"
 echo "  wc -l /var/lib/wpa-reader/messages.jsonl"
+echo "  journalctl -u wpa-staleness -n 20      # one status line per hour"
+echo "  journalctl -p err -u wpa-staleness     # the alert, if messages stopped"

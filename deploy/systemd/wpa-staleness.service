@@ -1,0 +1,49 @@
+[Unit]
+Description=Alert when WhatsApp messages stop arriving (not when services stop)
+Documentation=https://linear.app/naveh-brenner/issue/NVB-6
+# Deliberately no Requires=/After= on the reader or on waydroid. This unit's job
+# is to notice that those look healthy while nothing is arriving, so it must be
+# able to run and complain when they are not there at all.
+#
+# Same reason as the other two units: a genuine outage means this fails on every
+# poll, and five failures would otherwise latch it into 'start-limit-hit'. The
+# check that stops checking during the outage it exists to report is worse than
+# no check.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+User=wpa-reader
+Group=wpa-reader
+WorkingDirectory=/opt/wpa
+Environment=PYTHONPATH=/opt/wpa/src PYTHONDONTWRITEBYTECODE=1
+# Last argument is the quiet-hours threshold — the knob to turn when the soak
+# shows what a genuinely quiet night looks like. Lower it and a sleeping
+# household pages you; raise it and a freeze goes unnoticed for longer.
+ExecStart=/usr/bin/python3 -m reader.staleness /dev/shm/wpa-snapshot /var/lib/wpa-reader/liveness 6
+
+# Both streams are ids, byte counts and durations — never message content
+# (threat-model R4), which is why unlike the reader this one may use journald.
+# The status line is the soak record; the alert carries a <3> prefix so it
+# surfaces under `journalctl -p err`. A stale check also exits non-zero, so
+# `systemctl --failed` shows it and M3 can hang OnFailure= off this unit to push
+# the alert to Signal without changing any of this.
+StandardOutput=journal
+StandardError=journal
+UMask=0077
+
+# Same confinement contract as the reader (ADR 0006). This process only runs
+# SELECT max(_id) — it parses no message text — but it opens a database built
+# from untrusted input, so it gets no more privilege than the reader does.
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# The snapshot is writable because SQLite must touch -shm to read a WAL database.
+ReadWritePaths=/dev/shm/wpa-snapshot /var/lib/wpa-reader
