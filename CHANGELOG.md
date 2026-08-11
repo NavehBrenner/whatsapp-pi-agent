@@ -11,6 +11,45 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Documented
+
+- **Three directions of traffic**, added to
+  [ADR 0009](docs/decisions/0009-agents-are-containers-that-ask-by-name.md). The
+  question "could an off-the-shelf permission layer replace the gate?" kept
+  recurring, and it is only answerable once the arrows are named apart:
+  **into** the agent (invocation — Signal semantics, the gate's job), **out to
+  people** (who it may address — also the gate), and **out to tools** (what it
+  may do — the capability manifest and the container). Nothing off the shelf can
+  stand in for arrows 1 and 2, because no agent framework knows what an ACI or a
+  bodiless envelope is; the gate can never cover arrow 3, because it
+  deliberately knows nothing about tools. They are complementary, and the
+  question to ask of any arrow-3 candidate is *how does it know which principal
+  is calling* — if several agents share one tool server, isolation enforced at
+  the gate collapses quietly at the tool layer.
+- **[Q4](docs/OPEN-QUESTIONS.md) is now a three-way decision and its own revisit
+  trigger has fired.** Anthropic Managed Agents joins the custom Agent SDK build
+  and OpenClaw: it ships per-tool permission policies with an allow/deny
+  round-trip, vaults that keep credentials out of the sandbox by substituting at
+  egress, per-session containers, and hard per-session spend budgets — and a
+  self-hosted sandbox keeps tool execution on the Pi. Costs recorded too: no
+  vault environment-variable credentials or memory stores when self-hosted, and
+  **session history persisting on Anthropic's side**, which is a new fact for the
+  threat model rather than a restatement of "the model sees the content".
+
+  The trigger that fired is Q4's own: *revisit if the Signal and session plumbing
+  dwarfs the agent logic.* M3 built exactly that plumbing. The lean is unchanged
+  and the decision is deliberately deferred to its issue rather than settled in
+  passing.
+
+  Surveyed and not adopted: MCP gateways (MintMCP, Lunar.dev MCPX, TrueFoundry,
+  agentgateway) gate MCP traffic, which the tool surface isn't yet, and each is
+  another daemon on a loaded Pi. Plumbus has the right idea — `exposeAs` makes an
+  unexposed capability *absent* rather than refused, which is this repo's
+  invariant — but arrives with Node, pnpm, Fastify, Drizzle and PostgreSQL next
+  to a stdlib-only Python codebase, at 1 star, to guard the control AGENTS.md
+  calls load-bearing. The pattern is worth copying in about forty lines; the
+  dependency is not.
+
 ### Decided, not yet built
 
 - **[ADR 0008](docs/decisions/0008-authority-is-a-conversation-sender-pair.md) —
