@@ -179,14 +179,41 @@ Waydroid wants the 8GB.
 ## 5. Trust boundary
 
 The Signal channel is the **trusted** side of the system
-([threat-model.md](../threat-model.md)). Two rules for whatever consumes it:
+([threat-model.md](../threat-model.md)). Three rules for whatever consumes it:
 
 - **Verify the sender.** Only messages from my personal number trigger the privileged agent.
   Check the sender against a configured allowlist before anything runs, every time.
+- **A trigger is a `dataMessage` with a real body — not any envelope.** The receive stream
+  also carries `typingMessage` and `receiptMessage` envelopes, observed on hardware
+  2026-08-11: a plain "someone is typing" arrives as a `receive` notification with no
+  `dataMessage` at all. An agent that fires on every `receive` is invocable by a typing
+  indicator, which anyone who knows the number can produce at will, and no amount of sender
+  checking helps if the check runs on an envelope that carries no command. The daemon cannot
+  filter these — it has `--ignore-attachments`, `--ignore-stories`, `--ignore-avatars` and
+  `--ignore-stickers`, and nothing for typing or receipts. So the consumer must require
+  `envelope.dataMessage.message` to be non-empty before it looks at anything else.
 - **Confirmation replies are commands too.** A `YES` that authorises an action must be
   matched to the specific pending action it's answering, not treated as a global "proceed."
 
-Both belong in the agent code, not here — noted so they don't get lost between documents.
+All three belong in the agent code, not here — noted so they don't get lost between
+documents. See also the one-conversation restriction in
+[ADR 0004](../decisions/0004-signal-control-channel.md).
+
+## Operational notes
+
+**`active` is not `ready`.** `Type=simple` marks the unit started as soon as the JVM
+launches, but the socket only appears once signal-cli has initialised — measured at ~19s
+after unit start on the Pi, cold. A client connecting at boot must retry rather than assume
+the socket is there. Yet another case where "the service is running" answers the wrong
+question.
+
+**The daemon holds the account lock.** Once `signal-cli.service` is up, a second `signal-cli`
+invocation against the same account will conflict. Talk to it over the socket:
+
+```bash
+printf '%s\n' '{"jsonrpc":"2.0","method":"send","params":{"recipient":["+4477..."],"message":"hi"},"id":1}' |
+  sudo -u wpa-signal nc -U /run/wpa-signal/socket
+```
 
 ---
 

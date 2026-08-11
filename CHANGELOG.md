@@ -167,6 +167,27 @@ several of them are the kind of thing that costs an evening to rediscover.
   it. Replaced with a real one in the repo.
 - The launcher honours `JAVA_OPTS` and `SIGNAL_CLI_OPTS`, not
   `JAVA_TOOL_OPTIONS` — the heap cap was set on the wrong variable in the draft.
+- **Survives a reboot, tested the way that means something**: not "the unit is
+  active", but a message sent from the phone *after* the reboot arriving
+  unattended, and a reply going back out. Zero `Body:` lines in the journal for
+  that boot, so the logging fix holds across a restart. Waydroid came back
+  `RUNNING` again, and 6.2GB was available with the JVM and an unfrozen
+  container together.
+- **`active` is not `ready`.** `Type=simple` marks the unit started when the JVM
+  launches; the socket appeared ~19s later on a cold boot, and a first check at
+  45s uptime found `/run/wpa-signal/` empty. Anything connecting at boot has to
+  retry rather than assume.
+- **The receive stream carries typing indicators and read receipts, not just
+  messages** — a "someone is typing" arrives as a `receive` notification with no
+  `dataMessage` at all. This is a requirement on the M4 agent, not a bug here: an
+  agent that triggers on any `receive` envelope is invocable by a typing
+  indicator, which anyone who knows the number can produce at will, and checking
+  the sender does not help when the envelope carries no command. The daemon
+  cannot filter them (`--ignore-*` covers attachments, stories, avatars and
+  stickers only), so the consumer must require a non-empty
+  `envelope.dataMessage.message`. **No fix is implemented — there is no consumer
+  yet**; it is written into runbook 03's trust-boundary rules where the agent
+  will be built.
 
 ### Verified on hardware — 2026-08-10 (reader on a timer)
 
