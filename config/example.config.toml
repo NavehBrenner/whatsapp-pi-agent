@@ -30,10 +30,30 @@ chats = [
 # The assistant's own dedicated account (ADR 0004), E.164.
 account = "+441234567890"
 
-# The ONLY sender allowed to trigger the privileged agent. Everything else is dropped.
-owner = "+447700900000"
+# The daemon's JSON-RPC socket. Created by signal-cli.service with UMask=0027, so
+# it is readable by the wpa-signal group and the gate joins that group.
+socket = "/run/wpa-signal/socket"
 
-socket = "/run/user/1000/signal-cli/socket"
+# The ONLY senders the gate forwards. Anyone else is dropped before dispatch and
+# counted (ADR 0007) — a phone number is not a secret, so this list, not the
+# number, is what refuses an unauthorized invocation. `profile` is a label the
+# gate never interprets: M4 reads it for which tools, whose credentials, and who
+# authorises. Adding a row is a deliberate act with a blast radius.
+[[signal.principals]]
+number = "+447700900000"
+name = "owner"
+profile = "owner"
+# uuid = "..."   # optional; signal-cli identifies some contacts by ACI only
+
+# A second person, reaching an agent session of their own — never the owner's
+# (ADR 0007). Uncomment and fill in to add them.
+# [[signal.principals]]
+# number = "+447700900123"
+# name = "mom"
+# profile = "family"
+# confirm_via = "owner"   # M4 reads this. "self" once a profile carries only its
+#                         # own principal's credentials, so authorising an action
+#                         # can only affect that principal's own accounts.
 
 [agent]
 # Recipients the agent may address. Anything outside this is refused before the

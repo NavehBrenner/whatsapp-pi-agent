@@ -1,7 +1,12 @@
 # 0004 — Signal (signal-cli, dedicated number) as the control channel
 
-**Status:** Accepted
+**Status:** Accepted · **amended in part by [0007](0007-principals-on-the-control-channel.md)**
 **Related:** [0005](0005-no-whatsapp-write-path.md), [0006](0006-two-process-privilege-split.md)
+
+> [ADR 0007](0007-principals-on-the-control-channel.md) widens "exactly one conversation"
+> below to *a closed set of known one-to-one conversations, each with a named principal and a
+> profile*. The control is unchanged — an allowlist checked before anything runs — and
+> everything else in this ADR stands.
 
 ## Context
 

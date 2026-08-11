@@ -106,12 +106,25 @@ this?"** `create_draft`, never `send_email`. Calendar events without dispatching
 invites. The failure mode for this project isn't a clever attack — it's
 `send_email` appearing one day because drafting got tedious.
 
-**The agent reads and writes exactly one Signal conversation.** Anything from
-another sender, a group, or a new thread is dropped before dispatch. A phone
-number is not a secret — anyone who learns the assistant's number can message it
-— so this check, not the number, is what refuses an unauthorized invocation. It
-holds whether the assistant runs on a dedicated account or a linked device.
-([ADR 0004](docs/decisions/0004-signal-control-channel.md))
+**The gate forwards a closed set of known one-to-one Signal conversations, and
+nothing else.** Each carries a named principal and a profile; anything from an
+unlisted sender, a group, or a new thread is dropped before dispatch and counted.
+A phone number is not a secret — anyone who learns the assistant's number can
+message it — so this list, not the number, is what refuses an unauthorized
+invocation. It holds whether the assistant runs on a dedicated account or a
+linked device. ([ADR 0004](docs/decisions/0004-signal-control-channel.md),
+[ADR 0007](docs/decisions/0007-principals-on-the-control-channel.md))
+
+**A trigger is a `dataMessage` with a non-empty body, never any `receive`
+envelope.** Typing indicators and read receipts arrive on the same stream with no
+`dataMessage` at all, so an agent that fires on `receive` is invocable by anyone
+who can make the assistant's phone show "typing…" — and a sender check does not
+help on an envelope carrying no command. There are fixture tests for this.
+
+**No two principals share an agent session.** Own history, own tools, own
+credentials or none. A profile holds nothing its principal does not already own,
+which is what bounds an injection arriving through someone else's conversation.
+([ADR 0007](docs/decisions/0007-principals-on-the-control-channel.md))
 
 **The reader's cursor keys on `_id`, never `timestamp`.** Companion devices
 deliver messages out of order (worst observed lag 823s) and backfill inserts

@@ -11,8 +11,85 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added
+
+- **A trigger gate decides which Signal messages are commands** (`src/gate/signal.py`,
+  `deploy/systemd/wpa-gate.service`). Until now the channel carried traffic in
+  both directions and nothing said which of it counted; this is the half of M3
+  that was missing. Deterministic host code, stdlib only, no model in it, and the
+  only thing that ever forwards a message onward — so a capability to be invoked
+  by anyone else does not exist rather than being filtered downstream.
+
+  Three refusals, each from [ADR 0004](docs/decisions/0004-signal-control-channel.md)
+  and runbook 03 §5:
+
+  1. **The sender must be a configured principal, one-to-one.** Unlisted sender or
+     a group: dropped and counted.
+  2. **A trigger is a `dataMessage` with a non-empty body.** Typing indicators and
+     read receipts arrive as `receive` notifications with no `dataMessage` at all,
+     so a gate keyed on `method == "receive"` is invocable by anyone who can make
+     the assistant's phone show "typing…" — and the sender check does not save you
+     on an envelope carrying no command. The daemon cannot filter these;
+     `--ignore-*` covers attachments, stories, avatars and stickers only.
+  3. **A reply keeps what it replied to.** Accepted commands carry `reply_to`, the
+     id of the quoted message, so a `YES` can be matched to the pending action it
+     authorises instead of being read as a global "proceed". The registry itself
+     is M4's; not losing the link is the gate's.
+
+  **The fixtures are provisional and that is a known gap.** They are built from
+  signal-cli's documented shape; the acceptance criterion is real envelopes
+  captured off the socket and redacted, because the typing-indicator hole is not in
+  the documentation — it was found by watching the wire, so the regression test for
+  it has to come from the wire. `tests/fixtures/signal/README.md` carries the
+  capture procedure and the redaction table. Until that swap, these tests assert
+  the gate is self-consistent, not that it matches reality.
+
+  Accepted commands append to `/var/lib/wpa-gate/commands.jsonl` (0600) and the
+  sender gets `ack <timestamp>` back, which is the handle a later confirmation
+  quotes. journald gets decisions and running per-reason drop counters and
+  **never bodies, never numbers** (threat model R4) — the drop counter is what
+  will show someone probing the number.
+
+  It reconnects. `active` is not `ready`: `Type=simple` marks signal-cli started
+  when the JVM launches and the socket appeared ~19s later on a cold boot, and the
+  daemon's own `Restart=on-failure` takes the socket away under a live gate. So
+  connecting is a backoff loop rather than one attempt, with a test that a gate
+  surviving one EOF still processes the next connection.
+
+- **[ADR 0007](docs/decisions/0007-principals-on-the-control-channel.md) — the
+  control channel carries principals, not one owner.** Family should be able to
+  use the assistant; doing that by loosening the sender check would be the wrong
+  half of the system to loosen, so the invariant is widened deliberately instead:
+  *a closed set of known one-to-one conversations, each with a named principal and
+  a profile, everything else dropped before dispatch*.
+
+  What lands now is only the shape — the gate says **who** sent a command and
+  **under which profile**, and acks into that person's conversation. What a
+  profile may do is M4's. The ADR records the two things that must not be traded
+  away when it gets there: **no two principals share an agent session** (ADR 0006's
+  argument one level up — a shared context puts one person's text next to
+  another's credentials), and **a profile holds nothing its principal does not
+  already own**, which is what bounds an injection arriving through someone else's
+  conversation. Confirmations route to the owner today, per-principal (`self`)
+  once profiles carry only their own principal's credentials.
+
+  Also the honest part: the Signal side stops being uniformly trusted. A family
+  member forwarding a scam text is attacker-influenced content on the privileged
+  wire, which is exactly what ADR 0006 keeps off it from the WhatsApp direction.
+
 ### Changed
 
+- **`signal-cli.service` runs with `UMask=0027`** so the JSON-RPC socket is
+  created `srwxr-x---` and `wpa-gate` can reach it through the `wpa-signal` group.
+  The gate deliberately does not run *as* `wpa-signal`: `/var/lib/wpa-signal` is
+  the account itself, and the process parsing messages from strangers has no
+  business being able to read it. Group membership buys the socket and nothing
+  else — the state directory stays 0700.
+- **`config.toml` gained `[[signal.principals]]` and lost `[signal] owner`.** Each
+  entry is a number (optionally a uuid), a name, and a profile. An empty list is a
+  startup refusal rather than a permissive default, the same posture as the chat
+  allowlist. The `socket` default was also wrong — it still said
+  `/run/user/1000/signal-cli/socket`, which no longer exists.
 - **[ADR 0004](docs/decisions/0004-signal-control-channel.md) is explicit about
   what the dedicated Signal number does and does not buy.** It does *not*
   prevent unauthorized invocation — anyone who learns the number can message the

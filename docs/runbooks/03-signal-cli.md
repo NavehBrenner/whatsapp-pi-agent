@@ -181,8 +181,10 @@ Waydroid wants the 8GB.
 The Signal channel is the **trusted** side of the system
 ([threat-model.md](../threat-model.md)). Three rules for whatever consumes it:
 
-- **Verify the sender.** Only messages from my personal number trigger the privileged agent.
-  Check the sender against a configured allowlist before anything runs, every time.
+- **Verify the sender.** Only a configured principal triggers the privileged agent — check
+  the sender against the allowlist before anything runs, every time. One principal today;
+  the list is what refuses everyone else, and it may hold more than one row
+  ([ADR 0007](../decisions/0007-principals-on-the-control-channel.md)).
 - **A trigger is a `dataMessage` with a real body — not any envelope.** The receive stream
   also carries `typingMessage` and `receiptMessage` envelopes, observed on hardware
   2026-08-11: a plain "someone is typing" arrives as a `receive` notification with no
@@ -195,9 +197,23 @@ The Signal channel is the **trusted** side of the system
 - **Confirmation replies are commands too.** A `YES` that authorises an action must be
   matched to the specific pending action it's answering, not treated as a global "proceed."
 
-All three belong in the agent code, not here — noted so they don't get lost between
-documents. See also the one-conversation restriction in
-[ADR 0004](../decisions/0004-signal-control-channel.md).
+All three are implemented by the **trigger gate**, `src/gate/signal.py`, running as
+`wpa-gate.service` — deterministic host code with no model in it, the only thing that ever
+forwards a message onward. Rules 1 and 2 are hard refusals there, with real-envelope fixture
+tests in `tests/fixtures/signal/`; rule 3 survives as `reply_to` on the emitted command, the
+id of the quoted message, which is what M4's pending-action registry matches on.
+
+Two consequences for this runbook:
+
+- `signal-cli.service` runs with **`UMask=0027`** so the socket is created `srwxr-x---` and
+  the gate can reach it as a member of the `wpa-signal` group. The gate deliberately does not
+  run *as* `wpa-signal`: `/var/lib/wpa-signal` is the account, and the process parsing
+  messages from strangers has no business being able to read it.
+- The principal list lives in `config.toml` under `[[signal.principals]]`. An empty list is a
+  startup refusal, not a permissive default.
+
+See also [ADR 0004](../decisions/0004-signal-control-channel.md) and
+[ADR 0007](../decisions/0007-principals-on-the-control-channel.md).
 
 ## Operational notes
 
