@@ -126,16 +126,144 @@ Both directions working = channel is live.
 
 ## 3. Back up the account state
 
-`~/.local/share/signal-cli/data/` holds the account's key material. Losing it means
-re-registering; leaking it means someone can be the assistant.
+Do this **after** section 4 — the state has to be at `/var/lib/wpa-signal/` first.
+
+`/var/lib/wpa-signal/` holds the account's key material, and losing it and leaking it are
+both bad in ways that don't overlap. Lose it: re-registration, which means another captcha,
+another SMS, and a **new identity key that every contact sees as a safety-number change**.
+Leak it: someone else can *be* the assistant — read the control channel and send commands
+into it.
+
+The mechanism is [`deploy/backup-signal.sh`](../../deploy/backup-signal.sh), run weekly by
+[`wpa-signal-backup.timer`](../../deploy/systemd/wpa-signal-backup.timer).
+
+### 3a. A key the Pi cannot read
+
+Generate the keypair **on the machine that would perform a restore** — not on the Pi. A
+backup encrypted with a key sitting next to it protects against disk loss and nothing else.
 
 ```bash
-chmod -R go-rwx ~/.local/share/signal-cli
-tar czf ~/signal-cli-backup-$(date +%F).tar.gz -C ~/.local/share signal-cli
+# On the WSL box.
+age-keygen -o ~/.wpa-signal-backup.age.key      # 0600, and it stays here
 ```
 
-Store that backup somewhere encrypted and **off the Pi**. It is in `.gitignore`
-(`signal-data/`) — keep it that way, and never commit it.
+Put the `AGE-SECRET-KEY-1…` line **in the password manager**, next to the registration PIN.
+Only the `age1…` public key goes to the Pi. The Pi can then write backups it cannot read,
+which is the whole design: a Pi compromise gets the live account, but not the archive of
+every previous generation of it.
+
+### 3b. Where it lands
+
+A **Backblaze B2 bucket** — off the Pi and off the WSL box, which is the requirement. The
+WSL box is not a backup target; it is a second thing that can die. The bucket is private,
+the application key is scoped to it alone, and at 1.6 MB a week the 10 GB free tier holds
+roughly a century of generations.
+
+Create the bucket and a bucket-scoped application key, then on the Pi:
+
+```bash
+sudo install -m 0600 -o root -g root /dev/null /etc/wpa-signal-backup.env
+sudoedit /etc/wpa-signal-backup.env
+```
+
+```ini
+AGE_RECIPIENT=age1…                     # public key from 3a
+BACKUP_REMOTE=wpabackup:<bucket>/signal
+RCLONE_CONFIG_WPABACKUP_TYPE=b2
+RCLONE_CONFIG_WPABACKUP_ACCOUNT=<keyID>
+RCLONE_CONFIG_WPABACKUP_KEY=<applicationKey>
+```
+
+rclone builds the remote out of those `RCLONE_CONFIG_WPABACKUP_*` variables, so there is no
+second config file to keep `0600` and no interactive `rclone config` to reproduce. One
+root-owned file, same pattern as `/etc/wpa-signal.env`.
+
+**None of this is in the repo.** The repo is public and the application key is live.
+
+### 3c. Install the timer
+
+```bash
+sudo apt install -y age rclone
+sudo install -m 0644 deploy/systemd/wpa-signal-backup.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now wpa-signal-backup.timer
+sudo systemctl start wpa-signal-backup.service     # take the first one now
+```
+
+The service **stops `signal-cli` for the duration of the copy**. The daemon holds the
+account lock and rewrites session state as messages arrive, so a live copy is not
+guaranteed coherent. That is ~30s of control channel downtime a week — signal-cli needs
+~19s to get back to a listening socket, and messages sent meanwhile arrive on reconnect.
+
+Retention is by filename: each blob is dated and nothing is ever overwritten, so a bad
+backup cannot destroy the previous good one. Four generations are kept on the Pi; the
+remote keeps everything.
+
+**`GODEBUG=netdns=cgo` in the unit is load-bearing on this network.** rclone is Go, and Go's
+built-in resolver cannot resolve `api.backblazeb2.com` through this router — every lookup
+returns `no such host` while `getent hosts` resolves the same name every time. Verified
+2026-08-11: pure-Go failed 3/3, cgo succeeded immediately. Without it the weekly backup fails
+with what reads like a Backblaze outage, on a unit nobody watches. If backups start failing
+on a different network, check this before believing the error.
+
+### 3d. The restore drill — run it, don't assume it
+
+A backup nobody has restored is a hypothesis. Restoring happens on the WSL box, because that
+is where the private key is.
+
+**The restore machine needs three things it does not have by default**, and finding that out
+during an actual outage is the bad time to find it out:
+
+| | |
+|---|---|
+| `age` + `rclone` | single binaries, `~/.local/bin/` — no root needed |
+| **JRE 25** + signal-cli 0.14.7 | `~/.local/opt/` — the box had Java 8, which cannot run signal-cli at all |
+| The **B2 key**, in the password manager | the age key opens the blob; without bucket credentials you never get the blob |
+
+Unlike the Pi, the x86_64 signal-cli needs no libsignal surgery — the bundled native library
+is the right architecture. Section 1a is an arm64 problem only.
+
+```bash
+export JAVA_HOME=~/.local/opt/jdk-25.0.4+7-jre
+export RCLONE_CONFIG_WPABACKUP_TYPE=b2 \
+       RCLONE_CONFIG_WPABACKUP_ACCOUNT=<keyID> RCLONE_CONFIG_WPABACKUP_KEY=<applicationKey>
+
+blob=wpa-signal-2026-08-11.tar.gz.age
+scratch=$(mktemp -d); cd "$scratch"
+rclone --config "" copy "wpabackup:<bucket>/signal/$blob" .
+age -d -i ~/.wpa-signal-backup.age.key "$blob" | tar xzf - -C .
+signal-cli --config "$scratch/wpa-signal" listAccounts
+rm -rf "$scratch"        # it is the account in plaintext; do not leave it in /tmp
+```
+
+Pass the credentials as environment variables rather than writing an rclone config file, so
+a bucket key does not outlive the drill in a dotfile.
+
+`listAccounts` reporting the assistant's number is the pass condition. **Record the output** —
+"restored successfully" means nothing six months later if nobody wrote down what it looked
+like.
+
+**Drill run 2026-08-11**, from the B2 copy rather than a Pi-local file, so the download path
+was exercised too:
+
+```
+$ rclone --config "" copy wpabackup:pi-agent-signal-backup/signal/wpa-signal-2026-08-11.tar.gz.age .
+$ ls -l
+wpa-signal-2026-08-11.tar.gz.age  816.7K
+$ signal-cli --config "$scratch/wpa-signal" listAccounts
+Number: +972552645702
+```
+
+That is the whole pass condition: the number, from a blob the Pi wrote and cannot read,
+opened on a machine that has never held the account.
+
+**Do not `receive`, `send`, or start a daemon against the restored copy.** Signal allows the
+account one primary device. A restored copy running while the Pi still runs is not a hot
+spare — it is two clients claiming one identity, and they will fight over the account. A
+restore is for when the Pi is *gone*.
+
+**The registration PIN is not in the backup** and is not derivable from it. Losing the PIN
+and the number loses the account regardless of how good the backups are. Password manager.
 
 ## 4. Run as a daemon
 
@@ -252,7 +380,9 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"send","params":{"recipient":["+4477...
 - [ ] Dedicated number registered as its own Signal account (not a link to mine)
 - [ ] Registration PIN set and stored
 - [ ] Messages send and receive both ways
-- [ ] Account state backed up off the Pi, encrypted
+- [ ] Account state backed up off the Pi **and off the dev box**, encrypted with a key that
+      is on neither, re-taken on a timer, and **restored at least once with the output
+      written down** (section 3)
 - [ ] Daemon runs under systemd on a unix socket, restarts on failure
 - [ ] signal-cli version recorded, **and the matching libsignal aarch64 build**
 - [ ] **No message content in journald**: `sudo journalctl -u signal-cli | grep -i '^.*Body:'`
