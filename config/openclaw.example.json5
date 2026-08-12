@@ -209,6 +209,23 @@
       // `--tools` takes BUILT-IN names only — a `mcp__openclaw__*` glob hung the
       // turn for 282s and ended in FailoverError.
       //
+      // WHY `TodoWrite` AND NOT `Read`: with `--tools Read` the agent read
+      // arbitrary absolute paths as the gateway uid — /etc/passwd, and this very
+      // config, out of which it reported a plaintext gateway.auth.token. That uid
+      // owns EVERY agent's auth store, so a file-reading tool defeats per-agent
+      // credential isolation outright. Naming a builtin the CLI does not have
+      // grants nothing at all, which is the closest thing to "no tools" that works.
+      //
+      // Two mechanics, both measured, both counter-intuitive:
+      //   * `--disallowedTools` does NOT override `--tools`. The allowlist wins, so
+      //     a capability must LEAVE the allowlist; adding it to the deny list is a
+      //     no-op. (`Read` appears in both lists below; only its absence above did
+      //     the work.)
+      //   * Tool policy binds at SESSION CREATION. Tightening this leaves existing
+      //     sessions on the old capability set until their session store is
+      //     cleared — a fresh agent had one tool while a resumed one still had
+      //     `Read`. Whatever regenerates this config must clear affected sessions.
+      //
       // cliBackends is GLOBAL — the schema has no per-agent equivalent. So this is a
       // fixed floor for every agent, and all per-(conversation, sender) capability
       // lives in the OpenClaw MCP layer below, where policy actually discriminates.
@@ -222,14 +239,14 @@
           args: [
             "-p", "--output-format", "stream-json", "--include-partial-messages",
             "--verbose", "--setting-sources", "user",
-            "--tools", "Read",
+            "--tools", "TodoWrite",
             "--allowedTools", "mcp__openclaw__*",
             "--disallowedTools", "Bash,Write,Edit,NotebookEdit,Agent,Skill,ScheduleWakeup,CronCreate,Monitor",
           ],
           resumeArgs: [
             "-p", "--output-format", "stream-json", "--include-partial-messages",
             "--verbose", "--setting-sources", "user",
-            "--tools", "Read",
+            "--tools", "TodoWrite",
             "--allowedTools", "mcp__openclaw__*",
             "--disallowedTools", "Bash,Write,Edit,NotebookEdit,Agent,Skill,ScheduleWakeup,CronCreate,Monitor",
             "--resume", "{sessionId}",
@@ -255,7 +272,14 @@
         // inheritance: an agent with no local profile resolves the default agent's
         // profiles at runtime, and there is no key to disable that. Keeping this one
         // empty is what makes "absent, not refused" still true — nothing can inherit
-        // what does not exist. VERIFY both directions (NVB-20 phase 3.1).
+        // what does not exist.
+        //
+        // VERIFIED 2026-08-12, both directions. A canary key written ONLY here was
+        // retrieved and sent upstream by `family`, which has no store file at all —
+        // the provider answered 401, which is proof the key was found rather than
+        // missing. Emptying this store then emptied family's view of it. This is not
+        // a tidiness rule; it is the only thing standing between the agents until
+        // sandbox.mode above is real (NVB-14).
         id: "main",
         default: true,
         tools: { deny: ["*"] },
@@ -264,6 +288,13 @@
         id: "owner",
         workspace: "~/.openclaw/workspaces/owner",
         // Credentials live in this agent's own agentDir. Never reuse an agentDir.
+        //
+        // THE AGENT'S NAME IS NOT SET HERE. `identity.name` is metadata for the UI;
+        // what the assistant believes it is called comes from IDENTITY.md, a
+        // bootstrap file in the agent's workspace. Set identity.name alone and the
+        // agent answers "I don't have one yet — IDENTITY.md is still blank", which
+        // is exactly what it did. Whatever generates agents must write that file.
+        identity: { name: "Pi" },
       },
       {
         id: "family",
