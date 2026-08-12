@@ -977,6 +977,52 @@ Effective backend args now:
 --disallowedTools Read,Bash,Write,Edit,NotebookEdit,Agent,Skill,ScheduleWakeup,CronCreate,Monitor
 ```
 
+### ⛔ OpenClaw's own sandbox does not contain the claude-cli runtime (2026-08-13)
+
+Read out of the shipped `dist/` of **`openclaw@2026.7.1-2`** — the exact version on the
+Pi — rather than from prose docs, after `gateway/sandbox-vs-tool-policy-vs-elevated`
+turned out to say nothing at all about CLI backends.
+
+| Evidence | What it shows |
+| --- | --- |
+| `docs/gateway/sandboxing` | "The Gateway process always stays on the host; only tool execution moves into the sandbox when enabled." The sandboxed set is OpenClaw's own `exec`, `read`, `write`, `edit`, `apply_patch`, `process`, browser. |
+| `cli-backends`, `chat-engine`, `claude-live-session` | **Zero** occurrences of `sandbox` in any of the three. |
+| `claude-live-session` | The CLI is a host subprocess: `supervisor.spawn({… cwd: params.context.cwd ?? params.context.workspaceDir })`. |
+| `agent-tools.policy` | Sandbox policy applies to the runtime tool list only: `sandboxMode === "all"` → `resolveSandboxToolPolicyForAgent`. |
+| harness registry | Registered runtime ids are `codex`, `claude-cli`, `github-copilot`, `google-gemini-cli`; the built-in runtime id is `openclaw`. |
+
+So `agents.defaults.sandbox.mode: "all"` **does not contain the tools that actually
+execute under our runtime.** It governs OpenClaw's own tools; the Claude CLI's `Bash` /
+`Read` / `Write` run beside it on the host as the gateway uid. The finding above — that
+native CLI tools bypass OpenClaw path policy — extends to the sandbox as well. The only
+floor under the real tool surface remains `cliBackends.args --tools`, which is **global
+rather than per-agent**, and which `2026.8.1-beta.1` removed.
+
+Note also that `auto` runtime selection prefers a registered harness that supports the
+provider. With the Claude CLI installed, Anthropic resolves to `claude-cli` **unless
+`agentRuntime.id` is pinned to `openclaw`** — so the pin is load-bearing, not cosmetic.
+
+**For Anthropic, subscription auth and sandbox coverage are mutually exclusive.**
+`docs/providers/anthropic.md` names it "OAuth (Claude CLI subscription reuse)": for
+Anthropic, OAuth *is* the CLI harness, and there is no Anthropic OAuth token OpenClaw's
+own transport can send. Providers with OpenClaw-managed OAuth and **no** registered
+harness — xAI/Grok, Qwen — do run on the built-in runtime, and there the sandbox applies.
+
+**A billing premise underneath NVB-13 is out of date.** OpenClaw's docs cite Anthropic's
+**June 15 2026** support update: Claude Agent SDK, `claude -p`, and third-party app usage
+draw from the signed-in subscription's usage limits. ADR 0011 argues partly from Feb 2026
+terms prohibiting exactly this, server-enforced since April 2026. Re-check against
+Anthropic's own support articles before either premise is cited again.
+
+**Consequence for NVB-14: the container that delivers per-principal isolation has to wrap
+the gateway, not tool execution.** Which revives one specific conflict —
+`docs/providers/anthropic.md` warns that Claude CLI reuse expects OpenClaw on the same
+host as the Claude login, that Docker installs can persist a container home and log in
+inside it, but that Podman installs "do not mount host `~/.claude`; use an Anthropic API
+key there." The rootless-Podman lean was chosen to avoid rewriting Waydroid's iptables.
+**Subscription auth pulls toward Docker and Waydroid pulls toward rootless Podman**, and
+that is the first thing NVB-14 has to settle on hardware.
+
 ### Group sessions are shared, and a repeat question returns `NO_REPLY`
 
 The group has exactly one session key —
