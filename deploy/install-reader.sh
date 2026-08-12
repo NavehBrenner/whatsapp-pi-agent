@@ -21,11 +21,25 @@ rsync -a --delete --exclude .git --exclude .venv --exclude '__pycache__' \
   --exclude config/config.toml "$repo/" /opt/wpa/
 chmod 0755 /opt/wpa/deploy/snapshot.sh
 
+# config.toml holds the authority table — which chats are read, which conversations
+# may command, and as whom. It is not a secret file, but it is the answer to "what is
+# this thing allowed to do", so it is not world-readable either: only the two services
+# that need it. `wpa-config` exists because both of them need it and they are
+# deliberately different users (ADR 0006).
+groupadd -f --system wpa-config
+for u in wpa-gate wpa-reader; do
+  id "$u" >/dev/null 2>&1 && usermod -aG wpa-config "$u"
+done
+
 # config.toml is gitignored, so a fresh install has none. The reader refuses to
 # start without one rather than defaulting to "read every chat".
 if [[ ! -f /opt/wpa/config/config.toml ]]; then
-  install -m 0644 /opt/wpa/config/example.config.toml /opt/wpa/config/config.toml
+  install -m 0640 -o root -g wpa-config /opt/wpa/config/example.config.toml /opt/wpa/config/config.toml
   echo "wrote /opt/wpa/config/config.toml from the example — chats = [] reads NOTHING until you fill it in"
+else
+  # An existing file predates this rule; tighten it in place.
+  chown root:wpa-config /opt/wpa/config/config.toml
+  chmod 0640 /opt/wpa/config/config.toml
 fi
 
 install -m 0644 "$repo"/deploy/systemd/*.service "$repo"/deploy/systemd/*.timer /etc/systemd/system/

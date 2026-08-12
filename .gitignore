@@ -39,3 +39,6 @@ local.properties
 .idea/
 .vscode/
 .DS_Store
+
+# Claude Code local state (worktrees, session scratch)
+.claude/
