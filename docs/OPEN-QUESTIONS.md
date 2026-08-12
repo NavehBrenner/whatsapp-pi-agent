@@ -849,6 +849,65 @@ What genuinely survives either way: per-conversation agents (verified), per-conv
 tool ceilings via `groups[].tools` (verified), and ingress control over who may command
 in which room (the proxy, gate responsibility 5).
 
+### Credential read-through is real, and the sandbox is not optional (2026-08-12)
+
+NVB-20 check 3.1, run on hardware. A canary API key was written to the **`main`**
+agent's store only; `family` has no local store file at all. Then a turn was forced
+onto that provider as `family`:
+
+```
+$ openclaw agent --agent family --model openai/gpt-5.4-nano -m 'say hi'
+FailoverError: Authentication failed (provider returned HTTP 401)
+```
+
+A 401 means the key was **found and sent**. Isolation would have produced "no
+credentials". Emptying `main`'s store then emptied `family`'s view of it, confirming the
+direction a second way. **ADR 0011's invariant — the default agent holds no credentials
+— is load-bearing, and `deploy/render-agents.py` must assert it.**
+
+Worse, and not previously recorded: with `--tools Read`, the agent read arbitrary
+absolute paths as the gateway uid.
+
+```
+$ … 'Read /etc/passwd'          → root:x:0:0:root:/root:/bin/bash
+$ … 'Read ~/.openclaw/openclaw.json, keys only'
+                                → channels, session, agents, bindings, tools, models, …
+```
+
+Native CLI tools bypass OpenClaw path policy, and every agent's auth store
+(`~/.openclaw/agents/*/agent/openclaw-agent.sqlite`, mode 0600) is owned by **the uid
+the CLI runs as**. So without a container, per-agent credential isolation is not a
+boundary at all: read-through leaks `main` downward, and even without it any agent can
+read any other agent's store as a file. ADR 0010's "the container is the enforcement"
+is therefore a requirement, not hardening.
+
+Unprompted, the agent also reported that the config it had just read contains a
+plaintext gateway auth token. It declined to repeat it — but it held it. **That token
+needs rotating, and `gateway.auth.token` living in cleartext in a file the agent can
+read is a standing hazard while any file-reading tool exists.**
+
+Three mechanics learned closing this, each of which cost a wrong assumption:
+
+| Attempt | Result |
+| --- | --- |
+| Add `Read` to `--disallowedTools` | **No effect.** `--tools` is an allowlist and wins. |
+| Remove `Read` from `--tools` (set `--tools TodoWrite`) | Correct fix — an unknown builtin name grants no native tools at all. |
+| Re-test on the *same* agent | **Still had `Read`.** |
+
+That last row is the important one: **tool policy is bound at session creation and does
+not apply to existing sessions.** Tightening policy silently leaves live sessions on the
+old capability set until they are reset. Verified by testing a fresh agent (one tool)
+against the resumed one (still had `Read`), then clearing the session store and
+re-testing — after which `family` reports exactly `mcp__openclaw__session_status` and
+`READ_REFUSED`.
+
+Effective backend args now:
+
+```
+--tools TodoWrite --allowedTools mcp__openclaw__*
+--disallowedTools Read,Bash,Write,Edit,NotebookEdit,Agent,Skill,ScheduleWakeup,CronCreate,Monitor
+```
+
 ### Group sessions are shared, and a repeat question returns `NO_REPLY`
 
 The group has exactly one session key —

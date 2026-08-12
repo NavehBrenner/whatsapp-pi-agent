@@ -81,6 +81,22 @@ tool list, and every agent that can do anything is a non-default entry with its 
 auth store. An agent cannot inherit what does not exist upstream. This is an
 invariant `deploy/render-agents.py` must assert, not a thing to remember.
 
+**Verified 2026-08-12, and it is worse than read-through.** A canary key placed only in
+`main` was retrieved and sent upstream by `family`, which has no store file at all —
+the provider returned 401, which is proof the key was found rather than missing. And
+with any file-reading tool present, the agent reads arbitrary absolute paths as the
+gateway uid, which owns *every* agent's auth store (mode 0600, same uid). So without a
+container there is no credential boundary between agents at all — not merely a leaky
+one. The tool list is what stands in for the container today, which is why the backend
+now grants no native tools whatsoever. **Until `sandbox.mode` is real, "credentials are
+per agent" is a statement about tidiness, not containment.**
+
+Two mechanics that make this harder to hold than it looks: `--disallowedTools` does not
+override `--tools` (the allowlist wins, so a capability must be removed from the
+allowlist rather than added to the deny list), and **tool policy binds at session
+creation** — tightening it leaves existing sessions on the old capability set until
+their session store is cleared.
+
 ### What the gate keeps
 
 Four responsibilities, none of which OpenClaw or Hermes models:
