@@ -215,6 +215,109 @@ comparable (NVB-16) is unwritten. The mitigation is not a second approval gate; 
 that the credential behind an approved action was mounted into one container, so an
 approval that is talked past still cannot reach a tool that container does not have.
 
+### Q4's third option, and the strongest case against this decision
+
+[Q4](../OPEN-QUESTIONS.md) framed the choice as a custom Agent SDK build vs. OpenClaw.
+Anthropic **Managed Agents** was the third option, and it deserves its argument stated
+properly rather than a footnote, because on the control this project cares most about it
+is **stronger than what we chose** — verified against the platform documentation
+2026-08-12.
+
+- **Vault credentials are unreadable by the agent, by construction.** An
+  `environment_variable` credential is stored by Anthropic; the sandbox sees an opaque
+  placeholder and the real secret is substituted into the outbound request *at egress*,
+  scoped to an allowed-host list, with header/body injection controlled separately. The
+  documentation states the property plainly: code running in the sandbox — *including
+  anything the agent writes* — cannot read or exfiltrate a vaulted credential, **even
+  under prompt injection**.
+- **That is exactly the hole we measured in ours.** On 2026-08-12 our agent read
+  `/etc/passwd` and its own gateway config, and reported the plaintext
+  `gateway.auth.token` it found there; every agent's auth store is a `0600` file owned
+  by the uid the CLI runs as. Managed Agents makes that class of finding *impossible*
+  rather than mitigated. ADR 0010's "the credential was never mounted" is a promise we
+  keep with a container we have not built; there, it is the platform's default.
+- **Per-session spend budgets.** A hard dollar cap (`budget.max_list_cost`) that
+  **pauses** the session at `budget_reached` rather than terminating it. Our
+  "Accepted" list below concedes that nothing caps model spend; that concession is
+  ours, not the industry's.
+- **Approvals are platform-side.** `permission_policy: {type: "always_ask"}` idles the
+  session until the client answers `user.tool_confirmation` with allow/deny and an
+  optional `deny_message` the agent sees — a gate outside the agent process, which is
+  the thing ADR 0011 admits it gives up below.
+
+**Why it still loses, and the reason is specific rather than general.** The credential
+property above is the whole argument, and it **does not survive the configuration we
+would have to run.** WhatsApp data and Signal keys are on the Pi, so tool execution has
+to be on the Pi — a **self-hosted sandbox**. Self-hosted sandboxes do not support vault
+`environment_variable` credentials at all, for a reason that is not a roadmap gap:
+egress is *ours*, so there is nowhere for Anthropic to substitute the secret. The
+documentation is equally direct about what self-hosting hands back to us — container
+hardening, egress restriction (there is no default), key custody and rotation — and that
+Anthropic *cannot* sandbox tool execution inside our container. That is NVB-14's work,
+unchanged, plus a platform dependency.
+
+Two further costs, neither fatal alone:
+
+- **Session and event history persists on Anthropic's side** until deleted. That is the
+  family's messages, and it is a genuinely new fact for the threat model rather than a
+  restatement of "the model sees the content". ADR 0006 exists to keep untrusted message
+  text on hardware we control.
+- **There is no Signal channel.** Managed Agents is an agent runtime, not a messaging
+  integration — every allowlist, binding, approval-routing and group-membership concern
+  in this ADR would still be ours to write. Q4's revisit trigger fired precisely because
+  that plumbing had outgrown the agent logic.
+
+So the honest summary is not "we picked the safer runtime". It is: **the option with the
+stronger credential story cannot be used in the shape we need, and the one we picked
+demands we build the containment ourselves** (NVB-14).
+
+### Who reviews a new tool before it reaches a credentialed agent
+
+Q4's fourth question, and the one this project can now answer from experience rather
+than principle: **nothing does, and we have watched it fail.**
+
+Upgrading `2026.7.1-2` → `2026.8.1-beta.1` on 2026-08-12 removed
+`agents.defaults.cliBackends` — the only surface for restricting the Claude CLI's native
+tools — and the agent gained a working shell. No release note flagged it as a
+containment change; `openclaw config validate` reported it as `Unrecognized key`, which
+reads like a rename. The named failure mode in AGENTS.md is `send_email` appearing one
+day because drafting got tedious; a framework upgrade that adds a tool, or removes the
+control that denied one, is that same event with nobody to attribute it to.
+
+Three answers, in the order they take effect:
+
+1. **Versions are pinned and upgrades are deliberate.** Core and channel plugin move
+   together, never automatically.
+2. **NVB-21 gates the upgrade on a probe, not a changelog.** Confirm a tool-flag surface
+   still exists, then run the `id -un` / `READ_REFUSED` probes **before** the Signal
+   channel is started. A capability check is the only review that survives a vendor's
+   release-note style.
+3. **The container is what makes the first two non-critical.** Until NVB-14 lands, a
+   silent tool addition reaches an agent with the gateway's uid and its file access;
+   after it, the blast radius is one container that holds one profile's credentials.
+
+### What would reopen this
+
+The decision is falsifiable. Any one of these is grounds to re-run Q4 rather than defend
+the answer:
+
+- **Self-hosted sandboxes gain vault-equivalent credential handling** (or Managed Agents
+  ships a Signal channel). The single argument that sank the third option is a
+  documented limitation, not a law; if it lifts, the comparison inverts, because a
+  credential the agent cannot read beats a credential in a file it can.
+- **OpenClaw ships a per-conversation or per-agent spend cap.** Removes a real
+  concession below and weakens one of the third option's remaining advantages.
+- **A second upgrade silently removes a containment control.** Once is a bug we filed
+  ([#122715](https://github.com/openclaw/openclaw/issues/122715)); twice is evidence that
+  "a large TypeScript dependency, not on the credential path" was the wrong bet, and the
+  custom build's argument returns intact.
+- **The tool surface becomes MCP-based.** NVB-13 rejected MCP gateways because they gate
+  MCP traffic and our tools are not MCP servers. When capabilities arrive as MCP — which
+  is the stated plan as trust grows — that survey is worth re-running.
+- **A person outside the household is admitted to a room.** ADR 0009's microVM trigger,
+  applied to the runtime: the threat model shifts from prompt injection to an adversary
+  with a keyboard.
+
 ## Consequences
 
 **Accepted:**
