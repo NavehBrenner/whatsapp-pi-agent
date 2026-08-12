@@ -34,6 +34,21 @@ several of them are the kind of thing that costs an evening to rediscover.
   and `plugins.entries.signal.enabled: true` are required; with only one the channel
   never connects and nothing says why.
 
+- **Q4 is settled properly, not just answered (NVB-13).** ADR 0011 now states Managed
+  Agents' case at full strength rather than in passing, because on the control this
+  project cares most about it is *stronger* than what we chose: a vault credential is
+  substituted at egress and cannot be read or exfiltrated by the sandbox even under
+  prompt injection — the exact property we measured ours lacking the same day. It loses
+  on something specific: that property does not survive a self-hosted sandbox, and
+  WhatsApp data on the Pi means tool execution has to be self-hosted.
+
+  Two additions make the decision reviewable rather than merely recorded. **Nothing
+  reviews a new default tool before it reaches a credentialed agent** — an upgrade
+  removed our tool floor and the agent gained a shell, announced as an unrecognized
+  config key — so the answer is pinned versions, a probe gate before the channel starts,
+  and the container that makes both non-critical. And **five named facts reopen the
+  decision**, including the one that would invert it outright.
+
 ### Verified on hardware, 2026-08-12 (NVB-20)
 
 - **Per-sender tool policy does not reach a CLI-backend agent, and fails open.**

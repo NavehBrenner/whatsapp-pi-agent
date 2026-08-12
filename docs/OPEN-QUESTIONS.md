@@ -226,6 +226,14 @@ Two things fell out along the way:
 integration mechanism is now Q6. Kept below for the reasoning, which the answer
 partly overturns.
 
+The ADR carries three things this section only gestures at, all added when NVB-13 was
+closed: **Managed Agents' argument stated at full strength** (vault credentials are
+unreadable by the agent even under prompt injection — the exact property we measured
+ours lacking, and it does not survive the self-hosted sandbox we would have to run);
+**who reviews a new default tool** (nothing does — a version upgrade removed our tool
+floor on 2026-08-12 and the agent gained a shell); and **the facts that reopen the
+question**, so the decision can be falsified rather than defended.
+
 **What changed the answer.** The lean was "custom Agent SDK build", on the argument
 that capability shaping is load-bearing and should not be inherited from a
 framework. A documentation review on 2026-08-12 found that OpenClaw expresses the
