@@ -52,6 +52,14 @@ several of them are the kind of thing that costs an evening to rediscover.
   tool set** until a stable release carries the fix *and* keeps a tool-flag surface
   (NVB-21). Reported upstream as openclaw/openclaw#122715 and #122716.
 
+- **Shared group permissions, confirmed with two real senders.** The owner and a second
+  family member asked the same question in the family group and got the same one-tool
+  answer. The transcript also shows why `toolsBySender` looked plausible for so long:
+  every message carries `senderId`, `senderName` and a correctly computed
+  `senderIsOwner`, so **the identity reaches the prompt and never reaches the tool
+  policy**. The second sender's turn resumed the first's session, which is ADR 0010
+  rule 1 working as written.
+
 - **Credential read-through is real, and the container is not optional.** A canary key
   written only to `main`'s store was retrieved and sent upstream by `family`, which has
   no store file at all — the provider returned 401, which is proof the key was found

@@ -849,6 +849,31 @@ What genuinely survives either way: per-conversation agents (verified), per-conv
 tool ceilings via `groups[].tools` (verified), and ingress control over who may command
 in which room (the proxy, gate responsibility 5).
 
+### Shared group permissions, confirmed with two real senders (2026-08-12)
+
+The owner and a second family member asked the same question in the family group —
+"list every tool you have available" — and got the same answer: `session_status`, and
+nothing else. Shared permissions are therefore observed rather than inferred from
+config.
+
+The group transcript also settles *why* `toolsBySender` looked so plausible for so
+long. Every inbound message carries the sender:
+
+```json
+"__openclaw": { "senderIsOwner": false,
+                "senderId": "uuid:1e34f247-…",
+                "senderName": "Liron Brenner Agmon" }
+```
+
+`senderIsOwner` is computed correctly — `true` for the owner, `false` for her. **The
+identity reaches the prompt. It never reaches the tool policy.** That is the whole bug
+in one artefact, and it is why keying on `name:` seemed reasonable: the display name is
+right there in the agent's own metadata block, just not on the path that decides tools.
+
+Her turn also **resumed** the owner's group session (`useResume=true reuse=reusable`),
+which is ADR 0010 rule 1 working as written: inside one room a shared session costs
+nothing that is not already shared.
+
 ### There is no message that grants a capability — checked, not assumed (2026-08-12)
 
 NVB-20 check 3.2. Over the owner's DM, the agent was asked in plain language to grant
