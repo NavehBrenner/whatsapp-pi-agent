@@ -1,0 +1,398 @@
+// Copy to ~/.openclaw/openclaw.json on the Pi and fill in the uuids.
+//
+// VALIDATED against `openclaw config schema` (OpenClaw 2026.7.1-2, 2026-08-12) with
+// `openclaw config validate`. Do not hand-edit a key you have not seen in the schema —
+// the prose docs are stale in at least three places and were wrong here before this
+// file was checked (NVB-20 phase 0.1). To re-check after an OpenClaw upgrade:
+//
+//     openclaw config schema | less          # ground truth
+//     openclaw config validate               # checks ~/.openclaw/openclaw.json
+//
+// OpenClaw reads JSON5 and WATCHES THE FILE — edits apply without a restart. That is
+// convenient and it is also why `configWrites` is false below: a channel that can
+// write this file is a chat message that grants a capability, which ADR 0010 forbids.
+//
+// Secrets do NOT go in here. Use ${VAR} substitution against ~/.openclaw/.env, and
+// see docs/runbooks/04-agent-deploy.md.
+//
+// Every setting that differs from the OpenClaw default carries a "// WHY:" line.
+{
+  // -------------------------------------------------------------------------
+  // The Signal channel.
+  // -------------------------------------------------------------------------
+  channels: {
+    signal: {
+      enabled: true,
+      account: "+441234567890", // the assistant's own dedicated number (ADR 0004)
+
+      // --- transport ------------------------------------------------------
+      // There is no `transport` object. The docs describe "managed-native" /
+      // "external-native" / "container"; the schema spells that as apiMode plus
+      // autoStart plus the http* keys. apiMode is "auto" | "native" | "container".
+      //
+      // WHY native + autoStart:false — signal-cli stays under our own systemd unit
+      // with --no-receive-stdout, --scrub-log and UMask=0007 (runbook 03). Letting
+      // OpenClaw start its own daemon would lose those flags, and the proxy
+      // (Q6 option E) needs the daemon to be ours.
+      apiMode: "native",
+      autoStart: false,
+      // VERIFY (NVB-20 phase 2.1): whether this is HTTP+SSE or a websocket, and
+      // therefore what the proxy has to relay. Point these at the PROXY, not at
+      // signal-cli — the proxy forwards to the real daemon behind it.
+      httpHost: "127.0.0.1",
+      httpPort: 8080,
+
+      // --- who may talk to it ----------------------------------------------
+      // WHY allowlist, not the "pairing" default (confirmed as the default in the
+      // schema): pairing lets an unknown sender request their way in with a code.
+      // An empty allowlist must mean "nobody", never "anyone who asks".
+      dmPolicy: "allowlist",
+      // KEY ON THE UUID. Verified on hardware 2026-08-11: Signal does not share
+      // phone numbers by default, sourceNumber is null on real traffic, and an
+      // E.164 entry matches nothing. Read the ACI off the wire — recipe in
+      // config/example.config.toml.
+      allowFrom: [
+        "uuid:00000000-0000-0000-0000-000000000000", // owner
+      ],
+
+      groupPolicy: "allowlist", // schema default; stated on purpose
+      // Senders permitted to command from inside an allowlisted group.
+      //
+      // THIS IS CHANNEL-WIDE, NOT PER GROUP. Confirmed against the schema: a Signal
+      // group's own config carries only ingest/requireMention/tools/toolsBySender —
+      // there is no per-group sender allowlist. So anyone listed here is admitted to
+      // EVERY allowlisted group. That is ADR 0011's fifth gate responsibility and it
+      // is why the proxy exists rather than being a nice-to-have.
+      groupAllowFrom: [
+        "uuid:00000000-0000-0000-0000-000000000000", // owner
+        "uuid:11111111-1111-1111-1111-111111111111", // mom
+        "uuid:22222222-2222-2222-2222-222222222222", // dad
+      ],
+
+      // --- per-room grants (ADR 0008's pair, the half config can express) ----
+      // Resolution: group toolsBySender -> group tools -> default toolsBySender ->
+      // default tools. Deny wins. Each entry takes allow | alsoAllow | deny.
+      groups: {
+        "<base64 groupId from listGroups>": {
+          // WHY true: in a shared room everything the assistant says is disclosed to
+          // everyone present. Requiring a mention makes being addressed explicit.
+          requireMention: true,
+          // The room's ceiling — nobody in it gets more than this.
+          // An {allow|alsoAllow|deny} object, NOT the bare array the docs show.
+          tools: { allow: ["read", "ask_user"] },
+
+          // ⛔ NO toolsBySender HERE, DELIBERATELY. Verified on hardware 2026-08-12
+          // by instrumenting matchToolsBySenderPolicy: it resolves on the dispatch
+          // path, but a CLI-backed agent is served over the MCP loopback, whose
+          // context is rebuilt from HTTP headers that carry no sender. So the
+          // deciding call sees no identity, falls through to "*", and any per-sender
+          // rule here is silently inert — the dangerous kind of inert, since a
+          // narrowing rule that never matches fails OPEN.
+          //
+          // Fixed upstream, but only in the beta channel (v2026.7.2-beta.7 onward);
+          // npm `latest` is 2026.7.1-2. The beta was tried and rolled back: it drops
+          // `agents.defaults.cliBackends`, and without those flags the Claude CLI's
+          // native Bash is ungoverned by OpenClaw tool policy. Until a stable release
+          // carries the fix AND keeps a tool-flag surface, everyone in a room shares
+          // ONE tool set — the line above. Re-check with NVB-21.
+        },
+      },
+
+      dms: {
+        // The only supported per-DM key. Everything else about a DM is decided by
+        // which agent its binding routes to.
+        "uuid:00000000-0000-0000-0000-000000000000": { historyLimit: 50 },
+      },
+
+      // WHY false: "no message may grant a capability" (ADR 0010) as a config key.
+      // With hot reload on, a channel that can write config is a
+      // privilege-escalation path reachable by prompt injection.
+      configWrites: false,
+
+      // Reactions on the assistant's own messages — which is the approval path.
+      // "all" would surface reactions on other people's messages too.
+      reactionNotifications: "own",
+
+      // The daemon cannot be asked to drop these, so drop them here.
+      ignoreAttachments: true,
+      mediaMaxMb: 8,
+      sendReadReceipts: false, // WHY: a read receipt tells a stranger the number is live
+    },
+  },
+
+  // -------------------------------------------------------------------------
+  // Approvals (ADR 0008's confirmations, NVB-16).
+  //
+  // NOTE: there is no `channels.signal.execApprovals`. Only discord, matrix, qqbot,
+  // slack and telegram have that block — Signal does not, so approvers are inferred
+  // from channels.signal.allowFrom / defaultTo (and commands.ownerAllowFrom) and
+  // delivery is configured here instead.
+  //
+  // On Signal these render as 👍 (allow once) / 👎 (deny) reactions on the prompt,
+  // and an ask_user prompt with 2-4 options as 1️⃣-4️⃣. The reaction is bound to that
+  // request id — a stronger link between a YES and the action it authorises than the
+  // quoted reply we designed. VERIFY on hardware (NVB-20 phase 3.3).
+  // -------------------------------------------------------------------------
+  approvals: {
+    exec: {
+      enabled: true, // WHY: default is false, and then nothing is ever asked
+      // WHY targets, not session: an approval prompt in the family group is
+      // answerable by a reaction from anyone in the room, and read by all of them.
+      mode: "targets",
+      targets: [{ channel: "signal", to: "uuid:00000000-0000-0000-0000-000000000000" }],
+    },
+    plugin: {
+      enabled: true, // independent of approvals.exec.enabled
+      mode: "targets",
+      targets: [{ channel: "signal", to: "uuid:00000000-0000-0000-0000-000000000000" }],
+    },
+  },
+
+  // -------------------------------------------------------------------------
+  // Sessions. WHY both keys: dmScope alone leaves group sessions shared.
+  // -------------------------------------------------------------------------
+  session: {
+    // WHY not the "main" default: main collapses every DM on every channel into one
+    // session. ADR 0010 rule 1 — an agent session may not span conversations.
+    dmScope: "per-channel-peer",
+    scope: "per-sender",
+  },
+
+  // -------------------------------------------------------------------------
+  // Model auth. NOT set here — credentials never live in this file.
+  //
+  // We start on the Claude CLI, the sanctioned subscription-backed path:
+  //
+  //     openclaw models auth login --provider anthropic --method cli --set-default
+  //
+  // OpenClaw shells out to `claude -p` and lets that subprocess authenticate as
+  // itself against the host's existing login, so no token is pasted anywhere and
+  // usage draws on the Pro/Max allowance rather than metered API spend.
+  //
+  // The thing to watch is not technical: a family group means people other than the
+  // account holder cause requests against the owner's limits, and OpenClaw's own
+  // guidance is to use an API key for shared production automation. Auth is per
+  // agent, so the family agent can move to a key while the owner's stays on the
+  // subscription — that is the first switch to make, not an all-or-nothing one.
+  //
+  // Alternatives, in the order we would reach for them:
+  //   1. anthropic API key      metered ($5/$25 per MTok on Opus 5), no ambiguity.
+  //   2. xai OAuth              SuperGrok / X Premium; OpenClaw's *recommended* xAI
+  //                             path. Eligibility is xAI's call.
+  //   3. openai OAuth           ChatGPT/Codex subscription, supported outside Codex.
+  //   4. qwen / minimax / z.ai  flat-rate coding plans, well under per-token rates.
+  //
+  // NOT available, checked 2026-08-12: Google. Consumer Gemini CLI "Login with
+  // Google" ended 2026-06-18 and Antigravity's terms prohibit third-party tools, so
+  // OpenClaw will not create new Gemini OAuth profiles — a Google AI Pro subscription
+  // buys nothing here. Cursor has no sanctioned third-party inference API at all.
+  //
+  // Whatever backs it, nothing caps spend. Set a billing or quota alert (ADR 0011).
+  // -------------------------------------------------------------------------
+  agents: {
+    defaults: {
+      model: { primary: "anthropic/claude-opus-5" },
+
+      // ---------------------------------------------------------------------
+      // THE FLOOR UNDER CLAUDE CODE'S OWN TOOLS. Without this the agent has
+      // Bash/Write/Edit and OpenClaw's tools.* policy does not touch them —
+      // measured on hardware 2026-08-12, and it ran `id` as a NOPASSWD:ALL user.
+      //
+      // `--tools <names>` is a DEFAULT-DENY ALLOWLIST over Claude Code's built-in
+      // set. `--disallowedTools` is a deny list and propagates to subagents
+      // ("disabled for this session, in subagents as well as here").
+      // `--allowedTools` is only auto-approval — it restricts nothing, which is why
+      // OpenClaw's own default (`--allowedTools mcp__openclaw__*`) left Bash live.
+      //
+      // Do NOT try to express "no tools": `--tools ""` and `--tools=` were both
+      // tested and neither disables anything. Name a minimal set instead. And
+      // `--tools` takes BUILT-IN names only — a `mcp__openclaw__*` glob hung the
+      // turn for 282s and ended in FailoverError.
+      //
+      // cliBackends is GLOBAL — the schema has no per-agent equivalent. So this is a
+      // fixed floor for every agent, and all per-(conversation, sender) capability
+      // lives in the OpenClaw MCP layer below, where policy actually discriminates.
+      //
+      // The base args replicate OpenClaw's own defaults; only the three tool flags
+      // are ours. Keep the rest verbatim or the invocation breaks.
+      // ---------------------------------------------------------------------
+      cliBackends: {
+        "claude-cli": {
+          command: "claude", // required, even when only overriding args
+          args: [
+            "-p", "--output-format", "stream-json", "--include-partial-messages",
+            "--verbose", "--setting-sources", "user",
+            "--tools", "Read",
+            "--allowedTools", "mcp__openclaw__*",
+            "--disallowedTools", "Bash,Write,Edit,NotebookEdit,Agent,Skill,ScheduleWakeup,CronCreate,Monitor",
+          ],
+          resumeArgs: [
+            "-p", "--output-format", "stream-json", "--include-partial-messages",
+            "--verbose", "--setting-sources", "user",
+            "--tools", "Read",
+            "--allowedTools", "mcp__openclaw__*",
+            "--disallowedTools", "Bash,Write,Edit,NotebookEdit,Agent,Skill,ScheduleWakeup,CronCreate,Monitor",
+            "--resume", "{sessionId}",
+          ],
+        },
+      },
+
+      sandbox: {
+        // WHY "all", not the "off" default: the container IS the enforcement
+        // (ADR 0010). Without it a tool is refused by name instead of being absent.
+        mode: "all",
+        scope: "agent", // one container per agent id (default, stated on purpose)
+        backend: "docker",
+        workspaceAccess: "none",
+      },
+    },
+    // It is `agents.list` (an array of objects each carrying `id`), NOT the
+    // `agents.entries` map the docs describe. `additionalProperties` is false on the
+    // agents node, so `entries` is rejected outright rather than ignored.
+    list: [
+      {
+        // THE DEFAULT AGENT HOLDS NOTHING. Auth stores have read-through
+        // inheritance: an agent with no local profile resolves the default agent's
+        // profiles at runtime, and there is no key to disable that. Keeping this one
+        // empty is what makes "absent, not refused" still true — nothing can inherit
+        // what does not exist. VERIFY both directions (NVB-20 phase 3.1).
+        id: "main",
+        default: true,
+        tools: { deny: ["*"] },
+      },
+      {
+        id: "owner",
+        workspace: "~/.openclaw/workspaces/owner",
+        // Credentials live in this agent's own agentDir. Never reuse an agentDir.
+      },
+      {
+        id: "family",
+        workspace: "~/.openclaw/workspaces/family",
+      },
+      {
+        // ADR 0010's mixed case: the owner's own session inside the shared room.
+        // NOT expressible as a binding — bindings match per conversation, never per
+        // sender — so this exists for the proxy to route to (ADR 0011 item 3).
+        id: "owner-family",
+        workspace: "~/.openclaw/workspaces/owner-family",
+      },
+    ],
+  },
+
+  // -------------------------------------------------------------------------
+  // Which agent serves which conversation. Per conversation only.
+  //
+  // peer.kind is "direct" | "group" | "channel" | "dm", where "dm" is a deprecated
+  // alias for "direct" — schema-confirmed, and the one thing the docs had no Signal
+  // example for at all.
+  //
+  // **peer.id for a DIRECT peer carries the `uuid:` prefix; a GROUP id does not.**
+  // Verified on hardware 2026-08-12. The canonical session key is the ground truth:
+  //
+  //     agent:owner:signal:direct:uuid:b0c72586-…      <- prefixed
+  //     agent:family:signal:group:Mt2z3ANj…            <- not prefixed
+  //
+  // A bare uuid here does NOT match, and **nothing says so** — no error, no warning.
+  // The conversation silently falls through to the default agent, which is why the
+  // default agent holding nothing is load-bearing rather than tidy. Read the real key
+  // out of ~/.openclaw/agents/<id>/sessions/sessions.json rather than typing one.
+  // -------------------------------------------------------------------------
+  bindings: [
+    {
+      agentId: "owner",
+      match: {
+        channel: "signal",
+        peer: { kind: "direct", id: "uuid:00000000-0000-0000-0000-000000000000" },
+      },
+      comment: "owner-1to1",
+    },
+    {
+      agentId: "family",
+      match: {
+        channel: "signal",
+        peer: { kind: "group", id: "<base64 groupId>" },
+      },
+      comment: "family group — shared session, narrow tools",
+    },
+  ],
+
+  // -------------------------------------------------------------------------
+  // Tool policy. Narrow globally; each level can only restrict further, except
+  // alsoAllow, which widens relative to the profile. Deny always wins.
+  // -------------------------------------------------------------------------
+  tools: {
+    // `minimal` already removes 18 tools, observed on hardware 2026-08-12:
+    //   agents_list, create_goal, cron, gateway, get_goal, message, nodes,
+    //   sessions_history, sessions_list, sessions_send, sessions_spawn,
+    //   sessions_yield, skill_workshop, subagents, tts, update_goal,
+    //   web_fetch, web_search
+    // So `message`, `gateway`, `nodes`, `cron`, `subagents` and the web tools need no
+    // explicit deny — the ones below are the residue that `minimal` leaves behind.
+    profile: "minimal",
+    deny: [
+      "exec", // no shell. Denying write/edit does NOT make exec read-only.
+      "process",
+      "terminal",
+      "code_execution",
+      "browser",
+      "screen",
+    ],
+    elevated: { enabled: false }, // WHY: exec is denied; this closes the escape hatch
+  },
+
+  // -------------------------------------------------------------------------
+  // TOOL NAMES ARE RUNTIME-DEPENDENT — the trap this config cannot express.
+  //
+  // Observed 2026-08-12 with the claude-cli runtime:
+  //
+  //   WARN group tools.allow allowlist contains unknown entries (read). These
+  //   entries are shipped core tools but unavailable in the current
+  //   runtime/provider/model/config.
+  //
+  // So a name that is valid under one runtime is simply absent under another, and an
+  // allow list naming it grants nothing. A *deny* naming it is worse: it is silently
+  // a no-op, and `openclaw config validate` passes either way (verified: a typo'd
+  // "gatewayy" in a deny array validates clean).
+  //
+  // This is what the registry (src/agent/registry.py) is for, and it means the
+  // registry has to be checked against THE RUNTIME WE ACTUALLY RUN rather than a
+  // static list — ADR 0011.
+  // -------------------------------------------------------------------------
+
+  // -------------------------------------------------------------------------
+  // The Signal channel is an EXTERNAL PLUGIN and is not trusted implicitly.
+  //
+  // Both keys are required. With neither, the gateway starts, logs one WARN
+  // ("channel is configured, but external plugin \"signal\" is installed without
+  // explicit trust"), and then simply never connects — no error, no retry, no clue
+  // at the channel level. Undocumented in every page we read; found by reading the
+  // gateway log on 2026-08-12.
+  //
+  // It is a good default on their part: an external plugin that can see every
+  // message should not load because a channel block mentions it.
+  // -------------------------------------------------------------------------
+  plugins: {
+    allow: ["signal"],
+    entries: { signal: { enabled: true } },
+  },
+
+  // -------------------------------------------------------------------------
+  // Route the anthropic provider through the locally installed Claude CLI, so
+  // `claude -p` authenticates as itself against the host login. This is the
+  // declarative form of `openclaw models auth login --provider anthropic
+  // --method cli`, which refuses to run without an interactive TTY — so this is the
+  // only form a generator can emit. The schema names "claude-cli" as a supported
+  // CLI backend alias. Verified end to end on hardware 2026-08-12.
+  // -------------------------------------------------------------------------
+  models: {
+    providers: {
+      anthropic: { agentRuntime: { id: "claude-cli" } },
+    },
+  },
+
+  gateway: {
+    auth: {
+      rateLimit: { maxAttempts: 10, windowMs: 60000, lockoutMs: 300000, exemptLoopback: true },
+    },
+  },
+}
