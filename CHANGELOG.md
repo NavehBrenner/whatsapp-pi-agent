@@ -13,6 +13,56 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ### Added
 
+- **The runtime is the one the sandbox can reach**
+  ([ADR 0012](docs/decisions/0012-the-runtime-is-the-one-the-sandbox-can-reach.md),
+  superseding ADR 0011's agent runtime and the billing premise behind it). The
+  `claude-cli` pin was made on billing grounds and turned out to foreclose the isolation
+  NVB-14 exists for. Read out of the shipped `dist/` of `openclaw@2026.7.1-2` — the exact
+  version on the Pi — rather than the prose docs.
+
+  **The sandbox never reached the runtime we had pinned.** OpenClaw sandboxes *its own*
+  tools; the gateway stays on the host, and under `claude-cli` the CLI is a host
+  subprocess, so its native `Bash`/`Read`/`Write` ran beside the gateway as the gateway
+  uid. `sandbox.mode: "all"` governed nothing that executed.
+
+  **And the bridge will not substitute.** `NATIVE_TOOL_EXCLUDE` is exactly the six
+  sandboxed names — `read`, `write`, `edit`, `apply_patch`, `exec`, `process` — because
+  `claude-cli` declares `nativeToolMode: "always-on"`. One call site, passed
+  unconditionally, no config flag. So the obvious cheaper fix — strip the CLI's natives
+  and hand it OpenClaw's sandboxed ones — is not expressible.
+
+  **Which made memory and isolation mutually exclusive.** Memory is plain Markdown
+  written with an ordinary file-write tool. Floor the CLI's natives and nothing can write
+  `MEMORY.md`; un-floor them and `Write` takes absolute paths as the shared uid, so every
+  agent reads every other agent's store. `compaction.memoryFlush` does not rescue it: it
+  prompts the *model* to write, and OpenClaw skips the whole compaction flow for backends
+  declaring `ownsNativeCompaction`, which `claude-cli` does.
+
+  **Decision: the built-in runtime, with xAI OAuth** — subscription billing, no registered
+  harness, therefore sandboxed. Stated honestly in the ADR: the built-in runtime is *not*
+  architecturally safer, it is the only place the configuration we want is reachable.
+
+  **Two things verified along the way that outlive the decision.** Per-agent tool policy
+  is real and is *existence* separation — one scoped list answers both `tools/list` and
+  `tools/call`, so an agent is never told a capability exists that it cannot use, which is
+  ADR 0010's property confirmed. And the tools that hold real credentials are **never**
+  sandboxed on any runtime: NVB-17/18's calendar and mail tools make outbound HTTPS calls,
+  and `resolveSandboxToolPolicyForAgent` is an allow/deny policy layer, not a routing
+  table. That splits NVB-14 — switching runtimes bounds what a compromised *agent*
+  reaches, containerizing bounds what a compromised *gateway* reaches — and the second is
+  now NVB-22 with a written trigger.
+
+  **A live config bug fell out of it.** `sandbox.workspaceAccess` is `"none"` in
+  `config/openclaw.example.json5`, which would write memory into a throwaway directory
+  under `~/.openclaw/sandboxes`. It must be `"rw"`; `"ro"` disables the write tools
+  outright. Fixed in NVB-23, not here.
+
+  **The billing premise underneath ADR 0011 is out of date.** It argued partly from
+  February 2026 terms prohibiting subscription reuse by third-party apps. OpenClaw's docs
+  cite Anthropic's 15 June 2026 support update stating the opposite. Not load-bearing for
+  ADR 0012, which rests on sandbox reachability — but it must not be cited again without
+  rechecking.
+
 - **OpenClaw owns the channel, the gate owns the room**
   ([ADR 0011](docs/decisions/0011-openclaw-owns-the-channel-the-gate-owns-the-room.md),
   config in [`config/openclaw.example.json5`](config/openclaw.example.json5)). Most of
