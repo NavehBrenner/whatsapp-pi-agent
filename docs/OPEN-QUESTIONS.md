@@ -1229,6 +1229,54 @@ not. Cost: one extra agent id per reachable person, and the liaison does not sha
 with their main agent — correct for "when is she free Thursday", wrong for anything that
 needs their history, which is the signal that such a request does not belong on this path.
 
+### Sharing files with a liaison agent: nest the workspace, never symlink (2026-08-14)
+
+A liaison agent that shares nothing is a stranger; the question is how it can share some
+facts with its principal's main agent without seeing everything.
+
+**Symlinks cannot do it.** Two independent rejections: sandbox seed copies "only accept
+regular in-workspace files; symlink/hardlink aliases that resolve outside the source
+workspace are ignored" (`agent-workspace.md:45`), and bind validation re-resolves a source
+through its deepest existing ancestor before re-checking allowed roots, so symlink-parent
+escapes fail closed (`gateway/sandboxing`). This is precisely the escape the validator
+exists to stop.
+
+**Binding one agent's workspace into another's container needs a dangerous flag.**
+`docker-Hq4HIYYD.js:993` scopes the allowed bind roots to the agent's *own* workspace:
+`bindSourceRoots: [workspaceDir, params.agentWorkspaceDir]`. Anything else is "outside
+allowed roots" unless `dangerouslyAllowExternalBindSources: true`. We should not set it.
+
+**Nesting the workspaces avoids binds entirely,** because each agent then only ever mounts
+its own workspace:
+
+```json5
+{ id: "owner",         workspace: "~/.openclaw/workspaces/owner" },
+{ id: "owner-liaison", workspace: "~/.openclaw/workspaces/owner/shared" }
+```
+
+The main agent writes into `shared/` with ordinary file tools; the liaison's root *is*
+that directory, so it cannot see above it. No binds, no flags, no symlinks.
+
+⚠️ **The shared directory is the liaison's bootstrap surface.** `MEMORY.md`, `AGENTS.md`,
+and `memory/*.md` load from the workspace root, so whatever the main agent writes there
+becomes the liaison's own instructions — a prompt-injection path from one agent into the
+agent another person's approvals hang off. Blast radius is small because a liaison holds
+nothing sensitive, but the rule that follows is not optional: **the liaison's identity must
+come from config, never from the shared directory** — the `identity` block, plus
+`agents.defaults.skipBootstrap: true` so OpenClaw does not seed instruction files into a
+directory another agent can write. `shared/` then carries facts; who the liaison *is* stays
+in config only the operator edits.
+
+Note the sharing is conventional, not enforced: the liaison has `rw` on that directory
+because it is its own workspace. Making it read-only means `workspaceAccess: "ro"`, which
+removes the liaison's ability to write memory at all — the capability the runtime switch
+exists to restore. Not a good trade.
+
+**For identity alone, none of this is needed.** `identity` is config, not a file. Two
+agents carrying the same identity block are the same persona to the family with no
+filesystem sharing whatsoever. Nesting earns its keep only for accumulated facts an agent
+chooses to publish.
+
 ### The runtime switch is also a media-tool decision, and Cursor is not an option (2026-08-14)
 
 `docs/providers/xai`: one credential from `openclaw models auth login --provider xai
