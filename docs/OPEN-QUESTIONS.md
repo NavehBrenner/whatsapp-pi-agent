@@ -1126,6 +1126,72 @@ the wrong agent's process — the thing the runtime switch exists to prevent.
 **So a confirmation gate on a plugin tool is ours to build: that is NVB-16's real
 justification,** not a nice-to-have registry.
 
+### What `tree` visibility means, and two ways `agentToAgent` fails open (2026-08-14)
+
+Read out of `dist/session-visibility-CUl4zBv3.js`, which holds the whole model in 216
+lines.
+
+`tree` is the requester's own session plus sessions **it spawned** — `rowOwnedByRequester`
+matches `ownerSessionKey`, `spawnedBy`, or `parentSessionKey` (line 160). A family
+member's session is created when they message Signal, so it is never in anyone else's
+tree. Cross-agent targeting then requires `visibility === "all"` **exactly** (line 173);
+`agent` and `tree` both return `forbidden`. Combined with the sandbox clamp, the practical
+rule is:
+
+> With `sandbox.mode: "all"` and defaults, cross-agent messaging cannot work at all.
+> `agents.defaults.sandbox.sessionToolsVisibility: "all"` is required to lift it
+> (`"spawned"` and `"all"` are the only values).
+
+Two failure-open behaviours to configure around:
+
+- **An empty `allow` list allows every pair.** `matchesAllow` returns `true` when
+  `allowPatterns.length === 0` (line 91), so `agentToAgent: { enabled: true }` without
+  `allow` is fully open. The list is not optional for us.
+- **`allow` cannot express a one-way relationship.** `isAllowed` requires *both* requester
+  and target to match (line 103), so `allow: ["owner", "family"]` permits `family → owner`
+  exactly as much as `owner → family`. A directed relationship has to be enforced above
+  this, not by config.
+
+### Ask-first tools exist, and plugin approvals route differently from exec approvals (2026-08-14)
+
+**This corrects the previous section's claim that approvals only reach the operator.** That
+holds for **exec** approvals (`exec.approval.requested` → operator clients). **Plugin**
+approvals are a separate family with independent config, and they can be delivered to a
+chosen person.
+
+`docs/plugins/plugin-permission-requests`: a plugin registers `api.on("before_tool_call",
+…)` and returns `requireApproval` with `title`, `description`, `severity`,
+`allowedDecisions` (`allow-once` / `allow-always` / `deny`), `timeoutMs`,
+`timeoutBehavior`, and `onResolution`. Returning nothing lets the call through, so
+free-use and gated tools coexist under one hook, decided per call. It fails closed:
+timeout denies unless `timeoutBehavior: "allow"`, and **"No approval route → the call is
+blocked."**
+
+Routing is `approvals.plugin` — `enabled`, `mode` (`session` | `targets` | `both`),
+`agentFilter`, `sessionFilter`, `targets: [{ channel, to }]` — independent of
+`approvals.exec`. `session` delivers into the originating chat; `targets` to explicit
+addresses.
+
+The doc also names the layering this repo already assumes: *"Optional tools are a
+discovery-time gate. Plugin permission requests are a per-call gate. Use both."* That is
+`src/agent/registry.py` plus NVB-16, and NVB-16 is now a **`before_tool_call` plugin**
+rather than anything bespoke.
+
+⚠️ **Delivery is not authorization.** An approver must already be command-authorized in
+that session, and Signal reaction approvals additionally require explicit approvers from
+`channels.signal.allowFrom` or `defaultTo`. Good: nobody in a group can approve for
+someone else. Also required: whoever must approve has to be listed, or the call blocks.
+
+**Gate the cross-agent request on the asking side, not the answering side.** The hook event
+carries `ctx.sessionKey`, `ctx.agentId`, `toolName`, `params` — session identity, not turn
+provenance. Because `sessions_send` delivers into the target's *existing* session, a hook
+there cannot distinguish an agent-initiated turn from one the person typed; the
+`[Inter-session message … isUser=false]` marking lives in the prompt and transcript, not in
+the hook event. So the cross-agent request should itself be a registry tool (say
+`family.ask_mom`) whose `before_tool_call` requires approval routed to that person via
+`approvals.plugin.targets`. The context is unambiguous there, the prompt can name the
+actual question, and the asking agent gains nothing by asking.
+
 ### The runtime switch is also a media-tool decision, and Cursor is not an option (2026-08-14)
 
 `docs/providers/xai`: one credential from `openclaw models auth login --provider xai
