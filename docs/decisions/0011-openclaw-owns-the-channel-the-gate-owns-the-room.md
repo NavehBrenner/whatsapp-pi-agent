@@ -1,6 +1,7 @@
 # 0011 — OpenClaw owns the channel, the gate owns the room
 
 **Status:** Accepted 2026-08-12 — config in [`config/openclaw.example.json5`](../../config/openclaw.example.json5), integration mechanism is [Q6](../OPEN-QUESTIONS.md)
+⚠️ **The agent runtime chosen here (`claude-cli`) and the billing premise behind it are superseded by [0012](0012-the-runtime-is-the-one-the-sandbox-can-reach.md).** Everything else in this ADR stands.
 **Amends:** [0004](0004-signal-control-channel.md), [0007](0007-principals-on-the-control-channel.md), [0008](0008-authority-is-a-conversation-sender-pair.md), [0009](0009-agents-are-containers-that-ask-by-name.md), [0010](0010-profiles-are-pre-bound-grant-bundles.md)
 
 ## Context
