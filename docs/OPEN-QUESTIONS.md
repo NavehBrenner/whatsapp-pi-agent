@@ -1076,6 +1076,20 @@ the built-in runtime, where `read`/`write` become real per-agent, sandboxed tool
 container per gateway, where native file access is confined by the container instead of
 by tool policy. This is the finding that decides NVB-14.
 
+**NVB-17's tools will not be sandboxed on any runtime.** `docs/gateway/sandboxing` lists
+the sandboxed set as `exec`, `read`, `write`, `edit`, `apply_patch`, `process` plus the
+optional browser — the filesystem/process family — and nothing could extend it:
+`resolveSandboxToolPolicyForAgent` is an allow/deny **policy** layer
+(`agent-tools.policy:101`), not a routing table, and each fs/exec tool dispatches to the
+backend itself. A calendar or mail tool making an outbound HTTPS call has no sandbox path.
+
+So the credentials that matter most sit in the gateway process whichever runtime we pick,
+and only a container **per gateway** separates them. That splits NVB-14 cleanly:
+**switching runtimes bounds what a compromised agent can reach; containerizing bounds what
+a compromised gateway can reach.** AGENTS.md's standing question — "what does a successful
+injection do with this" — is about the first. The second is the rarer failure, so it is an
+upgrade with a trigger (ADR 0009's shape), not a prerequisite.
+
 ### Group sessions are shared, and a repeat question returns `NO_REPLY`
 
 The group has exactly one session key —
