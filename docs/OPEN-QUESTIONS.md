@@ -1090,6 +1090,56 @@ a compromised gateway can reach.** AGENTS.md's standing question — "what does 
 injection do with this" — is about the first. The second is the rarer failure, so it is an
 upgrade with a trigger (ADR 0009's shape), not a prerequisite.
 
+### Cross-agent requests go agent-to-agent, and the sandbox silently clamps them (2026-08-14)
+
+The question: when one principal's agent needs something only another principal can
+consent to — scheduling between two people, not on the family calendar — does the first
+agent hold the second's credentials with an "ask" gate, or do the two agents talk?
+
+**It has to be the two agents talking, and OpenClaw supports that natively.**
+`sessions_send` (`docs/concepts/session-tool`) delivers to another session, either
+fire-and-forget (`timeoutSeconds: 0`) or waiting inline for the reply, with a bounded
+reply-back loop (`session.agentToAgent.maxPingPongTurns`, default 5, `0` disables) that
+the target can end early with `REPLY_SKIP`. It is gated twice, both closed by default:
+`tools.agentToAgent.enabled` plus an `allow` list of agent ids, and
+`tools.sessions.visibility` (default `tree` — only sessions this one spawned).
+
+**The impersonation boundary is already drawn.** Inbound cross-agent messages are marked
+`[Inter-session message … isUser=false]` in the receiving prompt and in transcript
+provenance, and the receiver is instructed to treat them as tool-routed data rather than
+end-user instruction. One agent cannot speak as its principal to another agent.
+
+⚠️ **The sandbox clamps this off.** When the calling session is sandboxed and
+`agents.defaults.sandbox.sessionToolsVisibility` is `"spawned"` (the default), visibility
+is forced to `tree` **even if `tools.sessions.visibility: "all"` is set.** Since
+sandboxing is the whole reason for the runtime switch, this fires exactly when the config
+looks finished.
+
+**The credential-holding route is not available and should not be built.** Approvals
+broadcast `exec.approval.requested` to **operator clients** — Control UI, macOS app, nodes
+(`docs/tools/exec-approvals`, "Approval flow"). The operator is the gateway owner, so an
+approval cannot be routed to the family member an action actually affects; and the ask
+machinery (`tools.exec.ask`) covers `exec` only, never a calendar or mail tool. Holding
+another principal's credential behind an "ask them" gate would also put that credential in
+the wrong agent's process — the thing the runtime switch exists to prevent.
+
+**So a confirmation gate on a plugin tool is ours to build: that is NVB-16's real
+justification,** not a nice-to-have registry.
+
+### The runtime switch is also a media-tool decision, and Cursor is not an option (2026-08-14)
+
+`docs/providers/xai`: one credential from `openclaw models auth login --provider xai
+--method oauth` powers `web_search` (provider id `grok`), `x_search`, `code_execution`,
+speech/transcription, **and** image/video generation — the bundled `xai` plugin registers
+the shared `image_generate` and `video_generate` tools. So the skeptical-family-member
+profile gets real web search from the same subscription, with no separate search key, and
+media generation stays per-agent policy-governed like any other tool.
+
+**Cursor cannot serve as the subscription.** There is no Cursor model provider; `cursor`
+appears only as an ACP backend (`cursor-agent acp`, `docs/tools/acp-agents:100`) — an
+external harness in the same category as `claude-cli`, a host subprocess carrying its own
+native tools. Adopting it reinstates both findings above.
+
 ### Group sessions are shared, and a repeat question returns `NO_REPLY`
 
 The group has exactly one session key —
