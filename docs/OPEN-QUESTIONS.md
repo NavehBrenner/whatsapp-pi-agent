@@ -1192,6 +1192,43 @@ the hook event. So the cross-agent request should itself be a registry tool (say
 `approvals.plugin.targets`. The context is unambiguous there, the prompt can name the
 actual question, and the asking agent gains nothing by asking.
 
+### There is no per-session-origin tool policy — use a liaison agent instead (2026-08-14)
+
+The obvious design for cross-agent requests is: agent-initiated work always opens a **new**
+session, that session is distinguishable, and it carries a narrower tool policy. Two of
+those three are unavailable out of the box.
+
+- **A2A cannot open a new session on the target.** `sessions_send` targets an *existing*
+  session key. `sessions_spawn` does create one, but as a child of the **calling** agent —
+  same `agentId`, same credentials, same workspace. It is an agent talking to itself.
+- **There is no per-session-origin policy axis.** The whole `tools.*` surface is
+  `allow`/`deny`, `byProvider`, `toolsBySender`, `elevated`, `exec`, `loopDetection`,
+  `web`, `media`, `agentToAgent`, `sessions`, `sessions_spawn`, `codeMode`,
+  `experimental`. None of them key on how a session was initiated.
+
+The machinery half-exists: `isSubagentEnvelopeSession`, inherited tool allow/denylists, and
+subagent role/control scope narrow a child session's policy, and provenance is in the data
+model (`spawnedBy` / `parentSessionKey` — `resolveGroupToolPolicy` already consumes
+`spawnedBy`). But it is scoped to subagent session keys under one agent, and nothing
+attaches it to cross-agent messaging.
+
+**So express the boundary as agent identity, which is the axis OpenClaw does enforce.**
+Give each reachable person a second, narrow agent — a **liaison** — whose only job is
+answering other family members, and point cross-agent traffic at it rather than at their
+main agent:
+
+- own sessions by construction, so no collision with that person's own conversation;
+- distinguishable in every policy call and every hook, because it is a different `agentId`;
+- unavailable tools are *absent*, via the per-agent existence separation already verified;
+- ask-first on whatever remains, via the `before_tool_call` plugin with
+  `approvals.plugin.agentFilter: ["<liaison>"]` and a Signal target for that person.
+
+It also defuses the symmetric-`allow` problem above: a liaison holding nothing sensitive
+makes the unavoidable reverse direction harmless, which allowlisting a main agent would
+not. Cost: one extra agent id per reachable person, and the liaison does not share memory
+with their main agent — correct for "when is she free Thursday", wrong for anything that
+needs their history, which is the signal that such a request does not belong on this path.
+
 ### The runtime switch is also a media-tool decision, and Cursor is not an option (2026-08-14)
 
 `docs/providers/xai`: one credential from `openclaw models auth login --provider xai
