@@ -1277,6 +1277,43 @@ agents carrying the same identity block are the same persona to the family with 
 filesystem sharing whatsoever. Nesting earns its keep only for accumulated facts an agent
 chooses to publish.
 
+**Decision: do not nest. Credentials are not in the workspace, so the mount buys nothing.**
+`agent-workspace.md:109` lists what lives outside it — `auth-profiles.json` (model OAuth
+and API keys), `~/.openclaw/credentials/`, and `agents/<id>/sessions/`. The sandbox mounts
+the *workspace*; the credential store sits above it, which is exactly why the runtime
+switch makes it kernel-unreachable. Putting a credential in a shared workspace folder would
+move it from somewhere the agent's file tools cannot reach to somewhere they can —
+`gateway/secrets` twice: "plaintext credentials remain agent-readable if they sit in files
+the agent can inspect", and a plaintext credential in an agent-readable path "is still
+readable via file or shell tools, bypassing API-level redaction". The liaison gets its own
+workspace and shares the `identity` config block; nothing is mounted.
+
+### Rotation lives in the auth store, and OAuth profiles cannot use SecretRefs (2026-08-14)
+
+Avoiding duplicate credentials is a real concern, just not a workspace one. OpenClaw's
+mechanism is **SecretRefs**: credentials referenced from an external source instead of
+stored inline, resolved eagerly into an in-memory snapshot, failing fast at startup when
+unresolvable and swapping atomically on reload with last-known-good retained. Rotate at
+the source and every referencing agent follows.
+
+⛔ **It does not cover our model credential.** `gateway/secrets`: "Policy violations (for
+example an OAuth-mode auth profile combined with SecretRef input) fail activation before
+the runtime swap." Grok-via-OAuth is an OAuth-mode profile, so it stays in each agent's own
+auth store.
+
+Combined with two-tier read-through (local agentDir → default agent store) and the **"main
+holds nothing"** invariant that deliberately empties the fallback, **every agent needs its
+own xAI OAuth login.** Whether one subscription tolerates several device-code logins, and
+whether they rotate independently, is unknown and cheap to test on switch day.
+
+If it does not, the narrow fix is to let **main hold the model credential only.** That
+invariant exists to stop *tool* credentials reaching the wrong principal; the model
+credential is not a differentiator — every agent needs inference, and a shared subscription
+under a provider-side cap is already accepted (Q4). Tool credentials stay out of main,
+which is the part that was ever load-bearing. NVB-17/18 tool credentials are unaffected
+either way: `src/agent/registry.py` binds them to systemd `LoadCredential` ids, external to
+OpenClaw, one file on the host granted per tool.
+
 ### The runtime switch is also a media-tool decision, and Cursor is not an option (2026-08-14)
 
 `docs/providers/xai`: one credential from `openclaw models auth login --provider xai
