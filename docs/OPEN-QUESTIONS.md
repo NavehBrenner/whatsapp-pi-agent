@@ -1090,6 +1090,57 @@ a compromised gateway can reach.** AGENTS.md's standing question — "what does 
 injection do with this" — is about the first. The second is the rarer failure, so it is an
 upgrade with a trigger (ADR 0009's shape), not a prerequisite.
 
+### Why not just strip claude-cli's native tools and hand it OpenClaw's? (2026-08-14)
+
+The obvious objection to switching runtimes, and it deserves an answer in the file because
+the answer is a specific unconditional code path rather than a judgement call.
+
+The idea is right: floor the CLI's natives to nothing, then give it OpenClaw's *sandboxed*
+`read`/`write`/`exec` over the loopback bridge instead. It is not expressible.
+
+- `NATIVE_TOOL_EXCLUDE` is defined at `mcp-http-BUQahgob.js:639` and referenced at
+  **exactly one** site, line 652 — passed unconditionally as `excludeToolNames` into
+  `resolveMcpLoopbackScopedTools`. No config flag gates it.
+- `nativeToolMode` appears in neither `config-agents.md` nor `configuration-reference.md`.
+  It is a backend **plugin declaration** (`cli-backend-C4iY7FFY.js:21`), not a user setting.
+
+The bridge strips those six names before the tool list is built, on every request, and no
+configuration changes that.
+
+**State the consequence honestly: the built-in runtime is not architecturally safer.** Were
+that configuration expressible it would be roughly equivalent — sandboxed file tools, the
+same per-agent policy, the same mechanisms. We are not switching for a better security
+model; we are switching because **the model we want is only reachable there**, and the
+claude-cli path forecloses it by construction. That is also why gateway containerization
+remained the alternative rather than being ruled out: it reaches the same place from the
+other direction, wrapping the process instead of the tools.
+
+### `workspaceAccess` must be `rw`, and the example config currently says `none` (2026-08-14)
+
+Listed as a switch-day unknown ("does memory persist?"); it is settled, and it is a bug in
+`config/openclaw.example.json5` today.
+
+| Value | Behaviour |
+| --- | --- |
+| `none` (default) | Tools see an **isolated** sandbox workspace under `~/.openclaw/sandboxes` |
+| `ro` | Agent workspace mounted read-only at `/agent` — **disables** `write`/`edit`/`apply_patch` |
+| `rw` | Agent workspace mounted read/write at `/workspace` |
+
+The agent's own workspace is bind-mounted into its container: the sandbox does not cut the
+agent off from its own files, it cuts it off from everything else. So `MEMORY.md` written
+to `/workspace` lands in the real workspace on the host.
+
+`agents.defaults.sandbox.workspaceAccess` is currently `"none"`, which would write memory
+into a throwaway directory under `~/.openclaw/sandboxes`. It must become `"rw"` as part of
+the switch. `"ro"` is not an option — it disables the write tools the switch exists to
+restore.
+
+Related, and worth stating because it looks like a loss and is not: **the agent never reads
+the credential store on any runtime.** Credential resolution happens in the gateway, above
+the sandbox — the agent calls a tool, the gateway attaches the credential and makes the
+outbound call, the agent receives a result. Kernel-unreachability of `auth-profiles.json`
+costs no functionality.
+
 ### Cross-agent requests go agent-to-agent, and the sandbox silently clamps them (2026-08-14)
 
 > **Scope: deferred, not planned.** Cross-agent communication is **not** being built now
