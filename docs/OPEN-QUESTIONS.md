@@ -1092,6 +1092,12 @@ upgrade with a trigger (ADR 0009's shape), not a prerequisite.
 
 ### Cross-agent requests go agent-to-agent, and the sandbox silently clamps them (2026-08-14)
 
+> **Scope: deferred, not planned.** Cross-agent communication is **not** being built now
+> and is not on any milestone. The next four sections are the investigation behind that
+> deferral — they exist so the question is not re-litigated from scratch, and so the
+> settings that would have to change are already known. Nothing here is pending work.
+> `tools.agentToAgent.enabled` stays `false`, which is the shipped default.
+
 The question: when one principal's agent needs something only another principal can
 consent to — scheduling between two people, not on the family calendar — does the first
 agent hold the second's credentials with an "ask" gate, or do the two agents talk?
