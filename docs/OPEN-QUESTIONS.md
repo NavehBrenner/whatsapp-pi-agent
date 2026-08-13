@@ -1023,6 +1023,59 @@ key there." The rootless-Podman lean was chosen to avoid rewriting Waydroid's ip
 **Subscription auth pulls toward Docker and Waydroid pulls toward rootless Podman**, and
 that is the first thing NVB-14 has to settle on hardware.
 
+### ✅ Per-agent tool separation is real over the MCP bridge — and it costs the agent its memory (2026-08-13)
+
+The finding above says the sandbox does not reach the CLI. It leaves open the question
+NVB-14 actually cares about: can two agents on one gateway hold **different** tool sets,
+and is the difference real or cosmetic? Read out of the same shipped `dist/`.
+
+| Evidence | What it shows |
+| --- | --- |
+| `mcp-http-BUQahgob.js:648` | `resolveMcpLoopbackScopedTools` → `resolveGatewayScopedTools({ surface: "loopback", excludeToolNames: NATIVE_TOOL_EXCLUDE })`, which resolves `resolveEffectiveToolPolicy({ sessionKey })`. |
+| `mcp-http-BUQahgob.js:814,851` | One `scopedTools` object serves **both** `tools/list` and `tools/call` for a request. |
+| `mcp-http-BUQahgob.js:639` | `NATIVE_TOOL_EXCLUDE = { read, write, edit, apply_patch, exec, process }`. |
+| `cli-backend-C4iY7FFY.js:21` | `claude-cli` declares `nativeToolMode: "always-on"` — hence the exclusion. |
+| `prepare.runtime-CM3Uj6Uh.js:432` | `hasBootstrapFileAccess = nativeToolMode === "always-on" && disableTools !== true`. |
+
+**Tool separation is existence separation, not credential denial.** Because the same
+scoped list answers `tools/list`, a tool an agent does not hold is *absent from its tool
+list* — the model is never told it has a capability it cannot use. That is the property
+`src/agent/registry.py` was written against, and NVB-17/18's calendar and mail tools
+inherit it for free by arriving as OpenClaw plugin tools.
+
+**The `cliBackends` args being global is not the limit it looked like.** They govern
+Claude's *own* native tools; `--allowedTools mcp__openclaw__*` blanket-approves the bridge
+**namespace**, and which bridge tools exist inside it is decided per agent. Global floors
+the native surface equally; per-agent policy shapes the bridge surface individually.
+
+**But the bridge withholds exactly the six sandboxed tools.** So under `claude-cli` the
+sandbox is not merely uncovered — it is *purposeless*, since the only tools it protects
+are the six never offered. And memory is plain Markdown in the agent workspace
+(`MEMORY.md`, `memory/YYYY-MM-DD.md`) written with an ordinary file-write tool: with the
+native surface floored to `TodoWrite` and the bridge withholding `write`, **no writer
+exists**. The agent cannot remember anything.
+
+The obvious fix is a trap. Allowing `Write`/`Edit` natively grants **absolute-path**
+access as the shared `openclaw` uid, so every agent can reach every other agent's store.
+**On one gateway with `claude-cli`, memory writes and agent isolation are mutually
+exclusive.**
+
+**The one escape hatch does not exist.** `agents.defaults.compaction.memoryFlush` reads
+like a gateway-side writer, but it is not, and it fails twice over:
+
+- `config-agents.md:667` calls it a "silent **agentic turn** before auto-compaction to
+  store durable memories" — it *prompts the model* to write, so it needs the same write
+  tool the agent does not have.
+- `cli-compaction-CF7Yb1P6.js:321` — when the backend declares `ownsNativeCompaction`
+  (which `claude-cli` does), OpenClaw returns early: "owns native compaction — deferring
+  to backend". The whole compaction flow the flush lives in never runs for our sessions.
+
+**So one gateway on `claude-cli` cannot give an agent durable memory and keep the agents
+isolated from each other.** Pick one of: an API-key or OpenClaw-managed-OAuth provider on
+the built-in runtime, where `read`/`write` become real per-agent, sandboxed tools; or a
+container per gateway, where native file access is confined by the container instead of
+by tool policy. This is the finding that decides NVB-14.
+
 ### Group sessions are shared, and a repeat question returns `NO_REPLY`
 
 The group has exactly one session key —
