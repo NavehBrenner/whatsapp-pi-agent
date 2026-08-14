@@ -503,9 +503,16 @@
     // error. It reads exactly like the sandbox suppressing it, and cost most of an
     // afternoon and one wrong conclusion in ADR 0012 (see the changelog).
     //
-    // ⚠️ Use `allow`, NOT `alsoAllow`. `pickSandboxToolPolicy` unions `alsoAllow`
-    // against a wildcard, so `alsoAllow` here silently means "allow everything plus
-    // these" rather than "add these to the default set".
+    // ⚠️ Use `allow`, NOT `alsoAllow` — AND NOTE THE ASYMMETRY, because it is the
+    // whole trap. `pickSandboxToolPolicy` unions `alsoAllow` against a wildcard
+    // (`["*", ...extra]` when no `allow` is set), so `alsoAllow` HERE silently means
+    // "allow everything plus these".
+    //
+    // The top-level `tools.alsoAllow` above does the opposite and safe thing —
+    // `mergeAlsoAllowPolicy` returns the policy UNCHANGED when there is no existing
+    // allow list, and otherwise appends. Same key name, same file, opposite failure
+    // direction. Checked in `dist` on 2026-08-14 because we depend on the top-level
+    // one for the file tools and needed to know it was not quietly wildcarding.
     //
     sandbox: {
       tools: {

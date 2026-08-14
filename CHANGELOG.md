@@ -154,11 +154,20 @@ mid-flight, and the probe expected a synchronous answer from a tool the shipped 
 describe as asynchronous. Two wrong causes were published before the boring one was
 found. **An error seen once is a lead, not a diagnosis.**
 
-Also found: **`alsoAllow` with no `allow` produces `["*", …]`** — `pickSandboxToolPolicy`
-unions against a wildcard, so `tools.sandbox.tools.alsoAllow` opens that layer to
-everything rather than adding to the default set. The shipped config uses an explicit
-`allow` instead. Whether top-level `tools.alsoAllow` behaves the same way — which we
-depend on for the file tools — is still open in NVB-26.
+Also found: **the two `alsoAllow` keys fail in opposite directions.**
+`pickSandboxToolPolicy` unions against a wildcard, so `tools.sandbox.tools.alsoAllow`
+with no `allow` becomes `["*", …extra]` — "allow everything plus these". The shipped
+config uses an explicit `allow` there instead.
+
+**Top-level `tools.alsoAllow` is safe**, checked afterwards because we depend on it for
+the file tools: `mergeAlsoAllowPolicy` returns the policy *unchanged* when no allow list
+exists, and otherwise appends — never a wildcard. `mergeConfiguredSubagentAllow` agrees
+(`allow && alsoAllow ? union : allow`). So the global policy is exactly as narrow as it
+reads: `profile: "minimal"` resolves to an allow list and `alsoAllow` appends to it, which
+the observed six-tool surface confirms.
+
+Same key name, same file, opposite failure direction. That asymmetry is the thing to
+remember, not either behaviour on its own.
 
 ### Verified on hardware, 2026-08-14 (NVB-23) — the container runtime
 
