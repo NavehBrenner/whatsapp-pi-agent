@@ -59,6 +59,20 @@ What the move actually needed, all of it on hardware:
   client and daemon, and OpenClaw shells out to `docker` on `PATH` — removing the package
   would remove the interface the gateway needs.
 
+**Survives a reboot** — tested rather than assumed, since linger and a user-level unit are
+exactly the parts that come back wrong. After a cold boot: the rootless daemon is active
+under `user@991.service`, the socket is there, the gateway reaches it, an agent turn
+creates its container, and Waydroid is `RUNNING` on the same IP with the reader, gate and
+signal-cli all active.
+
+One trap the reboot exposed, which will otherwise be mistaken for a regression: an
+`openclaw agent` invocation made **before the gateway finishes starting** (~50s after
+boot) falls back to an embedded local run, and that process has no `DOCKER_HOST` in its
+environment. It fails closed — *"Sandbox mode requires Docker"* — but the error names
+`/var/run/docker.sock`, i.e. the rootful socket that is deliberately gone. Nothing is
+broken; the gateway simply was not up yet. **Read the socket path in that error before
+concluding anything**: `/var/run/docker.sock` means the caller was not the gateway.
+
 NVB-23's acceptance was re-run against the rootless daemon and passes unchanged:
 container created per agent (`openclaw-sbx-agent-{owner,family}-*`), `user=0:0`,
 `memory=536870912`, `pids=256`, `ReadonlyRootfs=true`, `CapDrop=[ALL]`, `network=none`;
