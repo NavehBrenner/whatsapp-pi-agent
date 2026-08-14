@@ -101,19 +101,69 @@ creation.
 | 8081 is uid-restricted | uid 1000 → dropped, 6s timeout; uid 991 → HTTP 415 in 2.6ms |
 | Both agents have the tools | `owner` and `family` both report exactly `apply_patch, edit, image_generate, read, session_status, video_generate, web_search, write` |
 | Generation works | `IMG-OK /var/lib/openclaw/.openclaw/media/tool-image-generation/red_bicycle---….jpg` |
+| **Delivery works — the whole point** | a **real Signal DM** asking for a picture returned the image in the chat; `run image_generate:2ac96d79…:ok ended with stopReason=stop`. The CLI cannot prove this hop, it has no channel attached |
 | `exec` still denied | probe answers `NO_SHELL_TOOL` |
 | `web_fetch` still absent | not in either agent's tool list |
+| Survives a cold boot | power-cycled: signal-cli back as `openclaw` with the socket at the right mode, the nftables rule re-applied by its unit, rootless Docker back under linger, gateway `ready`, Waydroid `RUNNING` on the same IP, tool surface unchanged |
 | Nothing else broke | Waydroid `RUNNING` on 192.168.240.112; reader, gate, gateway, sandbox containers all active |
 
-**Also observed, not changed:** the live family group carries `requireMention: false` while
-`config/openclaw.example.json5` argues for `true`. Left alone rather than flipped inside an
-unrelated change, but it is drift between the shipped config and the box.
+**Drift found and closed:** the live family group carried `requireMention: false` while
+`config/openclaw.example.json5` has always argued for `true`. Set to `true` on the box before
+the group was tested with media tools — in a shared room every reply is disclosed to everyone
+present, and an agent that answers every message is one that answers messages nobody addressed
+to it. Being addressed should be explicit, and that matters more once the agent can spend
+quota on a picture.
 
-**The Pi's WiFi dropped twice during this work**, taking SSH and the uplink with it. It is
-worth recording only because signal-cli's failure mode looks alarming and is not: the startup
-account check exits `3/NOTIMPLEMENTED` with `Error while checking account …: Closed
-unexpectedly`, and `Restart=on-failure` retries until the link returns. The same line appears
-in the journal for 2026-08-11 17:26, the minute the backup's DNS also failed.
+#### Unflattering, again: the known-phrase grep found a real leak, and it is not ours
+
+Runbook 04's "no message content in logs" check is the last item on the pre-live list and it
+is usually a formality. Run properly this time — with a phrase we knew was in a real message,
+because the message asked for a picture of something specific — it found the gateway logging
+the assistant's **reply text in plaintext** to journald:
+
+```
+openclaw[13262]: Here's a clean pfp for Pi — sleek π + claw vibe in neon.
+openclaw[13262]: Attachment: /var/lib/openclaw/.openclaw/media/tool-image-generation/image-1---4a8b….jpg
+```
+
+`signal-cli` and `wpa-gate` are both clean — the two units this project hardened do their
+job. The one it adopted does not. This is **pre-existing**, dating to the ADR 0012 runtime
+switch, and unrelated to the media tools; the media work only supplied the test case, because
+"grep the journal for a known phrase" needs a phrase you actually know. Filed as
+[NVB-29](https://linear.app/naveh-brenner/issue/NVB-29) rather than fixed here: the schema has
+no switch for it, and the plausible workaround (`consoleLevel: "warn"`) would also take
+`[gateway] ready`, the tool-policy lines and the model-fetch errors with it.
+
+Two smaller leaks in the same family, recorded there: **generated filenames are derived from
+the prompt** (`red_bicycle---<uuid>.jpg`, so any log line naming a media path carries a
+fragment of the request — NVB-27's original `AttachmentInvalidException` did), and
+`openclaw agent -m "…"` prints the reply into the gateway's journal while `sudo` logs the
+command line, so **probes on this box must use neutral text**.
+
+The lesson is about the check, not the bug: this item had been ticked before on the strength
+of there being nothing obvious in the log, which is not the same as having looked for
+something specific.
+
+**The Pi's WiFi dropped repeatedly during this work**, taking SSH and the uplink with it. It is
+worth recording for two reasons. First, signal-cli's failure mode looks alarming and is not:
+the startup account check exits `3/NOTIMPLEMENTED` with `Error while checking account …:
+Closed unexpectedly`, and `Restart=on-failure` retries until the link returns. The same line
+appears in the journal for 2026-08-11 17:26, the minute the backup's DNS also failed.
+
+Second, the diagnosis is worth keeping, because "the WiFi is flaky" was wrong twice before it
+was right. The box was idle throughout (load 0.00, 5.8 GB free, no swap, `throttled=0x0`,
+48.8 °C, no OOM, no `brcmfmac` errors) — so it was not memory pressure starving `sshd`, which
+was the second guess. What `iw` actually showed: **power save on**, associated on **2.4 GHz**
+(ch 4) despite the radio supporting 29 channels above 5 GHz, `-61 dBm`, `tx failed: 880`, and
+a **receive rate pinned at 1.0 Mbit/s** against 65 Mbit/s outbound. That combination explains
+the odd signature exactly — single ICMP pings returning at 26 ms while a TCP handshake times
+out completely. Other devices on the same SSID were fine because a mesh AP had steered them to
+5 GHz.
+
+Resolved by plugging in **eth0**, which had been down since the box was built. It is now the
+default route (metric 100 against wlan0's 600), and the uplink went to 12 ms / 0% loss. Worth
+doing on principle: this is a server that never moves, running Waydroid, a JVM, Docker and a
+gateway, and its link had been the least reliable thing about it.
 
 ### Changed — the sandbox daemon runs as the gateway now (NVB-25, 2026-08-14)
 
