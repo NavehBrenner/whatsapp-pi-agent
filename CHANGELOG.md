@@ -11,6 +11,209 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Changed — signal-cli runs at the gateway uid, and the media tools go on (NVB-26 + NVB-27, 2026-08-14)
+
+`image_generate` and `video_generate` are enabled for both agents. They were never broken:
+they registered, generated correctly in ~90s inside the sandbox, and finished cleanly. What
+failed was the last hop — OpenClaw hands signal-cli a **path** under
+`~openclaw/.openclaw/media/outbound`, and signal-cli ran as `wpa-signal`, which could not
+traverse that `0700` chain. No group grant survives it: OpenClaw re-asserts `0700` on `media`
+on every generation (`0710` before a run, `0700` after), so the only process that can read a
+generated attachment is one running as `openclaw`.
+
+So `signal-cli.service` now runs as `openclaw`. [ADR 0006](docs/decisions/0006-two-process-privilege-split.md)
+is amended with the narrowed split and what would reverse it.
+
+**Only `User=` moved. `Group=` stays `wpa-signal`,** which the issue's own plan did not
+anticipate and which removes half the cost it budgeted for. `RuntimeDirectory` and
+`StateDirectory` follow `User:Group`, so the socket is `openclaw:wpa-signal` and `wpa-gate`
+reaches it through the supplementary group it already had — **`wpa-gate.service` did not
+change at all**, and `StateDirectoryMode=0700` still leaves the group no execute bit, so the
+account directory is exactly as unreadable to the gate as it was before. The planned
+`SupplementaryGroups=openclaw` on the gate was not needed and was not applied.
+
+#### Unflattering: the firewall rule protecting the control channel did not exist
+
+NVB-27's checklist said to *confirm* that `tcp dport 8081 meta skuid { 0, 991 }` was still
+correct after the uid change. There was no such rule. There was no rule on that port at all —
+the only nftables table on the box is `inet lxc`, and `iptables-legacy` was empty.
+
+`signal-cli.service.d/10-http.conf` — the NVB-20 spike drop-in that opened the port — flagged
+this in its own comment ("an HTTP port is reachable by ANY local user. Revisit before this is
+permanent") and it was never revisited. So since the spike, **any local uid could send as the
+assistant and read the entire inbound stream**, with no credential, on the machine's most
+trusted channel. Measured after the fix: uid 1000 gets a dropped SYN and a 6s timeout, uid
+991 gets an HTTP response in 2.6ms.
+
+This also changes the honest accounting for the uid change itself. Two of the three costs the
+issue listed were **already paid**: the gateway has always seen every inbound envelope (it is
+a JSON-RPC client of the same daemon), and sending as the assistant was open to every local
+uid until today. What actually moves is the account **key material at rest** — which is the
+durable half, and the half worth writing an ADR amendment about.
+
+The rule ships as `deploy/nftables/wpa-signal-8081.nft` plus a oneshot unit, rather than as a
+live-only change. Three things in it are load-bearing and each fails silently the other way:
+**no `flush ruleset`** (it would take Waydroid's lxc bridge with it), the **output** hook
+(`meta skuid` is only available on locally generated packets — the same rule on input matches
+nothing and allows everything), and **`oif "lo"`** (without it, every other uid loses
+outbound connections to port 8081 on any host).
+
+`--http 127.0.0.1:8081` also moved out of the spike drop-in and into the unit. It is not a
+spike any more; it is the control channel, and a drop-in that silently wins over the unit's
+`ExecStart` is a bad place for it.
+
+#### What the change needed on the box
+
+- `chown -R openclaw:wpa-signal /var/lib/wpa-signal`, **explicitly**. systemd sets ownership
+  on a `StateDirectory` it creates but does not recursively chown a pre-existing one, so the
+  unit alone leaves the daemon unable to read its own account.
+- Stop the daemon *before* the chown. The window between changing ownership and restarting is
+  where an inbound message meets `EACCES` on the account store.
+- `/etc/wpa-signal.env` regrouped to `openclaw`. Cosmetic — systemd reads `EnvironmentFile`
+  as root before dropping privileges — but "who can read this" should have one answer.
+- `ProtectHome=yes` on the unit is *not* in the way, because openclaw's `HOME` is
+  `/var/lib/openclaw`. That is the same directive that cost NVB-25 an afternoon in the other
+  direction, where the target was under `/run/user`.
+
+#### Config, and the layer that hides
+
+Six paths, all through `openclaw config set --batch-file` (the live file is plain JSON and a
+hand edit is stripped on the next write): the two generation models, `timeoutSeconds: 600`,
+and `image_generate`/`video_generate` added to `tools.alsoAllow`, `tools.sandbox.tools.allow`
+and **the family group's `tools.allow` ceiling**. That last one is the layer that hid a broken
+memory path in NVB-23 — every agent-level check reads correct while the only path production
+uses resolves narrower.
+
+`timeoutSeconds: 600` is part of the media settings, not a general timeout. Generation is
+async and the default run timeout cuts the completion run off mid-flight, which trips an
+auth-profile cooldown that breaks *later*, unrelated turns — a symptom that appears nowhere
+near its cause.
+
+Session stores were archived and cleared afterwards, because tool policy binds at session
+creation.
+
+#### Verified on hardware, 2026-08-14
+
+| Criterion | Evidence |
+|---|---|
+| Daemon runs at the gateway uid | `ps -o user` → `openclaw`; socket `srwxrwx--- openclaw wpa-signal` |
+| The gate is unaffected | `wpa-gate.service` unchanged; `Accepted new client connection 0: UnixDomainPrincipal[user=wpa-gate…]` after restart |
+| 8081 is uid-restricted | uid 1000 → dropped, 6s timeout; uid 991 → HTTP 415 in 2.6ms |
+| Both agents have the tools | `owner` and `family` both report exactly `apply_patch, edit, image_generate, read, session_status, video_generate, web_search, write` |
+| Generation works | `IMG-OK /var/lib/openclaw/.openclaw/media/tool-image-generation/red_bicycle---….jpg` |
+| **Delivery works — the whole point** | a **real Signal DM** asking for a picture returned the image in the chat; `run image_generate:2ac96d79…:ok ended with stopReason=stop`. The CLI cannot prove this hop, it has no channel attached |
+| Delivery works in the family group too | `@Pi make a picture of a red bicycle` → `Here's a red bicycle:` + attachment, `stopReason=stop`, no delivery error — the room the tools were mostly enabled for |
+| `video_generate` end to end | a real Signal DM returned a video; `run video_generate:eb9cd0a9…:ok`. This is what `timeoutSeconds: 600` is for |
+| `--receive-mode on-connection` intact | signal-cli stopped for 55s, a DM sent into the gap showed undelivered on the sender's client, and was delivered and answered ~15s after the daemon returned. A restart costs latency, not commands |
+| `web_search` did not regress | `SEARCH-OK` from the family agent after the config batch |
+| Durable memory survived the session clear | wrote a token through the sandboxed file tools, read it back in a **fresh** session, file present in the real host workspace |
+| NVB-25's sandbox invariants hold | both containers `user=0:0 mem=536870912 pids=256 ro=true caps=[ALL] net=none`; the rootful socket still refuses `openclaw` |
+| `exec` still denied | probe answers `NO_SHELL_TOOL` |
+| `web_fetch` still absent | not in either agent's tool list |
+| Survives a cold boot | power-cycled: signal-cli back as `openclaw` with the socket at the right mode, the nftables rule re-applied by its unit, rootless Docker back under linger, gateway `ready`, Waydroid `RUNNING` on the same IP, tool surface unchanged |
+| Nothing else broke | Waydroid `RUNNING` on 192.168.240.112; reader, gate, gateway, sandbox containers all active |
+
+#### The outage test passed, and showed the gate missing a message the gateway got
+
+Stopping signal-cli for 55 seconds and sending a DM into the gap did what runbook 03 promised:
+the sender's client showed it undelivered, and it was delivered and answered about fifteen
+seconds after the daemon came back. `--receive-mode on-connection` is intact under the new uid.
+
+But **the gate never logged that message**, and the gateway did answer it. Two independent
+clients attach to signal-cli — the gate on the unix socket, the gateway over HTTP — and the
+daemon starts fetching as soon as *any* of them attaches. The gate reconnected 8 seconds after
+the HTTP server came up, and the message had already been dispatched. Its `commands.jsonl` has
+a hole in it, its drop counters undercount, and ADR 0008's membership-drift refusal cannot
+refuse what it never sees. Nothing unauthorised ran — OpenClaw remains the enforcement point —
+but "a restart costs latency, not commands" turns out to be true of the gateway and not of the
+gate's record. Filed as [NVB-31](https://linear.app/naveh-brenner/issue/NVB-31), with the
+mechanism marked inferred: signal-cli logs socket client attach and says nothing about HTTP
+clients, so the ordering is the best explanation rather than an observed one.
+
+Also worth keeping, from signal-cli's own startup log:
+
+```
+WARN HttpServerHandler - HTTP server has no authentication; Host header is pinned to [localhost, ::1, …]
+```
+
+It warns about exactly the hole this change closed. Host-header pinning is not an access
+control — the nftables rule is.
+
+#### `requireMention` means the agent's name as text, and a native Signal mention is invisible
+
+Turning `requireMention` on made the group stop answering entirely, which read like the media
+change having broken something. It had not. The Signal plugin builds
+`\b@?<identity.name>\b` (flag `"i"`) from the agent's identity, matches it against the message
+**body**, and hardcodes `hasAnyMention: false` — `dataMessage.mentions` appears nowhere in it.
+Core exports `matchesMentionWithExplicit()` for precisely this case and Discord's path uses it;
+Signal's does not.
+
+So `@Pi …` typed as text works, and tapping the assistant in Signal's mention picker does
+nothing. The miss logs `reason: "no mention"` at **verbose only**, so at a normal log level the
+gate says `accepted` and the gateway says nothing at all — the third time this project has met
+a silent no-op, and worth adding to the list of shapes to recognise. Filed as
+[NVB-30](https://linear.app/naveh-brenner/issue/NVB-30); the workaround costs three characters
+and is in force.
+
+**`requireMention` was turned on, and then deliberately back off.** The live family group
+carried `false` while the example config argued for `true`, so it was flipped to `true` before
+testing media in that room. That is what surfaced the mention finding above. It is now `false`
+again, on purpose: that room exists only to talk to the assistant, so every message in it is
+addressed to it and a mention requirement is friction with no disclosure benefit. The example
+config now states both the default and this deployment's exception, rather than quietly
+disagreeing with the box.
+
+#### Unflattering, again: the known-phrase grep found a real leak, and it is not ours
+
+Runbook 04's "no message content in logs" check is the last item on the pre-live list and it
+is usually a formality. Run properly this time — with a phrase we knew was in a real message,
+because the message asked for a picture of something specific — it found the gateway logging
+the assistant's **reply text in plaintext** to journald:
+
+```
+openclaw[13262]: Here's a clean pfp for Pi — sleek π + claw vibe in neon.
+openclaw[13262]: Attachment: /var/lib/openclaw/.openclaw/media/tool-image-generation/image-1---4a8b….jpg
+```
+
+`signal-cli` and `wpa-gate` are both clean — the two units this project hardened do their
+job. The one it adopted does not. This is **pre-existing**, dating to the ADR 0012 runtime
+switch, and unrelated to the media tools; the media work only supplied the test case, because
+"grep the journal for a known phrase" needs a phrase you actually know. Filed as
+[NVB-29](https://linear.app/naveh-brenner/issue/NVB-29) rather than fixed here: the schema has
+no switch for it, and the plausible workaround (`consoleLevel: "warn"`) would also take
+`[gateway] ready`, the tool-policy lines and the model-fetch errors with it.
+
+Two smaller leaks in the same family, recorded there: **generated filenames are derived from
+the prompt** (`red_bicycle---<uuid>.jpg`, so any log line naming a media path carries a
+fragment of the request — NVB-27's original `AttachmentInvalidException` did), and
+`openclaw agent -m "…"` prints the reply into the gateway's journal while `sudo` logs the
+command line, so **probes on this box must use neutral text**.
+
+The lesson is about the check, not the bug: this item had been ticked before on the strength
+of there being nothing obvious in the log, which is not the same as having looked for
+something specific.
+
+**The Pi's WiFi dropped repeatedly during this work**, taking SSH and the uplink with it. It is
+worth recording for two reasons. First, signal-cli's failure mode looks alarming and is not:
+the startup account check exits `3/NOTIMPLEMENTED` with `Error while checking account …:
+Closed unexpectedly`, and `Restart=on-failure` retries until the link returns. The same line
+appears in the journal for 2026-08-11 17:26, the minute the backup's DNS also failed.
+
+Second, the diagnosis is worth keeping, because "the WiFi is flaky" was wrong twice before it
+was right. The box was idle throughout (load 0.00, 5.8 GB free, no swap, `throttled=0x0`,
+48.8 °C, no OOM, no `brcmfmac` errors) — so it was not memory pressure starving `sshd`, which
+was the second guess. What `iw` actually showed: **power save on**, associated on **2.4 GHz**
+(ch 4) despite the radio supporting 29 channels above 5 GHz, `-61 dBm`, `tx failed: 880`, and
+a **receive rate pinned at 1.0 Mbit/s** against 65 Mbit/s outbound. That combination explains
+the odd signature exactly — single ICMP pings returning at 26 ms while a TCP handshake times
+out completely. Other devices on the same SSID were fine because a mesh AP had steered them to
+5 GHz.
+
+Resolved by plugging in **eth0**, which had been down since the box was built. It is now the
+default route (metric 100 against wlan0's 600), and the uplink went to 12 ms / 0% loss. Worth
+doing on principle: this is a server that never moves, running Waydroid, a JVM, Docker and a
+gateway, and its link had been the least reliable thing about it.
+
 ### Changed — the sandbox daemon runs as the gateway now (NVB-25, 2026-08-14)
 
 The `openclaw` uid is **out of the `docker` group**, and the rootful daemon is stopped,

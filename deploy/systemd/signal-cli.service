@@ -3,13 +3,32 @@ Description=signal-cli JSON-RPC daemon (the assistant's Signal account, ADR 0004
 Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/runbooks/03-signal-cli.md
 After=network-online.target
 Wants=network-online.target
+# Wants=, not Requires=: an unprotected 8081 is bad, but a Signal channel that
+# refuses to start because a firewall rule failed is worse — and a failed unit is
+# visible in `systemctl --failed`, which a silently-skipped ExecStartPre is not.
+Wants=wpa-signal-firewall.service
+After=wpa-signal-firewall.service
 # A daemon latched into 'start-limit-hit' stops being retried and the control
 # channel is simply gone, which looks like the assistant ignoring you.
 StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=wpa-signal
+# NVB-27: the UID IS THE GATEWAY'S, AND ONLY THE UID MOVED.
+#
+# OpenClaw delivers a generated image by handing this daemon a *path* under
+# ~openclaw/.openclaw/media/outbound, and re-asserts 0700 on `media` on every
+# generation (measured: 0710 before a run, 0700 after). No group grant survives
+# that, and a watcher would race it — so the only way an attachment is readable
+# here is for this process to be openclaw. ADR 0006 records the narrowed split.
+#
+# Group= stays wpa-signal ON PURPOSE. RuntimeDirectory and StateDirectory follow
+# User:Group, so the socket below is still openclaw:wpa-signal and wpa-gate keeps
+# talking to it through the supplementary group it already has — no change to
+# wpa-gate.service, and no new reach for the process that parses untrusted JSON.
+# StateDirectoryMode=0700 still leaves the group no execute bit, so the account
+# directory is no more traversable to wpa-gate than it was before.
+User=openclaw
 Group=wpa-signal
 
 # The assistant's number lives in /etc/wpa-signal.env, not in this file: the
@@ -32,13 +51,24 @@ Environment=JAVA_OPTS=-Xmx256m
 # gone — verified on hardware 2026-08-11, it does not replay on reconnect.
 # on-connection makes the daemon fetch only while a client is attached, so those
 # messages stay queued server-side and land when the gate comes back.
+#
+# --http and --socket together, which signal-cli accepts: wpa-gate uses the unix
+# socket, OpenClaw uses HTTP because its Signal plugin speaks nothing else. That
+# port is why wpa-signal-firewall.service exists — loopback TCP has no owner
+# check, so without the rule any local uid could drive the assistant's account.
+# (Lived in a 10-http.conf drop-in from the NVB-20 spike until NVB-27 folded it
+# in here: it is not a spike any more, it is the control channel.)
 ExecStart=/usr/local/bin/signal-cli --scrub-log --config %S/wpa-signal -a ${ASSISTANT_NUMBER} \
-    daemon --socket %t/wpa-signal/socket --receive-mode on-connection --no-receive-stdout
+    daemon --socket %t/wpa-signal/socket --http 127.0.0.1:8081 \
+    --receive-mode on-connection --no-receive-stdout
 
 Restart=on-failure
 RestartSec=10
 
 # Holds the account's key material — this directory IS the account.
+# systemd sets ownership on the directory it manages, but does NOT recursively
+# chown a pre-existing one, so moving the unit's uid needs an explicit
+# `chown -R openclaw:wpa-signal /var/lib/wpa-signal` (install-signal.sh does it).
 StateDirectory=wpa-signal
 StateDirectoryMode=0700
 RuntimeDirectory=wpa-signal

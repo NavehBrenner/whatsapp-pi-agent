@@ -33,15 +33,27 @@
       //
       // WHY native + autoStart:false — signal-cli stays under our own systemd unit
       // with --no-receive-stdout, --scrub-log and UMask=0007 (runbook 03). Letting
-      // OpenClaw start its own daemon would lose those flags, and the proxy
-      // (Q6 option E) needs the daemon to be ours.
+      // OpenClaw start its own daemon would lose those flags — message bodies into
+      // journald, which is a standing invariant and not a preference — and
+      // `--receive-mode on-connection`, without which a message arriving during a
+      // gateway restart is acked to the server and never replayed. A managed daemon
+      // may also bring its own binary and state path, and re-registration is the one
+      // operation that can lose the number.
+      //
+      // It also brings its own uid, and since NVB-27 the daemon's uid is load-bearing
+      // (it must be the gateway's, to read generated attachments).
       apiMode: "native",
       autoStart: false,
-      // VERIFY (NVB-20 phase 2.1): whether this is HTTP+SSE or a websocket, and
-      // therefore what the proxy has to relay. Point these at the PROXY, not at
-      // signal-cli — the proxy forwards to the real daemon behind it.
+      // The daemon's JSON-RPC over HTTP, which is the only transport this plugin
+      // speaks — wpa-gate uses the unix socket on the same daemon instead.
+      //
+      // ⚠️ A LOOPBACK PORT HAS NO OWNER CHECK. Until NVB-27 this was open to every
+      // local uid with no credential: anyone with a shell could send as the
+      // assistant and read the inbound stream. `wpa-signal-firewall.service` now
+      // limits it to uid 0 and the gateway. If this port ever moves, that rule
+      // moves with it in the same commit.
       httpHost: "127.0.0.1",
-      httpPort: 8080,
+      httpPort: 8081,
 
       // --- who may talk to it ----------------------------------------------
       // WHY allowlist, not the "pairing" default (confirmed as the default in the
@@ -75,8 +87,31 @@
       // default tools. Deny wins. Each entry takes allow | alsoAllow | deny.
       groups: {
         "<base64 groupId from listGroups>": {
-          // WHY true: in a shared room everything the assistant says is disclosed to
-          // everyone present. Requiring a mention makes being addressed explicit.
+          // WHY true by default: in a shared room everything the assistant says is
+          // disclosed to everyone present, so being addressed should be explicit.
+          //
+          // ⚠️ THE LIVE FAMILY ROOM RUNS `false`, DELIBERATELY. That room exists only
+          // to talk to the assistant — every message in it is addressed to it — so a
+          // mention requirement is friction with no disclosure benefit. Turn it back
+          // on the moment the room is used for anything else, and note that the switch
+          // is not free: read the paragraph below before assuming a mention works the
+          // way it looks.
+          //
+          // ⚠️ "MENTION" HERE MEANS THE AGENT'S `identity.name` AS LITERAL TEXT, and
+          // a native Signal mention DOES NOT COUNT. The plugin builds
+          // `\b@?<identity.name>\b` with flag "i" from `deriveMentionPatterns`, matches
+          // it against the message body, and hardcodes `hasAnyMention: false` —
+          // `dataMessage.mentions` appears nowhere in it. Core exports
+          // `matchesMentionWithExplicit()` for exactly this and the Signal plugin does
+          // not call it (NVB-30).
+          //
+          // So with `identity.name: "Pi"`, typing `@Pi …` works and tapping the
+          // assistant in Signal's mention picker does nothing. Note also that the
+          // trigger is then the WORD "pi" in any casing — looser than "mention" reads.
+          //
+          // And the miss is silent: it logs `reason: "no mention"` at VERBOSE only, so
+          // at a normal log level the gate says `accepted` and the gateway says
+          // nothing whatsoever. Verified on hardware 2026-08-14.
           requireMention: true,
           // The room's ceiling — nobody in it gets more than this.
           // An {allow|alsoAllow|deny} object, NOT the bare array the docs show.
@@ -104,10 +139,18 @@
           // result can persist past the turn. Acceptable today because there is nothing
           // outbound to pivot to and no WhatsApp write path; revisit when NVB-17/18 add
           // real tools, and make it the injection smoke test's first target.
+          //
+          // `image_generate` / `video_generate` are here because a family room is
+          // most of the point of them. Judged the same way as everything else: a
+          // successful injection cannot choose a RECIPIENT with these — the reply
+          // goes to the room the turn came from — so the blast radius is burnt quota
+          // and unwanted imagery in a room that can already see everything the
+          // assistant says. That is an annoyance, not a disclosure.
           tools: {
             allow: [
               "session_status", "read", "write", "edit", "apply_patch",
               "group:plugins", "web_search",
+              "image_generate", "video_generate",
             ],
           },
 
@@ -247,24 +290,33 @@
       // xAI's own default model ref, read out of dist (XAI_DEFAULT_MODEL_ID).
       model: { primary: "xai/grok-4.3" },
 
-      // ⛔ NO imageGenerationModel / videoGenerationModel, AND THE REASON IS NOT
-      // CAPABILITY. Both work: the tools register, generate correctly in ~90s inside
-      // the sandbox, and the completion run ends cleanly — verified on hardware.
-      // What fails is the last hop. OpenClaw hands signal-cli a path under
-      // ~/.openclaw/media/outbound, and our signal-cli runs as a SEPARATE UID
-      // (wpa-signal, runbook 03) which cannot traverse that 0700 chain:
+      // Media generation, on the same xAI OAuth as everything else. Model ids read
+      // out of dist; naming them is not optional — the tools only REGISTER when a
+      // model resolves, and an unregistered tool is absent with no log line saying so.
+      imageGenerationModel: { primary: "xai/grok-imagine-image" },
+      videoGenerationModel: { primary: "xai/grok-imagine-video" },
+
+      // ⚠️ THIS IS PART OF THE MEDIA SETTINGS, NOT A GENERAL TIMEOUT. Generation is
+      // async and takes ~90s; the default run timeout cuts the completion run off
+      // mid-flight, which trips an auth-profile cooldown that then breaks LATER,
+      // unrelated turns. The symptom appears nowhere near the cause.
+      timeoutSeconds: 600,
+
+      // These three sat commented out until NVB-27, and the reason was never
+      // capability — both tools always worked, generating correctly inside the
+      // sandbox. What failed was the last hop: OpenClaw hands signal-cli a PATH
+      // under ~/.openclaw/media/outbound and re-asserts 0700 on `media` on every
+      // generation (measured — 0710 before a run, 0700 after), so no group grant
+      // survives and a watcher would race it. signal-cli therefore has to BE the
+      // gateway uid; it now is (runbook 03), which is a real narrowing of ADR 0006's
+      // split and is recorded there rather than here.
       //
       //     Signal RPC -32603: Failed to send message: …/outbound/image-….jpg
       //       (Permission denied) (AttachmentInvalidException)
       //
-      // A group grant does not hold: OpenClaw re-asserts 0700 on `media` on every
-      // generation (measured — 0710 before a run, 0700 after), so any chmod is undone
-      // before the send, and a watcher would race it. OpenClaw assumes it owns the
-      // Signal transport at its own uid; ADR 0006's split is what makes that false
-      // here. Enabling these would ship tools that always fail at the last step.
-      // Tracked in NVB-26. If they are re-enabled, `timeoutSeconds: 600` comes back
-      // too — media generation is async and the default run timeout cuts the
-      // completion run off, which trips an auth cooldown that breaks LATER turns.
+      // ⛔ If signal-cli ever moves back to its own uid, DELETE THESE THREE KEYS in
+      // the same commit — they would ship tools that always fail at the last step,
+      // in a family group, after appearing to work.
 
       // ---------------------------------------------------------------------
       // THERE IS NO `cliBackends` BLOCK, AND ITS ABSENCE IS DELIBERATE.
@@ -472,7 +524,13 @@
     // NATIVE_TOOL_EXCLUDE regardless, so their absence from that list proved nothing
     // about the profile. Carrying that measurement across a runtime change is the
     // "TOOL NAMES ARE RUNTIME-DEPENDENT" trap below, sprung on us rather than by us.
-    alsoAllow: ["read", "write", "edit", "apply_patch", "web_search"],
+    alsoAllow: [
+      "read", "write", "edit", "apply_patch",
+      "web_search",
+      // NVB-27. Both are gateway-side, like web_search — the sandbox has no network
+      // and never needed one for these.
+      "image_generate", "video_generate",
+    ],
 
     // ⚠️ AND THEY ARE NOT DENIED, ON PURPOSE.
     //
@@ -532,6 +590,7 @@
           "session_status",
           "group:plugins",
           "web_search",
+          "image_generate", "video_generate",
         ],
       },
     },

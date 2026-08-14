@@ -1,0 +1,34 @@
+#!/usr/sbin/nft -f
+#
+# signal-cli's JSON-RPC endpoint on 127.0.0.1:8081 is how OpenClaw drives the
+# Signal channel (the 10-http.conf drop-in). A loopback TCP port has no
+# credential and no owner check: ANY local uid could send as the assistant and
+# read the inbound stream, which is the whole control channel. The drop-in said
+# "revisit before this is permanent" and nothing was revisited — found in NVB-27
+# while checking a rule that turned out never to have existed.
+#
+# So: only root and openclaw (uid 991 — the gateway, and since NVB-27 signal-cli
+# itself) may open it.
+#
+# ⚠️ NO `flush ruleset` HERE, EVER. Waydroid's lxc bridge lives in `table inet
+# lxc`, and flushing takes Android's networking with it. The create-then-delete
+# pair below is the idempotent idiom that touches only our own table.
+#
+# ⚠️ OUTPUT HOOK, NOT INPUT. `meta skuid` is the owner of the originating socket
+# and is only available on locally generated packets; the same rule on input
+# matches nothing and silently allows everything.
+#
+# ⚠️ `oif "lo"` IS NOT DECORATION. Without it this drops every outbound
+# connection to any host's port 8081 from every other uid on the box.
+
+table inet wpa_signal
+delete table inet wpa_signal
+
+table inet wpa_signal {
+	chain output {
+		type filter hook output priority filter; policy accept
+
+		oif "lo" tcp dport 8081 meta skuid { 0, 991 } accept
+		oif "lo" tcp dport 8081 drop
+	}
+}

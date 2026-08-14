@@ -1,6 +1,6 @@
 # 0006 — Two-process privilege split between reader and agent
 
-**Status:** Accepted
+**Status:** Accepted — **amended 2026-08-14** (NVB-27), see [the amendment](#amendment-2026-08-14-nvb-27--the-signal-transport-runs-at-the-gateway-uid)
 **Related:** [threat-model.md](../threat-model.md), [0004](0004-signal-control-channel.md), [0005](0005-no-whatsapp-write-path.md)
 
 ## Context
@@ -100,6 +100,56 @@ mail-it-all-to-the-attacker case.
 - The worst outcome of a successful end-to-end injection is a draft email I review, or a
   calendar event with no invites sent.
 - Safety does not rest on the model resisting persuasion.
+
+## Amendment, 2026-08-14 (NVB-27) — the Signal transport runs at the gateway uid
+
+`signal-cli.service` now runs as `openclaw`, the gateway's own uid, instead of its own
+`wpa-signal`. Only `User=` moved; `Group=wpa-signal` stays, so the socket and `wpa-gate`'s
+access to it are untouched.
+
+**Why it had to.** OpenClaw delivers a generated image by handing signal-cli a *filesystem
+path* under `~openclaw/.openclaw/media/outbound`, and re-asserts `0700` on `media` on every
+generation — measured, `0710` before a run and `0700` after. So no group grant survives, a
+watcher racing the chmod is not a design, and the only process that can read the attachment
+is one running as `openclaw`. OpenClaw assumes it owns the Signal transport at its own uid;
+this split is what made that untrue here.
+
+**What this actually costs, stated more narrowly than it first appears.** Two of the three
+costs it looks like are not new:
+
+- **Message visibility was already the gateway's.** OpenClaw is a JSON-RPC client of
+  signal-cli by design ([ADR 0011](0011-openclaw-owns-the-channel-the-gate-owns-the-room.md)),
+  and signal-cli broadcasts notifications to every attached client. The `openclaw` uid has
+  been seeing every inbound envelope since the channel existed.
+- **Sending as the assistant was already available to any local uid.** The JSON-RPC endpoint
+  is a loopback TCP port, and a TCP port has no owner check. It had no firewall rule until
+  this change added one (uid 0 and the gateway only). The boundary this amendment narrows
+  was, in that respect, thinner than this ADR read.
+
+What genuinely moves is the third: **`/var/lib/wpa-signal` — the account key material at
+rest — is now readable by the gateway uid.** That is a real loss and it is the durable kind.
+A live socket ends with the process; key material lets a compromised gateway impersonate the
+account later, from anywhere, and deregister the number. The registration PIN is not in
+there, but the number and its identity are.
+
+**What is unchanged**, and is the part this ADR was mostly about:
+
+- The reader still has its own uid, `PrivateNetwork=yes`, no credentials, no tools.
+- The gate still has its own uid and still cannot read the account: the state directory is
+  `0700` with no group execute bit, so group membership buys the socket and nothing else.
+- The agent still runs inside a container it cannot reach out of, on a daemon that no longer
+  grants root ([NVB-25](../../CHANGELOG.md)).
+- There is still no WhatsApp write path.
+
+**What reverses this.** Upstream delivering attachments as **bytes over JSON-RPC**, or
+exposing a configurable outbound media directory — neither exists in the shipped schema or
+`dist` as of 2026-08-14. Either one means moving signal-cli back to its own uid, and
+deleting `imageGenerationModel` / `videoGenerationModel` / `timeoutSeconds` in the same
+commit, because they would otherwise ship tools that always fail at the last step.
+
+It also raises the value of [NVB-22](https://linear.app/naveh-brenner/issue/NVB-22)
+(containerize the gateway): the thing a compromised gateway now reaches is strictly larger
+than it was this morning.
 
 ## The line to hold
 
