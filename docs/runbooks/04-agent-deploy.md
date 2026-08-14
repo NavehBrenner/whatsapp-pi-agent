@@ -125,6 +125,102 @@ sudo wc -l /var/lib/wpa-reader/messages.jsonl
 
 `messages.jsonl` grows without bound until the M3 consumer drains it. Nothing rotates it yet.
 
+## Rootless Docker for the agent sandbox (NVB-25)
+
+`sandbox.mode: "all"` needs a Docker daemon, and the gateway must reach its socket to
+create containers. A **rootful** daemon means the gateway uid is in the `docker` group,
+which is root-equivalent on the host — container-create with bind mounts is the capability
+the gateway needs, so a socket proxy does not help. The daemon therefore runs **as the
+gateway user**, where socket access grants nothing it does not already have.
+
+Debian's own `docker.io` carries the installer; no third-party apt repo is involved.
+
+```bash
+sudo apt-get install -y rootlesskit slirp4netns fuse-overlayfs
+
+# subuid/subgid range for a system user with no login, then a user manager that
+# survives without a session
+echo 'openclaw:165536:65536' | sudo tee -a /etc/subuid
+echo 'openclaw:165536:65536' | sudo tee -a /etc/subgid
+sudo loginctl enable-linger openclaw
+
+# the contrib dir MUST be on PATH — the installer resolves its sibling
+# dockerd-rootless.sh by name and aborts without it
+sudo -u openclaw HOME=/var/lib/openclaw XDG_RUNTIME_DIR=/run/user/991 \
+  DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/991/bus \
+  PATH=/usr/share/docker.io/contrib:/usr/bin:/bin:/usr/sbin:/sbin \
+  /usr/share/docker.io/contrib/dockerd-rootless-setuptool.sh install --force
+```
+
+The installer's **last** step fails (`$BIN/docker version`, and `contrib` holds no `docker`
+binary) *after* the daemon is running, so it never reaches `systemctl --user enable`. Do
+that by hand or the daemon will not come back after a reboot.
+
+**The socket cannot stay at `$XDG_RUNTIME_DIR/docker.sock`.** `wpa-openclaw.service` sets
+`ProtectHome=yes`, which makes `/run/user` inaccessible to the service, and
+`BindPaths=/run/user/991` does *not* reliably punch back through it — the gateway gets
+`EACCES` on a socket that plainly exists. Two drop-ins move it instead:
+
+```ini
+# ~openclaw/.config/systemd/user/docker.service.d/10-socket-path.conf
+[Service]
+Environment=DOCKER_HOST=unix:///var/lib/openclaw/docker.sock
+ExecStart=
+ExecStart=/usr/share/docker.io/contrib/dockerd-rootless.sh -H unix:///var/lib/openclaw/docker.sock
+```
+
+```ini
+# /etc/systemd/system/wpa-openclaw.service.d/10-rootless-docker.conf
+[Unit]
+Wants=user@991.service
+After=user@991.service
+
+[Service]
+Environment=DOCKER_HOST=unix:///var/lib/openclaw/docker.sock
+```
+
+The sandbox image lives in the daemon's own store, and the rootless daemon has a different
+one (`~openclaw/.local/share/docker`). Move it across without a registry pull:
+
+```bash
+sudo bash -c "docker save openclaw-sandbox:bookworm-slim | \
+  sudo -u openclaw HOME=/var/lib/openclaw \
+  DOCKER_HOST=unix:///var/lib/openclaw/docker.sock docker load"
+```
+
+Then drop the privilege and stop the rootful daemon. **Mask, do not purge** — `docker.io`
+is one package holding both client and daemon, and OpenClaw shells out to `docker` on
+`PATH`:
+
+```bash
+sudo gpasswd -d openclaw docker
+sudo docker rm -f $(sudo docker ps -q)      # orphaned sandbox containers
+sudo systemctl disable --now docker.service docker.socket
+sudo systemctl mask docker.service docker.socket
+sudo systemctl restart wpa-openclaw.service  # supplementary groups resolve at start
+```
+
+Config needs one line to match — `sandbox.docker.user: "0:0"`, explained in
+[`config/openclaw.example.json5`](../../config/openclaw.example.json5). Without it the
+workspace bind is writable in name only.
+
+Checks that the move actually took, rather than looked like it did:
+
+```bash
+# the rootful socket must be refused
+sudo -u openclaw DOCKER_HOST=unix:///var/run/docker.sock docker ps   # permission denied
+
+# the flags still bind (memory is the one that depends on cgroup delegation)
+sudo -u openclaw HOME=/var/lib/openclaw DOCKER_HOST=unix:///var/lib/openclaw/docker.sock \
+  docker inspect openclaw-sbx-agent-owner-* \
+  --format 'user={{.Config.User}} mem={{.HostConfig.Memory}} pids={{.HostConfig.PidsLimit}} ro={{.HostConfig.ReadonlyRootfs}} caps={{.HostConfig.CapDrop}} net={{.HostConfig.NetworkMode}}'
+
+# Waydroid untouched: no bridge, no firewall rules, still running
+sudo iptables -S FORWARD | head -1   # -P FORWARD ACCEPT
+ip -br link | grep docker || echo 'no docker interface'
+sudo waydroid status
+```
+
 ## Before going live
 
 - [ ] Reader has no network — test it **inside the sandbox**, since `PrivateNetwork=` is a

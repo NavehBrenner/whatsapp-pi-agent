@@ -11,6 +11,62 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Changed — the sandbox daemon runs as the gateway now (NVB-25, 2026-08-14)
+
+The `openclaw` uid is **out of the `docker` group**, and the rootful daemon is stopped,
+disabled and masked. Docker still backs `sandbox.mode: "all"` — it is just a **rootless**
+daemon owned by `openclaw` itself, so reaching its socket grants exactly what the gateway
+already had and nothing more. ADR 0006's uid split is no longer bypassable from the
+process that parses untrusted Signal input.
+
+What the move actually needed, all of it on hardware:
+
+- **Debian's own `docker.io` ships the rootless installer** at
+  `/usr/share/docker.io/contrib/dockerd-rootless-setuptool.sh`. No third-party apt repo,
+  no `docker-ce`. `rootlesskit`, `slirp4netns` and `fuse-overlayfs` are in bookworm main.
+  The installer must be run with that `contrib` directory **on `PATH`** — it looks up its
+  sibling `dockerd-rootless.sh` by name and otherwise aborts. It then fails at its last
+  step (`$BIN/docker version`, and there is no `docker` in `contrib`) *after* the daemon
+  is up, so `systemctl --user enable docker` has to be run by hand.
+- **Storage is `overlay2`, not `vfs`.** Kernel 6.12 does unprivileged overlayfs, so the
+  rootless daemon gets native overlay2 and no full-copy layers on an SD card.
+  `fuse-overlayfs` is installed as a fallback and is not being used.
+- **cgroup delegation was already correct.** `user-991.slice` carries `cpu memory pids`,
+  so `sandbox.docker.memory: "512m"` still binds — `docker info` prints no "No memory
+  limit support" warning, and the container reads `memory.max = 536870912`. The
+  controllers that are *not* delegated are `cpuset` and `io`, neither of which this
+  config uses.
+- **The socket had to move off `$XDG_RUNTIME_DIR`.** `wpa-openclaw.service` sets
+  `ProtectHome=yes`, which makes `/run/user` inaccessible, and a `BindPaths=/run/user/991`
+  hole punched back through it **did not survive** — the gateway saw `EACCES` on a socket
+  that exists. Weakening the hardening to reach the socket would invert the point of the
+  issue, so the daemon listens on `/var/lib/openclaw/docker.sock` instead, via a drop-in
+  on the user-level `docker.service`. That path is outside every `Protect*` the unit sets.
+- **`sandbox.docker.user: "0:0"` is new, and is only safe because we went rootless.** The
+  sandbox image runs as `sandbox` (uid 1000); under rootless that maps to a subuid with no
+  claim on the workspace, so the bind mount was writable in name only —
+  `touch /workspace/x` → `Permission denied`. Container uid 0 maps to host uid 991, which
+  *is* `openclaw`, so files land owned by the gateway user exactly as before. Under the
+  rootful daemon the same line would have been real root on a host bind mount.
+- **Waydroid is untouched, and now structurally rather than by configuration.** The
+  rootful daemon's `/etc/docker/daemon.json` (`iptables: false`, `ip6tables: false`,
+  `bridge: none`) was what kept dockerd's firewall rules away from Waydroid. A rootless
+  daemon does its networking inside its own netns, so it cannot touch the host firewall at
+  all. Verified after the move: `FORWARD` still `ACCEPT`, no `docker0`, Waydroid `RUNNING`
+  on 192.168.240.112. `daemon.json` is kept for the masked daemon, in case it is ever
+  unmasked.
+- **The rootful daemon is masked, not purged.** `docker.io` is one package holding both
+  client and daemon, and OpenClaw shells out to `docker` on `PATH` — removing the package
+  would remove the interface the gateway needs.
+
+NVB-23's acceptance was re-run against the rootless daemon and passes unchanged:
+container created per agent (`openclaw-sbx-agent-{owner,family}-*`), `user=0:0`,
+`memory=536870912`, `pids=256`, `ReadonlyRootfs=true`, `CapDrop=[ALL]`, `network=none`;
+a file written by the agent appeared in the real host workspace owned by uid 991 and read
+back in a **fresh** session; the `exec` probe answers `NO_SHELL_TOOL`; the two agents get
+separate containers with separate workspace binds. `sudo -u openclaw docker ps` against
+`/var/run/docker.sock` now fails with `permission denied`, which is the whole point.
+
 ### Changed — the runtime switch itself (NVB-23, 2026-08-14)
 
 ADR 0012 said what to run on. This is the executing of it, and the config now says
@@ -247,6 +303,8 @@ binary-override key in the schema. Nothing on the Pi provided it, so `sandbox.mo
   *gateway* reaches, which ADR 0012 scopes out to NVB-22 on the grounds that injection
   into an *agent* is the likelier event. That reasoning is unchanged but its price is
   now higher, and NVB-22's trigger should be read with that in mind.
+  **Superseded the same day by NVB-25 above: the daemon is rootless and the group
+  membership is gone.**
 
 Also confirmed while checking that the Pi was healthy: **the reader's cursor and its
 liveness file measure different things**, and the gap between them is not a fault. The
