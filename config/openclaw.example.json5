@@ -399,7 +399,23 @@
       "screen",
     ],
 
-    // ⚠️ READ, WRITE, EDIT AND APPLY_PATCH ARE NOT DENIED, ON PURPOSE.
+    // ⚠️ `minimal` STRIPS THE FILE TOOLS, SO THEY MUST BE ADDED BACK EXPLICITLY.
+    //
+    // Not denying them is not enough — verified on hardware 2026-08-14. With
+    // `profile: "minimal"` and no `alsoAllow`, the agent's ENTIRE tool surface was
+    // `session_status`: asked to write a file it neither wrote one nor errored, and
+    // asked to list its tools it named only that one. `alsoAllow` widens relative to
+    // the profile, which is the documented mechanism for exactly this.
+    //
+    // This one hid behind a stale observation. The note elsewhere in this file that
+    // "minimal removes 18 tools" was measured on 2026-08-12 under claude-cli — where
+    // read/write/edit/apply_patch were stripped from the loopback bridge by
+    // NATIVE_TOOL_EXCLUDE regardless, so their absence from that list proved nothing
+    // about the profile. Carrying that measurement across a runtime change is the
+    // "TOOL NAMES ARE RUNTIME-DEPENDENT" trap below, sprung on us rather than by us.
+    alsoAllow: ["read", "write", "edit", "apply_patch"],
+
+    // ⚠️ AND THEY ARE NOT DENIED, ON PURPOSE.
     //
     // They are the memory path. Memory is plain Markdown in the agent workspace —
     // MEMORY.md, memory/YYYY-MM-DD.md — written with an ordinary file-write tool,

@@ -67,6 +67,30 @@ binary-override key in the schema. Nothing on the Pi provided it, so `sandbox.mo
   `--network host` when there is no bridge. `python3` in that image is load-bearing —
   it backs the write/edit helpers, which is why OpenClaw refuses to substitute plain
   `debian:bookworm-slim`.
+- **`tools.profile: "minimal"` strips the file tools, so ADR 0012's memory path did not
+  work until `alsoAllow` put them back.** Not denying them was not enough. With
+  `minimal` and no `alsoAllow`, the agent's entire tool surface was `session_status`:
+  asked to write a file it neither wrote one nor errored, and asked to enumerate its
+  tools it named only that one. `alsoAllow: ["read", "write", "edit", "apply_patch"]`
+  restored it — verified by the file appearing in the real host workspace and being
+  read back in a *fresh* session.
+
+  **This hid behind our own stale measurement.** The note in the config that "minimal
+  removes these 18 tools" was taken on 2026-08-12 under `claude-cli`, where the file
+  tools were stripped from the loopback bridge by `NATIVE_TOOL_EXCLUDE` regardless — so
+  their absence from that list said nothing about the profile, and reading it as though
+  it did is what let the gap through. It is precisely the "tool names are
+  runtime-dependent" trap this config warns about, sprung on us rather than by us. Any
+  observation about tool surfaces is only valid for the runtime it was taken on.
+- **`openclaw sandbox explain` does not show the effective tool surface, despite
+  looking exactly like it does.** It reported `allow (default): exec, process, read,
+  write, …` for both agents while the agent actually had `exec` denied (probe answered
+  `NO_SHELL_TOOL`) and the file tools missing entirely. That block is the sandbox
+  *routing* default — which tools would run in the container if present — not what the
+  agent has. Both errors it invites are bad: believing `exec` is available when it is
+  not, and believing `write` is available when it is not. Ask the agent, or check the
+  filesystem; do not read the surface off `explain`. (This is a large part of NVB-24's
+  justification.)
 - **A `models.providers.<id>` entry overrides the plugin's provider registration, base
   URL included — and the failure is a lie.** The xai plugin defines
   `XAI_BASE_URL = "https://api.x.ai/v1"`, so `baseUrl` in config looks redundant.
