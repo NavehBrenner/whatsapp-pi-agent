@@ -977,6 +977,414 @@ Effective backend args now:
 --disallowedTools Read,Bash,Write,Edit,NotebookEdit,Agent,Skill,ScheduleWakeup,CronCreate,Monitor
 ```
 
+### ⛔ OpenClaw's own sandbox does not contain the claude-cli runtime (2026-08-13)
+
+Read out of the shipped `dist/` of **`openclaw@2026.7.1-2`** — the exact version on the
+Pi — rather than from prose docs, after `gateway/sandbox-vs-tool-policy-vs-elevated`
+turned out to say nothing at all about CLI backends.
+
+| Evidence | What it shows |
+| --- | --- |
+| `docs/gateway/sandboxing` | "The Gateway process always stays on the host; only tool execution moves into the sandbox when enabled." The sandboxed set is OpenClaw's own `exec`, `read`, `write`, `edit`, `apply_patch`, `process`, browser. |
+| `cli-backends`, `chat-engine`, `claude-live-session` | **Zero** occurrences of `sandbox` in any of the three. |
+| `claude-live-session` | The CLI is a host subprocess: `supervisor.spawn({… cwd: params.context.cwd ?? params.context.workspaceDir })`. |
+| `agent-tools.policy` | Sandbox policy applies to the runtime tool list only: `sandboxMode === "all"` → `resolveSandboxToolPolicyForAgent`. |
+| harness registry | Registered runtime ids are `codex`, `claude-cli`, `github-copilot`, `google-gemini-cli`; the built-in runtime id is `openclaw`. |
+
+So `agents.defaults.sandbox.mode: "all"` **does not contain the tools that actually
+execute under our runtime.** It governs OpenClaw's own tools; the Claude CLI's `Bash` /
+`Read` / `Write` run beside it on the host as the gateway uid. The finding above — that
+native CLI tools bypass OpenClaw path policy — extends to the sandbox as well. The only
+floor under the real tool surface remains `cliBackends.args --tools`, which is **global
+rather than per-agent**, and which `2026.8.1-beta.1` removed.
+
+Note also that `auto` runtime selection prefers a registered harness that supports the
+provider. With the Claude CLI installed, Anthropic resolves to `claude-cli` **unless
+`agentRuntime.id` is pinned to `openclaw`** — so the pin is load-bearing, not cosmetic.
+
+**For Anthropic, subscription auth and sandbox coverage are mutually exclusive.**
+`docs/providers/anthropic.md` names it "OAuth (Claude CLI subscription reuse)": for
+Anthropic, OAuth *is* the CLI harness, and there is no Anthropic OAuth token OpenClaw's
+own transport can send. Providers with OpenClaw-managed OAuth and **no** registered
+harness — xAI/Grok, Qwen — do run on the built-in runtime, and there the sandbox applies.
+
+**A billing premise underneath NVB-13 is out of date.** OpenClaw's docs cite Anthropic's
+**June 15 2026** support update: Claude Agent SDK, `claude -p`, and third-party app usage
+draw from the signed-in subscription's usage limits. ADR 0011 argues partly from Feb 2026
+terms prohibiting exactly this, server-enforced since April 2026. Re-check against
+Anthropic's own support articles before either premise is cited again.
+
+**Consequence for NVB-14: the container that delivers per-principal isolation has to wrap
+the gateway, not tool execution.** Which revives one specific conflict —
+`docs/providers/anthropic.md` warns that Claude CLI reuse expects OpenClaw on the same
+host as the Claude login, that Docker installs can persist a container home and log in
+inside it, but that Podman installs "do not mount host `~/.claude`; use an Anthropic API
+key there." The rootless-Podman lean was chosen to avoid rewriting Waydroid's iptables.
+**Subscription auth pulls toward Docker and Waydroid pulls toward rootless Podman**, and
+that is the first thing NVB-14 has to settle on hardware.
+
+### ✅ Per-agent tool separation is real over the MCP bridge — and it costs the agent its memory (2026-08-13)
+
+The finding above says the sandbox does not reach the CLI. It leaves open the question
+NVB-14 actually cares about: can two agents on one gateway hold **different** tool sets,
+and is the difference real or cosmetic? Read out of the same shipped `dist/`.
+
+| Evidence | What it shows |
+| --- | --- |
+| `mcp-http-BUQahgob.js:648` | `resolveMcpLoopbackScopedTools` → `resolveGatewayScopedTools({ surface: "loopback", excludeToolNames: NATIVE_TOOL_EXCLUDE })`, which resolves `resolveEffectiveToolPolicy({ sessionKey })`. |
+| `mcp-http-BUQahgob.js:814,851` | One `scopedTools` object serves **both** `tools/list` and `tools/call` for a request. |
+| `mcp-http-BUQahgob.js:639` | `NATIVE_TOOL_EXCLUDE = { read, write, edit, apply_patch, exec, process }`. |
+| `cli-backend-C4iY7FFY.js:21` | `claude-cli` declares `nativeToolMode: "always-on"` — hence the exclusion. |
+| `prepare.runtime-CM3Uj6Uh.js:432` | `hasBootstrapFileAccess = nativeToolMode === "always-on" && disableTools !== true`. |
+
+**Tool separation is existence separation, not credential denial.** Because the same
+scoped list answers `tools/list`, a tool an agent does not hold is *absent from its tool
+list* — the model is never told it has a capability it cannot use. That is the property
+`src/agent/registry.py` was written against, and NVB-17/18's calendar and mail tools
+inherit it for free by arriving as OpenClaw plugin tools.
+
+**The `cliBackends` args being global is not the limit it looked like.** They govern
+Claude's *own* native tools; `--allowedTools mcp__openclaw__*` blanket-approves the bridge
+**namespace**, and which bridge tools exist inside it is decided per agent. Global floors
+the native surface equally; per-agent policy shapes the bridge surface individually.
+
+**But the bridge withholds exactly the six sandboxed tools.** So under `claude-cli` the
+sandbox is not merely uncovered — it is *purposeless*, since the only tools it protects
+are the six never offered. And memory is plain Markdown in the agent workspace
+(`MEMORY.md`, `memory/YYYY-MM-DD.md`) written with an ordinary file-write tool: with the
+native surface floored to `TodoWrite` and the bridge withholding `write`, **no writer
+exists**. The agent cannot remember anything.
+
+The obvious fix is a trap. Allowing `Write`/`Edit` natively grants **absolute-path**
+access as the shared `openclaw` uid, so every agent can reach every other agent's store.
+**On one gateway with `claude-cli`, memory writes and agent isolation are mutually
+exclusive.**
+
+**The one escape hatch does not exist.** `agents.defaults.compaction.memoryFlush` reads
+like a gateway-side writer, but it is not, and it fails twice over:
+
+- `config-agents.md:667` calls it a "silent **agentic turn** before auto-compaction to
+  store durable memories" — it *prompts the model* to write, so it needs the same write
+  tool the agent does not have.
+- `cli-compaction-CF7Yb1P6.js:321` — when the backend declares `ownsNativeCompaction`
+  (which `claude-cli` does), OpenClaw returns early: "owns native compaction — deferring
+  to backend". The whole compaction flow the flush lives in never runs for our sessions.
+
+**So one gateway on `claude-cli` cannot give an agent durable memory and keep the agents
+isolated from each other.** Pick one of: an API-key or OpenClaw-managed-OAuth provider on
+the built-in runtime, where `read`/`write` become real per-agent, sandboxed tools; or a
+container per gateway, where native file access is confined by the container instead of
+by tool policy. This is the finding that decides NVB-14.
+
+**NVB-17's tools will not be sandboxed on any runtime.** `docs/gateway/sandboxing` lists
+the sandboxed set as `exec`, `read`, `write`, `edit`, `apply_patch`, `process` plus the
+optional browser — the filesystem/process family — and nothing could extend it:
+`resolveSandboxToolPolicyForAgent` is an allow/deny **policy** layer
+(`agent-tools.policy:101`), not a routing table, and each fs/exec tool dispatches to the
+backend itself. A calendar or mail tool making an outbound HTTPS call has no sandbox path.
+
+So the credentials that matter most sit in the gateway process whichever runtime we pick,
+and only a container **per gateway** separates them. That splits NVB-14 cleanly:
+**switching runtimes bounds what a compromised agent can reach; containerizing bounds what
+a compromised gateway can reach.** AGENTS.md's standing question — "what does a successful
+injection do with this" — is about the first. The second is the rarer failure, so it is an
+upgrade with a trigger (ADR 0009's shape), not a prerequisite.
+
+### Why not just strip claude-cli's native tools and hand it OpenClaw's? (2026-08-14)
+
+The obvious objection to switching runtimes, and it deserves an answer in the file because
+the answer is a specific unconditional code path rather than a judgement call.
+
+The idea is right: floor the CLI's natives to nothing, then give it OpenClaw's *sandboxed*
+`read`/`write`/`exec` over the loopback bridge instead. It is not expressible.
+
+- `NATIVE_TOOL_EXCLUDE` is defined at `mcp-http-BUQahgob.js:639` and referenced at
+  **exactly one** site, line 652 — passed unconditionally as `excludeToolNames` into
+  `resolveMcpLoopbackScopedTools`. No config flag gates it.
+- `nativeToolMode` appears in neither `config-agents.md` nor `configuration-reference.md`.
+  It is a backend **plugin declaration** (`cli-backend-C4iY7FFY.js:21`), not a user setting.
+
+The bridge strips those six names before the tool list is built, on every request, and no
+configuration changes that.
+
+**State the consequence honestly: the built-in runtime is not architecturally safer.** Were
+that configuration expressible it would be roughly equivalent — sandboxed file tools, the
+same per-agent policy, the same mechanisms. We are not switching for a better security
+model; we are switching because **the model we want is only reachable there**, and the
+claude-cli path forecloses it by construction. That is also why gateway containerization
+remained the alternative rather than being ruled out: it reaches the same place from the
+other direction, wrapping the process instead of the tools.
+
+### `workspaceAccess` must be `rw`, and the example config currently says `none` (2026-08-14)
+
+Listed as a switch-day unknown ("does memory persist?"); it is settled, and it is a bug in
+`config/openclaw.example.json5` today.
+
+| Value | Behaviour |
+| --- | --- |
+| `none` (default) | Tools see an **isolated** sandbox workspace under `~/.openclaw/sandboxes` |
+| `ro` | Agent workspace mounted read-only at `/agent` — **disables** `write`/`edit`/`apply_patch` |
+| `rw` | Agent workspace mounted read/write at `/workspace` |
+
+The agent's own workspace is bind-mounted into its container: the sandbox does not cut the
+agent off from its own files, it cuts it off from everything else. So `MEMORY.md` written
+to `/workspace` lands in the real workspace on the host.
+
+`agents.defaults.sandbox.workspaceAccess` is currently `"none"`, which would write memory
+into a throwaway directory under `~/.openclaw/sandboxes`. It must become `"rw"` as part of
+the switch. `"ro"` is not an option — it disables the write tools the switch exists to
+restore.
+
+Related, and worth stating because it looks like a loss and is not: **the agent never reads
+the credential store on any runtime.** Credential resolution happens in the gateway, above
+the sandbox — the agent calls a tool, the gateway attaches the credential and makes the
+outbound call, the agent receives a result. Kernel-unreachability of `auth-profiles.json`
+costs no functionality.
+
+### Cross-agent requests go agent-to-agent, and the sandbox silently clamps them (2026-08-14)
+
+> **Scope: deferred, not planned.** Cross-agent communication is **not** being built now
+> and is not on any milestone. The next four sections are the investigation behind that
+> deferral — they exist so the question is not re-litigated from scratch, and so the
+> settings that would have to change are already known. Nothing here is pending work.
+> `tools.agentToAgent.enabled` stays `false`, which is the shipped default.
+
+The question: when one principal's agent needs something only another principal can
+consent to — scheduling between two people, not on the family calendar — does the first
+agent hold the second's credentials with an "ask" gate, or do the two agents talk?
+
+**It has to be the two agents talking, and OpenClaw supports that natively.**
+`sessions_send` (`docs/concepts/session-tool`) delivers to another session, either
+fire-and-forget (`timeoutSeconds: 0`) or waiting inline for the reply, with a bounded
+reply-back loop (`session.agentToAgent.maxPingPongTurns`, default 5, `0` disables) that
+the target can end early with `REPLY_SKIP`. It is gated twice, both closed by default:
+`tools.agentToAgent.enabled` plus an `allow` list of agent ids, and
+`tools.sessions.visibility` (default `tree` — only sessions this one spawned).
+
+**The impersonation boundary is already drawn.** Inbound cross-agent messages are marked
+`[Inter-session message … isUser=false]` in the receiving prompt and in transcript
+provenance, and the receiver is instructed to treat them as tool-routed data rather than
+end-user instruction. One agent cannot speak as its principal to another agent.
+
+⚠️ **The sandbox clamps this off.** When the calling session is sandboxed and
+`agents.defaults.sandbox.sessionToolsVisibility` is `"spawned"` (the default), visibility
+is forced to `tree` **even if `tools.sessions.visibility: "all"` is set.** Since
+sandboxing is the whole reason for the runtime switch, this fires exactly when the config
+looks finished.
+
+**The credential-holding route is not available and should not be built.** Approvals
+broadcast `exec.approval.requested` to **operator clients** — Control UI, macOS app, nodes
+(`docs/tools/exec-approvals`, "Approval flow"). The operator is the gateway owner, so an
+approval cannot be routed to the family member an action actually affects; and the ask
+machinery (`tools.exec.ask`) covers `exec` only, never a calendar or mail tool. Holding
+another principal's credential behind an "ask them" gate would also put that credential in
+the wrong agent's process — the thing the runtime switch exists to prevent.
+
+**So a confirmation gate on a plugin tool is ours to build: that is NVB-16's real
+justification,** not a nice-to-have registry.
+
+### What `tree` visibility means, and two ways `agentToAgent` fails open (2026-08-14)
+
+Read out of `dist/session-visibility-CUl4zBv3.js`, which holds the whole model in 216
+lines.
+
+`tree` is the requester's own session plus sessions **it spawned** — `rowOwnedByRequester`
+matches `ownerSessionKey`, `spawnedBy`, or `parentSessionKey` (line 160). A family
+member's session is created when they message Signal, so it is never in anyone else's
+tree. Cross-agent targeting then requires `visibility === "all"` **exactly** (line 173);
+`agent` and `tree` both return `forbidden`. Combined with the sandbox clamp, the practical
+rule is:
+
+> With `sandbox.mode: "all"` and defaults, cross-agent messaging cannot work at all.
+> `agents.defaults.sandbox.sessionToolsVisibility: "all"` is required to lift it
+> (`"spawned"` and `"all"` are the only values).
+
+Two failure-open behaviours to configure around:
+
+- **An empty `allow` list allows every pair.** `matchesAllow` returns `true` when
+  `allowPatterns.length === 0` (line 91), so `agentToAgent: { enabled: true }` without
+  `allow` is fully open. The list is not optional for us.
+- **`allow` cannot express a one-way relationship.** `isAllowed` requires *both* requester
+  and target to match (line 103), so `allow: ["owner", "family"]` permits `family → owner`
+  exactly as much as `owner → family`. A directed relationship has to be enforced above
+  this, not by config.
+
+### Ask-first tools exist, and plugin approvals route differently from exec approvals (2026-08-14)
+
+**This corrects the previous section's claim that approvals only reach the operator.** That
+holds for **exec** approvals (`exec.approval.requested` → operator clients). **Plugin**
+approvals are a separate family with independent config, and they can be delivered to a
+chosen person.
+
+`docs/plugins/plugin-permission-requests`: a plugin registers `api.on("before_tool_call",
+…)` and returns `requireApproval` with `title`, `description`, `severity`,
+`allowedDecisions` (`allow-once` / `allow-always` / `deny`), `timeoutMs`,
+`timeoutBehavior`, and `onResolution`. Returning nothing lets the call through, so
+free-use and gated tools coexist under one hook, decided per call. It fails closed:
+timeout denies unless `timeoutBehavior: "allow"`, and **"No approval route → the call is
+blocked."**
+
+Routing is `approvals.plugin` — `enabled`, `mode` (`session` | `targets` | `both`),
+`agentFilter`, `sessionFilter`, `targets: [{ channel, to }]` — independent of
+`approvals.exec`. `session` delivers into the originating chat; `targets` to explicit
+addresses.
+
+The doc also names the layering this repo already assumes: *"Optional tools are a
+discovery-time gate. Plugin permission requests are a per-call gate. Use both."* That is
+`src/agent/registry.py` plus NVB-16, and NVB-16 is now a **`before_tool_call` plugin**
+rather than anything bespoke.
+
+⚠️ **Delivery is not authorization.** An approver must already be command-authorized in
+that session, and Signal reaction approvals additionally require explicit approvers from
+`channels.signal.allowFrom` or `defaultTo`. Good: nobody in a group can approve for
+someone else. Also required: whoever must approve has to be listed, or the call blocks.
+
+**Gate the cross-agent request on the asking side, not the answering side.** The hook event
+carries `ctx.sessionKey`, `ctx.agentId`, `toolName`, `params` — session identity, not turn
+provenance. Because `sessions_send` delivers into the target's *existing* session, a hook
+there cannot distinguish an agent-initiated turn from one the person typed; the
+`[Inter-session message … isUser=false]` marking lives in the prompt and transcript, not in
+the hook event. So the cross-agent request should itself be a registry tool (say
+`family.ask_mom`) whose `before_tool_call` requires approval routed to that person via
+`approvals.plugin.targets`. The context is unambiguous there, the prompt can name the
+actual question, and the asking agent gains nothing by asking.
+
+### There is no per-session-origin tool policy — use a liaison agent instead (2026-08-14)
+
+The obvious design for cross-agent requests is: agent-initiated work always opens a **new**
+session, that session is distinguishable, and it carries a narrower tool policy. Two of
+those three are unavailable out of the box.
+
+- **A2A cannot open a new session on the target.** `sessions_send` targets an *existing*
+  session key. `sessions_spawn` does create one, but as a child of the **calling** agent —
+  same `agentId`, same credentials, same workspace. It is an agent talking to itself.
+- **There is no per-session-origin policy axis.** The whole `tools.*` surface is
+  `allow`/`deny`, `byProvider`, `toolsBySender`, `elevated`, `exec`, `loopDetection`,
+  `web`, `media`, `agentToAgent`, `sessions`, `sessions_spawn`, `codeMode`,
+  `experimental`. None of them key on how a session was initiated.
+
+The machinery half-exists: `isSubagentEnvelopeSession`, inherited tool allow/denylists, and
+subagent role/control scope narrow a child session's policy, and provenance is in the data
+model (`spawnedBy` / `parentSessionKey` — `resolveGroupToolPolicy` already consumes
+`spawnedBy`). But it is scoped to subagent session keys under one agent, and nothing
+attaches it to cross-agent messaging.
+
+**So express the boundary as agent identity, which is the axis OpenClaw does enforce.**
+Give each reachable person a second, narrow agent — a **liaison** — whose only job is
+answering other family members, and point cross-agent traffic at it rather than at their
+main agent:
+
+- own sessions by construction, so no collision with that person's own conversation;
+- distinguishable in every policy call and every hook, because it is a different `agentId`;
+- unavailable tools are *absent*, via the per-agent existence separation already verified;
+- ask-first on whatever remains, via the `before_tool_call` plugin with
+  `approvals.plugin.agentFilter: ["<liaison>"]` and a Signal target for that person.
+
+It also defuses the symmetric-`allow` problem above: a liaison holding nothing sensitive
+makes the unavoidable reverse direction harmless, which allowlisting a main agent would
+not. Cost: one extra agent id per reachable person, and the liaison does not share memory
+with their main agent — correct for "when is she free Thursday", wrong for anything that
+needs their history, which is the signal that such a request does not belong on this path.
+
+### Sharing files with a liaison agent: nest the workspace, never symlink (2026-08-14)
+
+A liaison agent that shares nothing is a stranger; the question is how it can share some
+facts with its principal's main agent without seeing everything.
+
+**Symlinks cannot do it.** Two independent rejections: sandbox seed copies "only accept
+regular in-workspace files; symlink/hardlink aliases that resolve outside the source
+workspace are ignored" (`agent-workspace.md:45`), and bind validation re-resolves a source
+through its deepest existing ancestor before re-checking allowed roots, so symlink-parent
+escapes fail closed (`gateway/sandboxing`). This is precisely the escape the validator
+exists to stop.
+
+**Binding one agent's workspace into another's container needs a dangerous flag.**
+`docker-Hq4HIYYD.js:993` scopes the allowed bind roots to the agent's *own* workspace:
+`bindSourceRoots: [workspaceDir, params.agentWorkspaceDir]`. Anything else is "outside
+allowed roots" unless `dangerouslyAllowExternalBindSources: true`. We should not set it.
+
+**Nesting the workspaces avoids binds entirely,** because each agent then only ever mounts
+its own workspace:
+
+```json5
+{ id: "owner",         workspace: "~/.openclaw/workspaces/owner" },
+{ id: "owner-liaison", workspace: "~/.openclaw/workspaces/owner/shared" }
+```
+
+The main agent writes into `shared/` with ordinary file tools; the liaison's root *is*
+that directory, so it cannot see above it. No binds, no flags, no symlinks.
+
+⚠️ **The shared directory is the liaison's bootstrap surface.** `MEMORY.md`, `AGENTS.md`,
+and `memory/*.md` load from the workspace root, so whatever the main agent writes there
+becomes the liaison's own instructions — a prompt-injection path from one agent into the
+agent another person's approvals hang off. Blast radius is small because a liaison holds
+nothing sensitive, but the rule that follows is not optional: **the liaison's identity must
+come from config, never from the shared directory** — the `identity` block, plus
+`agents.defaults.skipBootstrap: true` so OpenClaw does not seed instruction files into a
+directory another agent can write. `shared/` then carries facts; who the liaison *is* stays
+in config only the operator edits.
+
+Note the sharing is conventional, not enforced: the liaison has `rw` on that directory
+because it is its own workspace. Making it read-only means `workspaceAccess: "ro"`, which
+removes the liaison's ability to write memory at all — the capability the runtime switch
+exists to restore. Not a good trade.
+
+**For identity alone, none of this is needed.** `identity` is config, not a file. Two
+agents carrying the same identity block are the same persona to the family with no
+filesystem sharing whatsoever. Nesting earns its keep only for accumulated facts an agent
+chooses to publish.
+
+**Decision: do not nest. Credentials are not in the workspace, so the mount buys nothing.**
+`agent-workspace.md:109` lists what lives outside it — `auth-profiles.json` (model OAuth
+and API keys), `~/.openclaw/credentials/`, and `agents/<id>/sessions/`. The sandbox mounts
+the *workspace*; the credential store sits above it, which is exactly why the runtime
+switch makes it kernel-unreachable. Putting a credential in a shared workspace folder would
+move it from somewhere the agent's file tools cannot reach to somewhere they can —
+`gateway/secrets` twice: "plaintext credentials remain agent-readable if they sit in files
+the agent can inspect", and a plaintext credential in an agent-readable path "is still
+readable via file or shell tools, bypassing API-level redaction". The liaison gets its own
+workspace and shares the `identity` config block; nothing is mounted.
+
+### Rotation lives in the auth store, and OAuth profiles cannot use SecretRefs (2026-08-14)
+
+Avoiding duplicate credentials is a real concern, just not a workspace one. OpenClaw's
+mechanism is **SecretRefs**: credentials referenced from an external source instead of
+stored inline, resolved eagerly into an in-memory snapshot, failing fast at startup when
+unresolvable and swapping atomically on reload with last-known-good retained. Rotate at
+the source and every referencing agent follows.
+
+⛔ **It does not cover our model credential.** `gateway/secrets`: "Policy violations (for
+example an OAuth-mode auth profile combined with SecretRef input) fail activation before
+the runtime swap." Grok-via-OAuth is an OAuth-mode profile, so it stays in each agent's own
+auth store.
+
+Combined with two-tier read-through (local agentDir → default agent store) and the **"main
+holds nothing"** invariant that deliberately empties the fallback, **every agent needs its
+own xAI OAuth login.** Whether one subscription tolerates several device-code logins, and
+whether they rotate independently, is unknown and cheap to test on switch day.
+
+If it does not, the narrow fix is to let **main hold the model credential only.** That
+invariant exists to stop *tool* credentials reaching the wrong principal; the model
+credential is not a differentiator — every agent needs inference, and a shared subscription
+under a provider-side cap is already accepted (Q4). Tool credentials stay out of main,
+which is the part that was ever load-bearing. NVB-17/18 tool credentials are unaffected
+either way: `src/agent/registry.py` binds them to systemd `LoadCredential` ids, external to
+OpenClaw, one file on the host granted per tool.
+
+### The runtime switch is also a media-tool decision, and Cursor is not an option (2026-08-14)
+
+`docs/providers/xai`: one credential from `openclaw models auth login --provider xai
+--method oauth` powers `web_search` (provider id `grok`), `x_search`, `code_execution`,
+speech/transcription, **and** image/video generation — the bundled `xai` plugin registers
+the shared `image_generate` and `video_generate` tools. So the skeptical-family-member
+profile gets real web search from the same subscription, with no separate search key, and
+media generation stays per-agent policy-governed like any other tool.
+
+**Cursor cannot serve as the subscription.** There is no Cursor model provider; `cursor`
+appears only as an ACP backend (`cursor-agent acp`, `docs/tools/acp-agents:100`) — an
+external harness in the same category as `claude-cli`, a host subprocess carrying its own
+native tools. Adopting it reinstates both findings above.
+
 ### Group sessions are shared, and a repeat question returns `NO_REPLY`
 
 The group has exactly one session key —
