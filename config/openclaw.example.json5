@@ -94,17 +94,21 @@
           // outward-facing gets added one at a time, each answering "what does a
           // successful injection do with this?"
           //
-          // `web_search` is the one content-ingestion path currently open, and it is
-          // the reason `group:plugins` appears here: without it the xAI plugin's
-          // provider never registers and web_search silently does not exist. Note
-          // what it costs — search results are attacker-influenceable text entering
-          // the context of an agent that now has durable memory, so a poisoned result
-          // can persist past the turn. Acceptable today because nothing outbound
-          // exists to pivot to; revisit when NVB-17/18 add real tools.
+          // `group:plugins` is here because the media and search tools are backed by
+          // the xAI plugin: without it the provider never registers and they silently
+          // do not exist.
+          //
+          // `web_search` is the one content-ingestion path open, and it is worth being
+          // clear about what it costs — search results are attacker-influenceable text
+          // entering the context of an agent that now has durable memory, so a poisoned
+          // result can persist past the turn. Acceptable today because there is nothing
+          // outbound to pivot to and no WhatsApp write path; revisit when NVB-17/18 add
+          // real tools, and make it the injection smoke test's first target.
           tools: {
             allow: [
               "session_status", "read", "write", "edit", "apply_patch",
-              "group:plugins", "web_search",
+              "group:plugins",
+              "web_search", "image_generate", "video_generate",
             ],
           },
 
@@ -243,6 +247,22 @@
     defaults: {
       // xAI's own default model ref, read out of dist (XAI_DEFAULT_MODEL_ID).
       model: { primary: "xai/grok-4.3" },
+
+      // Media generation runs on the same xAI OAuth — no separate key. These two keys
+      // are what make `image_generate` / `video_generate` EXIST: the tools only
+      // register when a provider is configured, and an allow-list entry for a tool
+      // that never registered is a silent no-op.
+      imageGenerationModel: { primary: "xai/grok-imagine-image" },
+      videoGenerationModel: { primary: "xai/grok-imagine-video" },
+
+      // ⚠️ RAISED FOR ASYNC MEDIA TASKS, AND THE DEFAULT FAILS NASTILY.
+      // `image_generate` records a detached task and returns; a separate COMPLETION
+      // run delivers the result through the session's normal visible-reply mode.
+      // Generation takes ~90s. At the default the completion run is cut off, and that
+      // failure trips an auth-profile cooldown — so the *next*, unrelated turns fail
+      // with "xai hasn't been responding". The tell is that the damage shows up after
+      // the request that caused it. See the changelog for how long that misled us.
+      timeoutSeconds: 600,
 
       // ---------------------------------------------------------------------
       // THERE IS NO `cliBackends` BLOCK, AND ITS ABSENCE IS DELIBERATE.
@@ -439,7 +459,10 @@
     // NATIVE_TOOL_EXCLUDE regardless, so their absence from that list proved nothing
     // about the profile. Carrying that measurement across a runtime change is the
     // "TOOL NAMES ARE RUNTIME-DEPENDENT" trap below, sprung on us rather than by us.
-    alsoAllow: ["read", "write", "edit", "apply_patch", "web_search"],
+    alsoAllow: [
+      "read", "write", "edit", "apply_patch",
+      "web_search", "image_generate", "video_generate",
+    ],
 
     // ⚠️ AND THEY ARE NOT DENIED, ON PURPOSE.
     //
@@ -485,18 +508,13 @@
     // against a wildcard, so `alsoAllow` here silently means "allow everything plus
     // these" rather than "add these to the default set".
     //
-    // NOT listed, deliberately: `image_generate` and `video_generate`. Calling
-    // image_generate starts a detached media task whose completion turn times out and
-    // trips an auth-profile cooldown, so later turns fail with "xai hasn't been
-    // responding" — one request for a picture leaves the conversation unresponsive.
-    // Reliability, not isolation; they work under the sandbox once that is fixed.
     sandbox: {
       tools: {
         allow: [
           "read", "write", "edit", "apply_patch",
           "session_status",
           "group:plugins",
-          "web_search",
+          "web_search", "image_generate", "video_generate",
         ],
       },
     },

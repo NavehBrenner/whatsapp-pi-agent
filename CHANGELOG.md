@@ -94,14 +94,24 @@ false, which drops the xAI plugin's provider registrations. A tool whose provide
 registered does not appear, is not logged as removed, and raises no error — the same
 silent-no-op shape as a deny naming an unknown tool.
 
-**`image_generate` and `video_generate` stay off**, for reliability rather than
-isolation. Calling `image_generate` starts a detached media task whose completion turn
-times out (`rawError=terminated`), tripping an auth-profile cooldown so that *later*
-turns fail with "xai hasn't been responding". The provider error underneath is
-`400 Could not decrypt the provided encrypted_content` from xAI's Responses API — a
-conversation-continuation problem, not a setting. Having the tools listed is harmless;
-calling them is not, and in a shared room that means one request for a picture leaves the
-conversation unresponsive.
+**`image_generate` and `video_generate` are on too, and needed one more key:**
+`agents.defaults.timeoutSeconds: 600`.
+
+Media generation is **asynchronous by design** — the turn records a detached task and
+returns, then a separate *completion run* delivers the result through the session's
+normal visible-reply mode. Generation takes ~90s. At the default run timeout the
+completion run is cut off, and that failure trips an auth-profile cooldown, so the
+*next*, unrelated turns fail with "xai hasn't been responding". The damage shows up
+after the request that caused it, which is what makes it hard to read.
+
+With the timeout raised: image produced, completion run `ended with stopReason=stop`,
+zero errors, `exec` still refused, memory still persisting, on both the owner DM and the
+family group path.
+
+⚠️ **The completion is delivered through the session's reply path, so the CLI cannot
+show it** — there is no channel attached to `openclaw agent`. Everything up to delivery
+is verified here; that the picture actually lands in the Signal chat needs a real
+message.
 
 #### Unflattering: the finding this replaces was wrong, and wrong in an avoidable way
 
@@ -120,6 +130,16 @@ The reusable lesson is not about `group:plugins`. It is that **a capability that
 missing is not evidence of what removed it** — on this stack, three independent layers
 (`tools.profile`, `tools.sandbox.tools.*`, and provider registration) each remove tools,
 and only the first two say so in the log.
+
+The same mistake then repeated on the media tools, which is why it is worth writing
+down twice. `image_generate` was reported here as broken, with a confident cause
+(`400 Could not decrypt the provided encrypted_content`). That error fired once and never
+reproduced, including in a control built to trigger it. The real behaviour was mundane —
+async task, ~90s, cut off by the default run timeout — and **the test method was breaking
+the thing under test**: restarting the gateway between probes killed detached tasks
+mid-flight, and the probe expected a synchronous answer from a tool the shipped docs
+describe as asynchronous. Two wrong causes were published before the boring one was
+found. **An error seen once is a lead, not a diagnosis.**
 
 Also found: **`alsoAllow` with no `allow` produces `["*", …]`** — `pickSandboxToolPolicy`
 unions against a wildcard, so `tools.sandbox.tools.alsoAllow` opens that layer to

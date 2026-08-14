@@ -211,15 +211,19 @@ it must not be cited again without rechecking Anthropic's own support articles.
   throughout. Recorded because the mistake, not the setting, is the reusable lesson —
   **a capability that is missing is not evidence of what removed it.**
 
-- **`image_generate` and `video_generate` remain off**, and not for isolation reasons.
-  Calling `image_generate` starts a detached media task whose completion turn times out
-  (`rawError=terminated`), and that trips an auth-profile cooldown, so *later* turns fail
-  with "xai hasn't been responding". The underlying provider error is
-  `400 Could not decrypt the provided encrypted_content` from xAI's Responses API — a
-  conversation-continuation problem between OpenClaw and xAI rather than a config one.
-  Merely having the tools in the list is harmless; calling them is not. In a shared room
-  that means one request for a picture leaves the conversation unresponsive, which is why
-  they stay off until NVB-26 settles it.
+- **`image_generate` and `video_generate` work too, and need `timeoutSeconds` raised.**
+  Media generation is asynchronous: the turn records a detached task and returns, and a
+  separate *completion run* delivers the result through the session's visible-reply mode.
+  Generation takes ~90s, and at the default `agents.defaults.timeoutSeconds` the
+  completion run is cut off — which trips an auth-profile cooldown, so the *next*,
+  unrelated turns fail with "xai hasn't been responding". `600` settles it: image
+  produced, completion `ended with stopReason=stop`, zero errors, on both the owner DM
+  and the family group path.
+
+  So the ADR's original consequence was right and this section's first draft was not.
+  The capabilities do arrive with the credential; the two settings they need
+  (`group:plugins`, and a run timeout that outlasts an async task) are both invisible in
+  the failure mode, which is what cost the time.
 - **NVB-16 becomes a `before_tool_call` plugin** returning `requireApproval`, routed by
   `approvals.plugin`. Plugin approvals are a separate family from exec approvals and can be
   delivered to a chosen person, which is what makes a per-tool "ask first" gate possible at
