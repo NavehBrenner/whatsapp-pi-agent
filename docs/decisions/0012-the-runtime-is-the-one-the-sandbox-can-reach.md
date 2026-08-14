@@ -1,6 +1,26 @@
 # 0012 — The runtime is the one the sandbox can reach
 
-**Status:** Accepted 2026-08-14 — evidence in [Q6](../OPEN-QUESTIONS.md), config work in [NVB-14](https://linear.app/naveh-brenner/issue/NVB-14)
+**Status:** Accepted 2026-08-14, **deployed and verified on hardware the same day**
+([NVB-23](https://linear.app/naveh-brenner/issue/NVB-23)) — evidence in
+[Q6](../OPEN-QUESTIONS.md), isolation work it unblocks in
+[NVB-14](https://linear.app/naveh-brenner/issue/NVB-14)
+
+> **What deployment settled.** Three of this ADR's open questions now have hardware
+> answers. **xAI OAuth is obtainable**, and *one subscription permits a device-code
+> login per agent* — `owner` and `family` each hold their own profile from the same
+> account, so the "let main hold the model credential only" fallback below is **not
+> needed** and `main` stays empty. **Per-agent existence separation holds on the built-in
+> runtime**: with a narrowing on one agent, `owner` reported
+> `apply_patch, edit, read, session_status, write` and `family` reported
+> `read, session_status`. **Durable memory works** — a file written by the agent landed
+> in the real host workspace and was read back in a fresh session.
+>
+> Two things this ADR did not anticipate, both in the changelog in full. **It assumed a
+> sandbox backend existed and none did** — OpenClaw registers only `docker` and `ssh`,
+> so `sandbox.mode: "all"` would have isolated nothing while looking entirely
+> successful. And **`tools.profile: "minimal"` strips the file tools**, so the memory
+> path this ADR exists to restore was still dead after the runtime moved, until
+> `alsoAllow` put them back. Not denying a tool is not the same as having it.
 **Amends:** [0011](0011-openclaw-owns-the-channel-the-gate-owns-the-room.md) (agent runtime, and the billing premise underneath it), [0006](0006-two-process-privilege-split.md) (which vendor sees family message content)
 
 ## Context
@@ -135,7 +155,12 @@ it must not be cited again without rechecking Anthropic's own support articles.
 - Anthropic ships an OAuth token usable by a non-CLI transport.
 - xAI OAuth turns out to be unobtainable for this account, or a single subscription refuses
   the several device-code logins the per-agent auth stores need.
+  *(Settled 2026-08-14: obtainable, and one subscription permits a login per agent.)*
 - Model quality on family-facing work proves materially worse than the Claude baseline.
+- ~~Web search, image and video generation are judged necessary.~~ **Withdrawn
+  2026-08-14 — this was based on a wrong finding and never applied.** `web_search` runs
+  fine alongside per-agent sandboxing (see Consequences), so no capability-vs-isolation
+  fork exists here and NVB-22 stays a deferred upgrade rather than a prerequisite.
 
 ## Consequences
 
@@ -146,15 +171,67 @@ it must not be cited again without rechecking Anthropic's own support articles.
   not a differentiator, since every agent needs inference and a shared subscription under a
   provider-side cap is already accepted. Tool credentials stay out of main, which is the
   part that was ever load-bearing.
+
+  **Settled 2026-08-14: one subscription does permit it.** `owner` and `family` each
+  hold their own `xai/oauth` profile issued to the same account, with independent
+  expiries. The fallback above was never exercised and `main` remains empty, so the
+  invariant stands as written rather than as a compromise.
 - **`tools.deny` must stop denying the file tools.** They are now the memory path.
   `tools.profile: "minimal"` also needs revisiting, since it strips `web_search` — exactly
   what the least-trusting family profile is for.
 - **Session stores must be cleared** when the tool policy changes. Policy binds at session
   creation, and a tightened policy does not reach an existing session.
-- **The image and video tools arrive free.** One xAI OAuth credential also powers
-  `image_generate`, `video_generate`, `web_search`, `x_search`, `code_execution`, and
-  speech — so the least-trusting profile gets real web search with no separate key, and all
-  of it stays under per-agent policy.
+- **The web search tool arrives free, and it works alongside the sandbox.** Confirmed on
+  hardware 2026-08-14 ([NVB-26](https://linear.app/naveh-brenner/issue/NVB-26)): with
+  `sandbox.mode: "all"`, `scope: "agent"` and per-agent containers running, both the owner
+  and the family group return live results through `web_search` on the agent's own xAI
+  OAuth, with no separate key. `exec` stays refused and memory still persists.
+
+  **Getting there needed one non-obvious token, and its absence fails silently.** The
+  sandbox tool allowlist must contain **`group:plugins`**:
+
+  ```json5
+  tools: {
+    alsoAllow: ["read", "write", "edit", "apply_patch", "web_search"],
+    web: { search: { enabled: true, provider: "grok" } },
+    sandbox: { tools: { allow: [ /* … */ "group:plugins", "web_search"] } },
+  }
+  ```
+
+  An allowlist built only from known core tool names resolves `includePluginTools` to
+  false, which drops the xAI plugin's provider registrations — and a tool whose provider
+  never registered does not appear, is not logged as removed, and produces no error. It
+  reads exactly like the sandbox suppressing it.
+
+  ⚠️ **An earlier revision of this ADR claimed the sandbox structurally excluded these
+  tools, and that was wrong.** The evidence for it was a sandbox-on/sandbox-off comparison
+  where the sandbox-off run also had no sandbox allowlist, so the plugin providers loaded
+  there and nowhere else. The variable was never isolated. The tell was visible and
+  ignored: `session_status` is equally gateway-side and was available under the sandbox
+  throughout. Recorded because the mistake, not the setting, is the reusable lesson —
+  **a capability that is missing is not evidence of what removed it.**
+
+- **`image_generate` and `video_generate` generate correctly but cannot be delivered,
+  because of ADR 0006's uid split.** The tools register, produce an image in ~90s inside
+  the sandbox, and the completion run ends with `stopReason=stop`. Then OpenClaw hands
+  signal-cli a *path* under `~/.openclaw/media/outbound`, and our signal-cli — a separate
+  uid by design (runbook 03) — cannot traverse that `0700` chain:
+  `AttachmentInvalidException … (Permission denied)`.
+
+  Granting the Signal uid traverse-only access does not hold: **OpenClaw re-asserts
+  `0700` on `media` on every generation** (measured: `0710` before a run, `0700` after),
+  so the grant is undone before the send and a watcher would race it. OpenClaw assumes
+  it owns the Signal transport at its own uid; our split is what makes that untrue.
+
+  Recorded here because it is the same shape as the rest of this ADR — **a deliberate
+  isolation boundary colliding with a capability that assumes there is none** — and
+  because the resolution is a real fork rather than a setting: relax the uid split for
+  media, get the fix upstream, or accept text-only replies. Tracked in NVB-26; the tools
+  stay out of the shipped config rather than shipping something that always fails at the
+  last step.
+
+  So the ADR's original consequence was two-thirds right. `web_search` does arrive free;
+  the media tools arrive and then cannot leave the machine.
 - **NVB-16 becomes a `before_tool_call` plugin** returning `requireApproval`, routed by
   `approvals.plugin`. Plugin approvals are a separate family from exec approvals and can be
   delivered to a chosen person, which is what makes a per-tool "ask first" gate possible at

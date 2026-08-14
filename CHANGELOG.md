@@ -11,6 +11,250 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Changed — the runtime switch itself (NVB-23, 2026-08-14)
+
+ADR 0012 said what to run on. This is the executing of it, and the config now says
+`xai/grok-4.3` on OpenClaw's built-in runtime with `agentRuntime.id: "openclaw"`
+**pinned**. `auto` prefers a registered harness when one supports the provider, so the
+pin is what stops a future CLI install from silently moving the runtime back out from
+under the sandbox.
+
+- **`agents.defaults.cliBackends` is deleted.** It existed to floor Claude Code's own
+  `Bash`/`Read`/`Write`, which OpenClaw's `tools.*` policy did not reach. With no CLI
+  backend there is no host subprocess to floor. The lesson that outlived it is kept in
+  the config as a comment: tool policy binds at session creation.
+- **`sandbox.workspaceAccess` is `"rw"`, which was a live bug at `"none"`.** `none`
+  gives tools a throwaway directory under `~/.openclaw/sandboxes`, so `MEMORY.md` is
+  written and silently lost; `ro` disables `write`/`edit`/`apply_patch` outright. Only
+  `rw` delivers the durable memory the switch exists to restore.
+- **`read`/`write`/`edit`/`apply_patch` are deliberately not denied.** They are the
+  memory path, and what makes them safe is the sandbox rather than the policy list —
+  they are OpenClaw's own tools, so they execute inside the container against a
+  workspace bind-mounted at `/workspace`. If `sandbox.mode` ever returns to `"off"`,
+  they must be denied again in the same commit. The two settings are one decision.
+- **`web_search` stays stripped by `minimal` for now**, against ADR 0012's note that
+  the xAI credential powers it for free. Adding a content-ingestion path in the same
+  change as a runtime switch means a regression in either cannot be attributed to
+  either. It belongs with NVB-18's injection smoke test.
+- `sandbox.docker` hardening: `network: "none"`, `readOnlyRoot`, `capDrop: ["ALL"]`,
+  `pidsLimit: 256`, `memory: "512m"`, `tmpfs: ["/tmp"]`.
+
+### Verified on hardware, 2026-08-14 (NVB-23) — the switch works
+
+The agent answers on `xai/grok-4.3` through OpenClaw's built-in runtime, inside a Docker
+sandbox, with durable memory. Each acceptance criterion and what actually proved it:
+
+| Criterion | Evidence |
+|---|---|
+| Runtime moved | probe turn returns `PROBE-OK`; gateway logs `agent model: xai/grok-4.3`, `NRestarts=0` |
+| Sandbox is real | `runtime: sandboxed`, container `openclaw-sbx-agent-owner-*` running the built image |
+| `workspaceAccess: "rw"` took | workspace bind-mounted `workspace-owner -> /workspace rw`, and **no** `~/.openclaw/sandboxes` scratch dir exists |
+| Durable memory | agent wrote a file → appeared in the real host workspace → read back in a **fresh** session |
+| Per-agent separation | with a narrowing on one agent: `owner` → `apply_patch, edit, read, session_status, write`; `family` → `read, session_status` |
+| `exec` denied | probe answers `NO_SHELL_TOOL` |
+| Nothing else broke | Waydroid RUNNING on the same IP; reader, signal-cli, gate all active |
+
+**The group's tool ceiling had to move too, and it was the last thing hiding a broken
+memory path.** `channels.signal.groups[].tools.allow` was `["session_status"]`, set when
+the room's ceiling was deliberately minimal under the old runtime. Every agent-level
+check looked right, and the family agent did have the file tools — but a message *in the
+group*, which is the only way that agent is ever actually reached, resolved to one
+read-only tool. So it had durable memory everywhere except in production. Now
+`["session_status", "read", "write", "edit", "apply_patch"]`: everything needed to manage
+its own state, nothing outward-facing, `exec` still refused (`NO_SHELL_TOOL`) in that
+room. Verified by probing the real group session key rather than the CLI's default
+session — the default session is a different resolution path and would not have caught
+it.
+
+**One subscription permits a device-code login per agent.** `owner` and `family` each hold
+their own `xai/oauth` profile issued to the same account with independent expiries, so ADR
+0012's fallback — letting `main` hold the model credential — was not needed. `main` stays
+empty and the "main holds nothing" invariant stands as written rather than as a
+compromise.
+
+### Added, 2026-08-14 (NVB-26) — web search, with the sandbox still on
+
+Both agents now have `web_search` on their own xAI OAuth, with no separate key, while
+`sandbox.mode: "all"` and per-agent containers stay exactly as they were. Verified
+functionally rather than by tool name — live results through the owner's DM *and* the
+family group path — with `exec` still refused and memory still persisting.
+
+**One non-obvious token makes the difference, and its absence fails silently:**
+
+```json5
+tools: {
+  alsoAllow: ["read", "write", "edit", "apply_patch", "web_search"],
+  web: { search: { enabled: true, provider: "grok" } },
+  sandbox: { tools: { allow: [ /* … */ "group:plugins", "web_search"] } },
+}
+```
+
+An allowlist built only from known core tool names resolves `includePluginTools` to
+false, which drops the xAI plugin's provider registrations. A tool whose provider never
+registered does not appear, is not logged as removed, and raises no error — the same
+silent-no-op shape as a deny naming an unknown tool.
+
+**`image_generate` and `video_generate` are NOT enabled, and the reason is the uid
+split rather than anything about the tools.** Both work: they register, generate
+correctly in ~90s inside the sandbox, and the completion run ends with
+`stopReason=stop`. The failure is the last hop, found by a real Signal request:
+
+```
+Signal RPC -32603: Failed to send message: …/media/outbound/image-….jpg
+  (Permission denied) (AttachmentInvalidException)
+```
+
+OpenClaw hands signal-cli a *path* under `~/.openclaw/media/outbound`. Our signal-cli
+runs as `wpa-signal` under our own unit (runbook 03, for `--scrub-log` and `UMask=0007`)
+and cannot traverse that `0700` chain. The file itself is world-readable; the path is
+not.
+
+**A group grant does not survive.** Granting `wpa-signal` traverse-only on `.openclaw`
+and `media` plus read on `outbound` works for exactly as long as it takes to generate
+one more image: **OpenClaw re-asserts `0700` on `media` on every generation** — measured
+directly, `0710` before a run and `0700` after. Any chmod is undone before the send, and
+a watcher would race it. Reverted rather than left in place, since traversal into the
+agent state directory with no working capability is pure downside.
+
+So OpenClaw assumes it owns the Signal transport at its own uid, and
+[ADR 0006](docs/decisions/0006-two-process-privilege-split.md)'s split is what makes
+that untrue here. Shipping the tools anyway would mean shipping something that always
+fails at the last step, in a family group, after appearing to work. Tracked in NVB-26.
+
+Two settings recorded there for whenever it is solved: media generation needs
+`agents.defaults.timeoutSeconds` raised (it is async, and the default cuts the
+completion run off, which trips an auth-profile cooldown that breaks *later*,
+unrelated turns), and the media models must be named or the tools never register.
+
+#### Unflattering: the finding this replaces was wrong, and wrong in an avoidable way
+
+An earlier entry here — and a struck consequence in ADR 0012 — claimed the sandbox
+*structurally* excluded these tools, and concluded that per-agent isolation and web search
+were mutually exclusive. That conclusion would have justified containerizing the gateway
+as a prerequisite and re-architecting the channel. It was wrong.
+
+The evidence was a sandbox-on/sandbox-off comparison in which the sandbox-off run **also**
+had no sandbox allowlist — so the plugin providers loaded there and nowhere else. Two
+variables moved and one was reported as the cause. The tell was visible before the
+conclusion was written: `session_status` is equally gateway-side and was available under
+the sandbox the whole time.
+
+The reusable lesson is not about `group:plugins`. It is that **a capability that is
+missing is not evidence of what removed it** — on this stack, three independent layers
+(`tools.profile`, `tools.sandbox.tools.*`, and provider registration) each remove tools,
+and only the first two say so in the log.
+
+The same mistake then repeated on the media tools, which is why it is worth writing
+down twice. `image_generate` was reported here as broken, with a confident cause
+(`400 Could not decrypt the provided encrypted_content`). That error fired once and never
+reproduced, including in a control built to trigger it. The real behaviour was mundane —
+async task, ~90s, cut off by the default run timeout — and **the test method was breaking
+the thing under test**: restarting the gateway between probes killed detached tasks
+mid-flight, and the probe expected a synchronous answer from a tool the shipped docs
+describe as asynchronous. Two wrong causes were published before the boring one was
+found. **An error seen once is a lead, not a diagnosis.**
+
+Also found: **the two `alsoAllow` keys fail in opposite directions.**
+`pickSandboxToolPolicy` unions against a wildcard, so `tools.sandbox.tools.alsoAllow`
+with no `allow` becomes `["*", …extra]` — "allow everything plus these". The shipped
+config uses an explicit `allow` there instead.
+
+**Top-level `tools.alsoAllow` is safe**, checked afterwards because we depend on it for
+the file tools: `mergeAlsoAllowPolicy` returns the policy *unchanged* when no allow list
+exists, and otherwise appends — never a wildcard. `mergeConfiguredSubagentAllow` agrees
+(`allow && alsoAllow ? union : allow`). So the global policy is exactly as narrow as it
+reads: `profile: "minimal"` resolves to an allow list and `alsoAllow` appends to it, which
+the observed six-tool surface confirms.
+
+Same key name, same file, opposite failure direction. That asymmetry is the thing to
+remember, not either behaviour on its own.
+
+### Verified on hardware, 2026-08-14 (NVB-23) — the container runtime
+
+The ADR assumed a sandbox backend existed. **There was none.** OpenClaw registers
+exactly two — `docker` and `ssh` — and shells out to `docker` on PATH with no
+binary-override key in the schema. Nothing on the Pi provided it, so `sandbox.mode:
+"all"` would have had nothing to run in. Four findings, all of which cost time:
+
+- **Docker's default startup is what this project spent a day avoiding.** It installs a
+  `DOCKER-USER` chain and flips the `FORWARD` policy to DROP — the documented reason Q6
+  leaned toward rootless Podman, because Waydroid's networking would have been
+  collateral. `"iptables": false`, `"ip6tables": false` and `"bridge": "none"` in
+  `/etc/docker/daemon.json`, **written before the first daemon start**, avoid it
+  entirely. Checked before and after: `FORWARD` still ACCEPT, no `docker0`, Waydroid
+  still RUNNING on the same IP. Sandbox containers run with no network anyway, which is
+  OpenClaw's own default and correct here — the tool calls that reach the network are
+  made by the gateway, above the sandbox.
+- **Every registry pull failed with `connect: network is unreachable`, and the network
+  was fine.** The Pi has no global IPv6 address, only link-local; dockerd's Go resolver
+  prefers AAAA and does not fall back, while glibc orders IPv4 first — `curl -4` reached
+  the registry throughout. A one-line drop-in setting `GODEBUG=netdns=cgo` fixes it.
+  Worth recording because the symptom points squarely at the uplink and the uplink is
+  not the problem.
+- **The sandbox image is not shipped in the npm package and is not auto-built.**
+  OpenClaw fails fast pointing at `scripts/sandbox-setup.sh`, which exists only in a
+  source checkout. The inline Dockerfile in the shipped docs is the npm path; it needs
+  `--network host` when there is no bridge. `python3` in that image is load-bearing —
+  it backs the write/edit helpers, which is why OpenClaw refuses to substitute plain
+  `debian:bookworm-slim`.
+- **`tools.profile: "minimal"` strips the file tools, so ADR 0012's memory path did not
+  work until `alsoAllow` put them back.** Not denying them was not enough. With
+  `minimal` and no `alsoAllow`, the agent's entire tool surface was `session_status`:
+  asked to write a file it neither wrote one nor errored, and asked to enumerate its
+  tools it named only that one. `alsoAllow: ["read", "write", "edit", "apply_patch"]`
+  restored it — verified by the file appearing in the real host workspace and being
+  read back in a *fresh* session.
+
+  **This hid behind our own stale measurement.** The note in the config that "minimal
+  removes these 18 tools" was taken on 2026-08-12 under `claude-cli`, where the file
+  tools were stripped from the loopback bridge by `NATIVE_TOOL_EXCLUDE` regardless — so
+  their absence from that list said nothing about the profile, and reading it as though
+  it did is what let the gap through. It is precisely the "tool names are
+  runtime-dependent" trap this config warns about, sprung on us rather than by us. Any
+  observation about tool surfaces is only valid for the runtime it was taken on.
+- **`openclaw sandbox explain` does not show the effective tool surface, despite
+  looking exactly like it does.** It reported `allow (default): exec, process, read,
+  write, …` for both agents while the agent actually had `exec` denied (probe answered
+  `NO_SHELL_TOOL`) and the file tools missing entirely. That block is the sandbox
+  *routing* default — which tools would run in the container if present — not what the
+  agent has. Both errors it invites are bad: believing `exec` is available when it is
+  not, and believing `write` is available when it is not. Ask the agent, or check the
+  filesystem; do not read the surface off `explain`. (This is a large part of NVB-24's
+  justification.)
+- **A `models.providers.<id>` entry overrides the plugin's provider registration, base
+  URL included — and the failure is a lie.** The xai plugin defines
+  `XAI_BASE_URL = "https://api.x.ai/v1"`, so `baseUrl` in config looks redundant.
+  Writing the entry at all replaces the plugin's registration, and an entry carrying
+  only `agentRuntime` replaces it with one that has no base URL. OpenClaw then POSTs
+  **the xAI OAuth token to `https://api.openai.com/v1/responses`**, which answers
+  `401 Your authentication token is not from a valid issuer` (`code=invalid_issuer`).
+  That reads as xAI rejecting the login and sends you back to redo the OAuth flow —
+  the one thing that was never broken. The tell is the URL in
+  `[model-fetch] start provider=xai … url=…`; read it before touching credentials.
+- **`plugins.allow` is a hard allowlist over every plugin, stock ones included** — not
+  just external ones, which is what the Signal work left us assuming. Each provider is
+  one of ~68 stock plugins, so xAI had to be trusted there before it could be enabled;
+  `entries.xai.enabled: true` on its own does nothing, and `openclaw plugins enable xai`
+  says so plainly ("blocked by allowlist"). **The error that actually surfaces does
+  not.** `openclaw models auth login --provider xai` reports `No provider plugins
+  found. Install one via openclaw plugins install` — for a plugin that is installed,
+  stock, and listed. Following that advice installs something you already have. Worse,
+  the gateway *auto-enables* the provider plugin for the configured model at runtime
+  "without writing config", so a running gateway can be happy on a provider the CLI
+  swears is missing. `plugins list` is the ground truth; the error text is not.
+- **The `openclaw` uid is now in the `docker` group, which is root-equivalent on this
+  host.** Recorded as a decision rather than a detail: it widens what a compromised
+  *gateway* reaches, which ADR 0012 scopes out to NVB-22 on the grounds that injection
+  into an *agent* is the likelier event. That reasoning is unchanged but its price is
+  now higher, and NVB-22's trigger should be read with that in mind.
+
+Also confirmed while checking that the Pi was healthy: **the reader's cursor and its
+liveness file measure different things**, and the gap between them is not a fault. The
+cursor advances on allowlisted rows only (46185, unchanged since 2026-08-13 08:53);
+liveness records the DB's max `_id` (46444). The 259-row gap plus a `msgstore.db-wal`
+written minutes earlier is the signature of a healthy reader and a silent allowlist —
+which is the NVB-6 finding, now three days old and unlikely to change by waiting.
+
 ### Added
 
 - **The runtime is the one the sandbox can reach**
