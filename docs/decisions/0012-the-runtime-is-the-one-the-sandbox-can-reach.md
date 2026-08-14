@@ -1,6 +1,26 @@
 # 0012 — The runtime is the one the sandbox can reach
 
-**Status:** Accepted 2026-08-14 — evidence in [Q6](../OPEN-QUESTIONS.md), config work in [NVB-14](https://linear.app/naveh-brenner/issue/NVB-14)
+**Status:** Accepted 2026-08-14, **deployed and verified on hardware the same day**
+([NVB-23](https://linear.app/naveh-brenner/issue/NVB-23)) — evidence in
+[Q6](../OPEN-QUESTIONS.md), isolation work it unblocks in
+[NVB-14](https://linear.app/naveh-brenner/issue/NVB-14)
+
+> **What deployment settled.** Three of this ADR's open questions now have hardware
+> answers. **xAI OAuth is obtainable**, and *one subscription permits a device-code
+> login per agent* — `owner` and `family` each hold their own profile from the same
+> account, so the "let main hold the model credential only" fallback below is **not
+> needed** and `main` stays empty. **Per-agent existence separation holds on the built-in
+> runtime**: with a narrowing on one agent, `owner` reported
+> `apply_patch, edit, read, session_status, write` and `family` reported
+> `read, session_status`. **Durable memory works** — a file written by the agent landed
+> in the real host workspace and was read back in a fresh session.
+>
+> Two things this ADR did not anticipate, both in the changelog in full. **It assumed a
+> sandbox backend existed and none did** — OpenClaw registers only `docker` and `ssh`,
+> so `sandbox.mode: "all"` would have isolated nothing while looking entirely
+> successful. And **`tools.profile: "minimal"` strips the file tools**, so the memory
+> path this ADR exists to restore was still dead after the runtime moved, until
+> `alsoAllow` put them back. Not denying a tool is not the same as having it.
 **Amends:** [0011](0011-openclaw-owns-the-channel-the-gate-owns-the-room.md) (agent runtime, and the billing premise underneath it), [0006](0006-two-process-privilege-split.md) (which vendor sees family message content)
 
 ## Context
@@ -146,6 +166,11 @@ it must not be cited again without rechecking Anthropic's own support articles.
   not a differentiator, since every agent needs inference and a shared subscription under a
   provider-side cap is already accepted. Tool credentials stay out of main, which is the
   part that was ever load-bearing.
+
+  **Settled 2026-08-14: one subscription does permit it.** `owner` and `family` each
+  hold their own `xai/oauth` profile issued to the same account, with independent
+  expiries. The fallback above was never exercised and `main` remains empty, so the
+  invariant stands as written rather than as a compromise.
 - **`tools.deny` must stop denying the file tools.** They are now the memory path.
   `tools.profile: "minimal"` also needs revisiting, since it strips `web_search` — exactly
   what the least-trusting family profile is for.

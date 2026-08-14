@@ -39,6 +39,27 @@ under the sandbox.
 - `sandbox.docker` hardening: `network: "none"`, `readOnlyRoot`, `capDrop: ["ALL"]`,
   `pidsLimit: 256`, `memory: "512m"`, `tmpfs: ["/tmp"]`.
 
+### Verified on hardware, 2026-08-14 (NVB-23) — the switch works
+
+The agent answers on `xai/grok-4.3` through OpenClaw's built-in runtime, inside a Docker
+sandbox, with durable memory. Each acceptance criterion and what actually proved it:
+
+| Criterion | Evidence |
+|---|---|
+| Runtime moved | probe turn returns `PROBE-OK`; gateway logs `agent model: xai/grok-4.3`, `NRestarts=0` |
+| Sandbox is real | `runtime: sandboxed`, container `openclaw-sbx-agent-owner-*` running the built image |
+| `workspaceAccess: "rw"` took | workspace bind-mounted `workspace-owner -> /workspace rw`, and **no** `~/.openclaw/sandboxes` scratch dir exists |
+| Durable memory | agent wrote a file → appeared in the real host workspace → read back in a **fresh** session |
+| Per-agent separation | with a narrowing on one agent: `owner` → `apply_patch, edit, read, session_status, write`; `family` → `read, session_status` |
+| `exec` denied | probe answers `NO_SHELL_TOOL` |
+| Nothing else broke | Waydroid RUNNING on the same IP; reader, signal-cli, gate all active |
+
+**One subscription permits a device-code login per agent.** `owner` and `family` each hold
+their own `xai/oauth` profile issued to the same account with independent expiries, so ADR
+0012's fallback — letting `main` hold the model credential — was not needed. `main` stays
+empty and the "main holds nothing" invariant stands as written rather than as a
+compromise.
+
 ### Verified on hardware, 2026-08-14 (NVB-23) — the container runtime
 
 The ADR assumed a sandbox backend existed. **There was none.** OpenClaw registers
