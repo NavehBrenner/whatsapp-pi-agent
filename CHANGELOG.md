@@ -72,6 +72,45 @@ their own `xai/oauth` profile issued to the same account with independent expiri
 empty and the "main holds nothing" invariant stands as written rather than as a
 compromise.
 
+### Unflattering, 2026-08-14 (NVB-26) — the sandbox hides the web, image and video tools
+
+ADR 0012 promised that "the image and video tools arrive free" on the xAI credential.
+**They do not arrive at all.** Established by running the same config twice with only
+`agents.defaults.sandbox.mode` changed, with the Signal channel *and* plugin disabled so
+nothing untrusted could reach a briefly-unsandboxed agent:
+
+| `sandbox.mode` | agent's tools |
+|---|---|
+| `off` | `apply_patch, edit, image_generate, read, session_status, video_generate, web_search, write` |
+| `all` | `apply_patch, edit, read, session_status, write` |
+
+With the sandbox off, `web_search` **works** and returns live results on this account's
+OAuth alone — so the credential was never the problem, and the entitlement theory is dead.
+
+**It is structural, not policy.** They stay absent under `all` even with an explicit
+`tools.sandbox.tools.allow` naming them. Consistent with the sandbox default allow list
+containing `image` but not `image_generate`: the handling tool, not the generating one.
+A sandboxed agent is simply not offered gateway-side tools.
+
+Three layers had to be peeled back before this was visible, each hiding the next, and the
+first two are real settings worth knowing: `tools.profile: "minimal"` strips them (fixed
+by `alsoAllow`), then `tools.sandbox.tools.*` strips them again (a second, independent
+allowlist), and only then does the structural exclusion show.
+
+**The tempting fix is a trap.** Turning the sandbox off to get these tools is *strictly
+worse than before ADR 0012 shipped*: unsandboxed `write` accepts absolute paths as the
+gateway uid, and that uid is now in the `docker` group, so injection → write the config →
+re-enable `exec` → drive Docker → root. Before a container runtime existed on this Pi the
+same chain stopped at uid 991. The capability and the isolation are genuinely exclusive
+here, and choosing capability now requires NVB-22 first.
+
+Also found while peeling: **`alsoAllow` with no `allow` produces `["*", …]`** —
+`pickSandboxToolPolicy` unions against a wildcard. So `tools.sandbox.tools.alsoAllow`
+opens that layer to everything rather than adding to the default set, which is the
+opposite of what the name suggests. It was set that way briefly during this
+investigation and is not in the shipped config; whether top-level `tools.alsoAllow`
+behaves the same way — which we now depend on for the file tools — is open in NVB-26.
+
 ### Verified on hardware, 2026-08-14 (NVB-23) — the container runtime
 
 The ADR assumed a sandbox backend existed. **There was none.** OpenClaw registers

@@ -155,7 +155,16 @@ it must not be cited again without rechecking Anthropic's own support articles.
 - Anthropic ships an OAuth token usable by a non-CLI transport.
 - xAI OAuth turns out to be unobtainable for this account, or a single subscription refuses
   the several device-code logins the per-agent auth stores need.
+  *(Settled 2026-08-14: obtainable, and one subscription permits a login per agent.)*
 - Model quality on family-facing work proves materially worse than the Claude baseline.
+- **Web search, image and video generation are judged necessary.** Verified 2026-08-14:
+  a sandboxed agent is not offered them at all, at any policy setting. Getting them means
+  giving up the per-agent sandbox, which is this ADR's entire product — so it is not a
+  config change but a reopening, and it makes
+  [NVB-22](https://linear.app/naveh-brenner/issue/NVB-22) (containerize the gateway) a
+  prerequisite rather than a deferred upgrade, exactly as the vendor fork below does.
+  Note the cost even then: agents inside one gateway container share it, so family members
+  lose the kernel-enforced separation from *each other* that ADR 0009 and 0010 ask for.
 
 ## Consequences
 
@@ -176,10 +185,37 @@ it must not be cited again without rechecking Anthropic's own support articles.
   what the least-trusting family profile is for.
 - **Session stores must be cleared** when the tool policy changes. Policy binds at session
   creation, and a tightened policy does not reach an existing session.
-- **The image and video tools arrive free.** One xAI OAuth credential also powers
-  `image_generate`, `video_generate`, `web_search`, `x_search`, `code_execution`, and
-  speech — so the least-trusting profile gets real web search with no separate key, and all
-  of it stays under per-agent policy.
+- ~~**The image and video tools arrive free.**~~ **FALSIFIED ON HARDWARE 2026-08-14
+  ([NVB-26](https://linear.app/naveh-brenner/issue/NVB-26)).** The claim was that one xAI
+  OAuth credential also powers `image_generate`, `video_generate`, `web_search`,
+  `x_search`, `code_execution` and speech, so the least-trusting profile would get real
+  web search with no separate key. The credential half is true — with the sandbox off,
+  `web_search` works and returns live results on this account's OAuth alone.
+
+  **But a sandboxed agent is never offered those tools.** Same config, only
+  `agents.defaults.sandbox.mode` differing:
+
+  | `sandbox.mode` | agent's tools |
+  | --- | --- |
+  | `off` | `apply_patch, edit, image_generate, read, session_status, video_generate, web_search, write` |
+  | `all` | `apply_patch, edit, read, session_status, write` |
+
+  It is structural rather than policy: they stay absent under `all` **even with an
+  explicit `tools.sandbox.tools.allow` naming them**. The sandbox default allow list
+  contains `image` but not `image_generate` — the handling tool, not the generating one —
+  which is the same distinction drawn deliberately.
+
+  So this ADR's own sentence, "the runtime is the one the sandbox can reach", now cuts
+  the other way: **the sandbox cannot reach the gateway-side tools either.** Nothing here
+  reverses the decision — durable memory and per-agent isolation both hold, and they were
+  what the switch was for — but the free capabilities were not free, and the reason is the
+  isolation itself rather than the vendor.
+
+  **Do not respond to this by turning the sandbox off.** That option is strictly worse
+  than it was before this ADR shipped, because of a consequence recorded below: unsandboxed
+  `write` accepts absolute paths as the gateway uid, and that uid is now in the `docker`
+  group. Injection → write the config → re-enable `exec` → drive Docker → root. Before a
+  container runtime existed on the Pi, the same chain stopped at uid 991.
 - **NVB-16 becomes a `before_tool_call` plugin** returning `requireApproval`, routed by
   `approvals.plugin`. Plugin approvals are a separate family from exec approvals and can be
   delivered to a chosen person, which is what makes a per-tool "ask first" gate possible at
