@@ -67,6 +67,16 @@ binary-override key in the schema. Nothing on the Pi provided it, so `sandbox.mo
   `--network host` when there is no bridge. `python3` in that image is load-bearing —
   it backs the write/edit helpers, which is why OpenClaw refuses to substitute plain
   `debian:bookworm-slim`.
+- **A `models.providers.<id>` entry overrides the plugin's provider registration, base
+  URL included — and the failure is a lie.** The xai plugin defines
+  `XAI_BASE_URL = "https://api.x.ai/v1"`, so `baseUrl` in config looks redundant.
+  Writing the entry at all replaces the plugin's registration, and an entry carrying
+  only `agentRuntime` replaces it with one that has no base URL. OpenClaw then POSTs
+  **the xAI OAuth token to `https://api.openai.com/v1/responses`**, which answers
+  `401 Your authentication token is not from a valid issuer` (`code=invalid_issuer`).
+  That reads as xAI rejecting the login and sends you back to redo the OAuth flow —
+  the one thing that was never broken. The tell is the URL in
+  `[model-fetch] start provider=xai … url=…`; read it before touching credentials.
 - **`plugins.allow` is a hard allowlist over every plugin, stock ones included** — not
   just external ones, which is what the Signal work left us assuming. Each provider is
   one of ~68 stock plugins, so xAI had to be trusted there before it could be enabled;

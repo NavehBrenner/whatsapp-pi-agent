@@ -510,9 +510,32 @@
   // DOES THE SANDBOX REACH THE TOOLS THAT ACTUALLY EXECUTE? No amount of tool
   // policy above it substitutes.
   // -------------------------------------------------------------------------
+  // ⚠️ `baseUrl` IS NOT OPTIONAL HERE, AND OMITTING IT FAILS IN THE WORST WAY.
+  //
+  // The xai plugin defines `XAI_BASE_URL = "https://api.x.ai/v1"` itself, so this
+  // line looks redundant. It is not: writing a `models.providers.xai` entry at all
+  // OVERRIDES the plugin's provider registration, and an entry carrying only
+  // `agentRuntime` overrides it with one that has no base URL.
+  //
+  // What happens then is not an error. The request falls back to the default
+  // OpenAI endpoint and OpenClaw cheerfully POSTs the xAI OAuth token to
+  // https://api.openai.com/v1/responses, which answers:
+  //
+  //     401 Your authentication token is not from a valid issuer.  (code=invalid_issuer)
+  //
+  // That reads as "xAI rejected your login" and sends you back to re-run the OAuth
+  // flow, which is the one thing that was never broken. The tell is in the gateway
+  // log — `[model-fetch] start provider=xai ... url=https://api.openai.com/...`.
+  // Check the URL before you touch the credentials.
+  //
+  // Verified on hardware 2026-08-14: adding this line moved the request to
+  // api.x.ai/v1/responses on the next restart, with no other change.
   models: {
     providers: {
-      xai: { agentRuntime: { id: "openclaw" } },
+      xai: {
+        agentRuntime: { id: "openclaw" },
+        baseUrl: "https://api.x.ai/v1",
+      },
     },
   },
 
