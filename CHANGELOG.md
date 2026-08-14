@@ -11,6 +11,304 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — inbound images never reached the agent (2026-08-15)
+
+Reported as "the agent doesn't see photos I send it". **Two independent causes, either one
+sufficient**, which is why it looked like one broken feature rather than two settings:
+
+| | was | now |
+|---|---|---|
+| `channels.signal.ignoreAttachments` | `true` — channel discards before any agent sees it | `false` |
+| `agents.defaults.imageModel` | unset, so nothing handled a turn OpenClaw thought the primary could not take | `{primary: "xai/grok-4.3"}` |
+| `channels.signal.mediaMaxMb` | unset on the live box | `8` |
+
+signal-cli was never the problem: the reported image was on disk at
+`/var/lib/wpa-signal/attachments/`, 96KB, timestamped to the minute it was sent. Everything
+after that point discarded it, and **nothing logged the discard** — the same silent-refusal
+shape as the `dmPolicy` and mention paths.
+
+#### The second cause is a wrong catalog entry, not a model limitation
+
+**`xai/grok-4.5` reads images perfectly well.** OpenClaw's catalog says `Input: text`, and
+that metadata is wrong — xAI documents 4.5 as multimodal, and it was confirmed by hand.
+Everything written here on 2026-08-14 about 4.5 "giving up image input" took that column as
+ground truth and is corrected in place.
+
+It still *matters*, because **OpenClaw routes on the metadata rather than on what the model
+can do.** Believing the primary cannot take images, it looks for `imageModel`, found nothing,
+and the turn had nowhere to go. Setting `imageModel` satisfies the wrong belief and images
+start working — on grok-4.3. Measured since the change: **16 turns on grok-4.5, exactly 1 on
+grok-4.3**, and that one at 00:45:09 matches the photo on disk at 00:45.
+
+So the line is a functioning workaround for stale catalog data, not the intended
+arrangement. Putting images back on 4.5 means correcting the entry under
+`models.providers.xai.models` — **not attempted**, because writing that key overrides the
+plugin's provider registration and it is still unestablished whether a `models` array
+extends the stock catalog or replaces it. Replacing it would take `grok-imagine-*` with it
+and silently kill media generation. One scratch-config experiment with
+`OPENCLAW_CONFIG_PATH` settles it; until then, images on 4.3 is the working state.
+
+Related: the same listing has reported both 500k and 200k context for 4.5 on the same box.
+Nothing in that column should be treated as load-bearing without checking xAI's own docs.
+
+`ignoreAttachments` was **not** a documented threat-model control. Every attachment mention
+in the ADRs is about *outbound* generated media (0006, 0012); this was hygiene. It is now a
+decision, judged the way ingestion paths are judged here: an inbound image is
+attacker-influenceable content entering a context with durable memory, so a photo carrying
+instructional text is the same shape as a poisoned `web_search` result — already accepted,
+for the reason that still holds (nothing outbound to pivot to, no WhatsApp write path). It
+is a *wider* surface than search, because a person can be talked into forwarding a picture
+far more easily than into pasting a link. `mediaMaxMb` stops being cosmetic at the same
+moment and was unset on the box.
+
+#### Verified end to end — and the probe that said otherwise was the bad evidence
+
+**Confirmed working on a real Signal send**, by the model routing above: one grok-4.3 turn
+at 00:45:09 against a photo received at 00:45, answered correctly.
+
+The interesting part is the probe that preceded it and pointed the wrong way. `openclaw
+agent` has no attachment flag, so the Signal path cannot be exercised from the CLI; the
+substitute was a valid 96×96 solid-**blue** PNG (RGB 30/90/220, confirmed with `file` and by
+parsing the IHDR) placed in the workspace, with the agent asked to `read` it and name the
+colour. It said **"green"**, and the journal showed grok-4.5 serving that turn.
+
+That was read as "the model is blind because it is text-only". Both halves were wrong: the
+model is not text-only, and the `read`-tool path is not the channel attachment path — it
+evidently never handed the model an image at all. **A proxy for the path you actually
+changed is not a test of it**, and a wrong result from one is worth less than no result,
+because it invites a confident wrong diagnosis. The real test took one photo.
+
+What does survive: **a model that is not given the image guesses rather than erroring**, so
+any check asking "did it answer?" instead of "did it answer *correctly*?" will pass while
+blind. Verify with an image whose answer is known in advance.
+
+### Deployed — `liron` and grok-4.5 are live on the Pi (2026-08-15)
+
+Applied to `~openclaw/.openclaw/openclaw.json`: the model bump, one agent (`liron`), one
+`allowFrom` uuid, one binding. Snapshots at `~/openclaw-snapshots/2026-08-15-liron-grok45/`
+(config + all sqlite) and `openclaw.json.bak-preliron`. Diff against the backup was exactly
+those four changes; `openclaw config validate` clean; gateway restarted with `NRestarts=0`
+and logged `agent model: xai/grok-4.5`.
+
+Verified on hardware:
+
+| | |
+|---|---|
+| identity | answers `Pi` |
+| tools | `apply_patch, edit, image_generate, read, session_status, video_generate, web_search, write` — identical to `owner`, no `exec` |
+| model | `[model-fetch] response provider=xai model=grok-4.5 status=200`, `url=https://api.x.ai/v1/responses` |
+| isolation | own container `openclaw-sbx-agent-liron-…` alongside owner's and family's |
+| workspace | `workspace-liron`, bootstrapped, `IDENTITY.md` carrying `Name: Pi` |
+
+`aryeh` and `aviv` stay templates in the example config and are deliberately **not** on the
+Pi: with no ACI, a binding for them would be a live rule pointing at a placeholder uuid.
+
+Two divergences between the example config and the box, both pre-existing and now stated in
+the example: the live config omits `workspace` (OpenClaw derives `workspace-<id>`), and
+`liron`'s ACI lives in `.local/pi.md` rather than the public example, which keeps
+placeholders.
+
+#### ⚠️ The default agent is not empty, and a new agent working is how we found out
+
+`liron` was deployed with **no auth profile of her own** and answered correctly on the first
+turn. She should have failed. `openclaw models --agent liron status` explains it:
+
+```
+xai effective=profiles:~/.openclaw/agents/main/agent/openclaw-agent.sqlite
+```
+
+`main`'s auth store holds an `xai` OAuth profile, `store_key=primary`, written **2026-08-14
+19:54:17** — nine seconds before `owner`'s at 19:54:26.
+
+This contradicts the invariant [ADR 0011](docs/decisions/0011-openclaw-owns-the-channel-the-gate-owns-the-room.md)
+rests its credential isolation on — *"the default agent holds no credentials… an agent cannot
+inherit what does not exist upstream"* — verified empty on 2026-08-12 and false since the
+following evening. Nothing looked wrong for a day, because every agent needs inference
+anyway and inherited inference is indistinguishable from working correctly.
+
+#### Resolved: `main` is empty again, and what keeps it empty is rule 2
+
+**Final state, verified across a gateway restart:** `main` holds nothing, `owner`, `family`
+and `liron` each hold their own `xai` profile and resolve to their own store, and every
+agent answers. `deploy/check-agent-auth.sh` asserts both halves and gates a deploy.
+
+The intermediate conclusion recorded below — that the invariant was *not enforceable* on
+2026.7.1-2 — was **wrong**, and the correction is the useful part. Emptying `main` failed
+the first time because one agent (`liron`) had no profile of its own and was depending on
+read-through. Once she had her own login, `main` was emptied again and stayed empty through:
+45s idle, `models status`, `models list`, `models auth list`, agent turns by `owner` and
+`liron`, a deliberately failing turn by `main` itself, and a full gateway restart.
+
+So the two rules are not independent, and only one of them is actionable:
+
+> **The default agent stays empty only while every other agent has its own profile.**
+
+Checking "is `main` empty" alone would have reported success right up to the moment it
+mattered. `deploy/check-agent-auth.sh` therefore checks both, and treats an agent with *no*
+profile as a violation in its own right — that is the condition that causes the refill, not
+merely a tidiness issue.
+
+**The writer was never identified**, and that is recorded rather than papered over.
+Bisection ruled out idle time, the read-only CLI paths, ordinary agent turns and the
+no-credential failure path; there is no `auth-profiles.json` flat file to be re-imported
+from; no config key disables read-through (confirmed against the schema, as ADR 0011 said).
+The one observed refill happened in a window where an agent was inheriting. Because the
+cause is unproven, the script **detects the state rather than preventing it** — the honest
+shape for a fault whose mechanism is unknown. If `main` is ever found non-empty again with
+every agent holding its own profile, that hypothesis is dead and the investigation reopens.
+
+#### The failed first attempt, kept for the record
+
+The obvious fix was tried and **failed**, and the failure is more interesting than the bug.
+Gateway stopped, `auth_profile_store` and `auth_profile_state` emptied, gateway started
+(snapshot at `~/openclaw-snapshots/2026-08-15-empty-main/`). Then:
+
+| time | what | evidence |
+|---|---|---|
+| t+0 | main empty, gateway restarted | `Providers w/ OAuth/tokens (0)` |
+| t+0 | `owner`, `family` still work | both answer `ping` from their own stores |
+| t+0 | **`liron` correctly denied** | `FailoverError: No API key found for provider "xai"` |
+| t+~2min | **main is full again**, 1681 bytes | `updated 2026-08-15 00:15:55` — `owner`'s store untouched at 19:54:26 |
+| after restart | **`liron` inherits again** | `effective=profiles:…/agents/main/…`, answers `ping` |
+
+Two things follow, both verified rather than reasoned:
+
+- **Read-through is resolved at gateway startup, not per turn.** With main empty at boot,
+  `liron` was denied even after main was repopulated mid-run; one restart later, with main
+  populated at boot, she was granted. So the state that matters is main's contents *at boot*.
+- **Normal operation repopulates main.** Nobody ran a login. Some path writes the resolved
+  profile back into the default agent's store — `owner`'s own store was not touched in the
+  same window, so it is not a refresh of the calling agent's credential. **We did not
+  identify the writer**; `resolveDefaultAgentDir` is used on several auth paths in `dist`,
+  but the one that fired here was not pinned down, and guessing would be worse than saying so.
+
+So the original explanation in this entry — "someone omitted `--agent`" — is **insufficient**.
+It may be how the profile first appeared, but it is not why main is non-empty now, and a
+discipline fix ("always pass `--agent`") would not have prevented this and will not hold it.
+
+At the time this read as "main cannot be kept empty on 2026.7.1-2". It is better read as
+what it was: the refill happened *while an agent was depending on read-through*, and the
+attempt was made before that dependency was removed. Fixing the dependency fixed the symptom.
+
+One conclusion survives the correction unchanged and is the reason any of this matters:
+**NVB-17/18 must not mount a tool credential on the assumption that `main` is empty.** The
+invariant now holds, but it holds conditionally, on a mechanism nobody has traced — which is
+a fine footing for inference on a shared subscription and a poor one for a calendar token.
+
+Possibly still worth filing upstream, on the same reasoning as
+[openclaw/openclaw#123815](https://github.com/openclaw/openclaw/issues/123815): a documented
+isolation boundary that normal operation silently reopens.
+
+The one-line check belongs in the deploy runbook regardless — `openclaw models --agent <id>
+status` prints the effective store path, and a credential in the wrong store is invisible
+from `openclaw.json`.
+
+### Changed — default model moves to `xai/grok-4.5` (2026-08-14)
+
+`agents.defaults.model.primary` goes from `xai/grok-4.3` to `xai/grok-4.5`. One key, no
+provider declaration needed: the model is already in the installed plugin's catalog and
+already authorised on our OAuth.
+
+**`openclaw models list` lied about that, and the flag is the whole lesson.** The bare
+command lists only *configured* models, so it showed four xAI models with no 4.5 among
+them — which reads exactly like "this OpenClaw is too old for that model". Grepping `dist`
+agreed, because the catalog is not a string literal in the bundle. `--all` shows the truth:
+
+```
+xai/grok-4.5    text        500k    auth yes
+xai/grok-4.6    text        500k    auth yes
+xai/grok-4.3    text+image  1000k   auth yes   default,configured,alias:Grok
+```
+
+The near-miss is worth recording: the next step would have been declaring the model by hand
+under `models.providers.xai.models`, which the schema does accept — a duplicate catalog
+entry, hand-maintained, for a model the provider already knew about. **Use `--all` before
+concluding a model is missing.**
+
+Tested against a scratch copy of the live config via `OPENCLAW_CONFIG_PATH`, so nothing was
+written to the running gateway to find this out.
+
+**What 4.5 gives up: image input and half the context** — `text+image`/1000k becomes
+`text`/500k. Neither costs anything today, and both are one setting away from costing
+something. Image input is moot only because `channels.signal.ignoreAttachments` is `true`;
+if attachments are ever enabled, `agents.defaults.imageModel` must be set to a
+vision-capable ref in the same commit, or the agent silently cannot see pictures people
+send it. Media *generation* is unaffected — `imageGenerationModel` / `videoGenerationModel`
+are separate refs on `grok-imagine-*`.
+
+### Added — a 1:1 agent per family member, in config only (2026-08-14)
+
+Three more agents — `aryeh`, `aviv` and `liron`, one per family member's private chat
+with the assistant. Config in both authoring surfaces; **not applied to the Pi yet**,
+because it needs their ACIs and three interactive OAuth logins.
+
+`config/openclaw.example.json5` gains three `agents.list` entries, three `bindings`, three
+`allowFrom` uuids and three `dms` entries. `config/example.config.toml` gains the matching
+conversations and a `family-dm` profile. No code changed: the whole feature is config, and
+the generator that would have written it (`deploy/render-agents.py`, NVB-14) still does not
+exist — three hand-edits are smaller than the thing that would avoid them.
+
+**Three agents rather than one shared family-DM agent, and the reason is memory, not
+tools.** `session.dmScope: "per-channel-peer"` already gives each peer its own session, so
+one agent looked sufficient. It is not: a **workspace is per agent**, so three DMs on one
+agent put three people's `MEMORY.md` in one directory that all three sessions read and
+write. Durable memory is exactly what [ADR 0012](docs/decisions/0012-the-runtime-is-the-one-the-sandbox-can-reach.md)
+restored, so the sharing that used to be theoretical is now the default outcome. It is ADR
+0010 rule 1 arriving through the back door of a feature added since that rule was written.
+
+**None of the three carries a `tools` block.** "Everything except exec" is already the
+global policy — `exec` is denied there — so the requested surface is what an agent with no
+override inherits: `read`, `write`, `edit`, `apply_patch`, `session_status`, `web_search`,
+`image_generate`, `video_generate`. An empty per-agent block would be an invitation to widen
+it later without re-asking the question every tool has to answer.
+
+**A 1:1 agent is not admission to the family room.** `allowFrom` gains three uuids;
+`groupAllowFrom` gains none. They are two grants and the example config now says so, because
+that list is channel-wide — a uuid added to it "for consistency" is admitted to *every*
+allowlisted group, which is ADR 0011's fifth gate responsibility in one line.
+
+**Approval targets deliberately stay the owner's.** A prompt raised inside a family
+member's DM is answered by the owner out of band. The approval exists because the action
+needs a judgement, and the person whose message triggered it is the one an injection is
+speaking through.
+
+#### Onboarding someone requires their ACI, and the obvious way to get it does not work
+
+Verified end to end on 2026-08-14 by having an unlisted person DM the assistant. Six
+messages arrived. What the system said about who sent them:
+
+- **The gate: a reason and a counter, no identifier.** `dropped: sender (18 total)`. That
+  is the "no message content in logs" invariant applying to the sender as well as the body,
+  and it is correct behaviour — but it means watching the journal proves only that a
+  stranger arrived.
+- **The gateway: nothing at all.** Six refused DMs produced one unrelated line in twenty
+  minutes. A `dmPolicy: "allowlist"` refusal is silent at normal log level.
+- **`listContacts`: nothing either, and this one is a trap.** It returns address-book
+  contacts, not everyone the account knows. The sender had a `recipient` row, an
+  `identity`, an open `session` and a fetched profile name, and still did not appear. An
+  earlier draft of this entry recommended it as *the* method; it is not, and an empty
+  result must not be read as "they never messaged".
+
+Two things that do work, cheapest first:
+
+- **`getUserStatus` needs no message at all**, resolving a phone number straight to an ACI:
+  `{"recipient": "+1…", "uuid": …, "isRegistered": true}`. A lookup against Signal's
+  servers, so it discloses to Signal that the assistant asked about that number.
+- **The daemon's own recipient store**, once they have messaged:
+  `SELECT aci, number, profile_given_name FROM recipient` in
+  `/var/lib/wpa-signal/data/<id>.d/account.db`. Snapshot `-wal` and `-shm` with it and read
+  the copy — same rule as msgstore ([ADR 0003](docs/decisions/0003-local-db-read.md)), and
+  this file *is* the account. Cross-check against `identity` / `session`: the `recipient`
+  table also carries PNI-only rows that never sent anything, so the ACI list alone is
+  ambiguous and those two tables disambiguate it. Delete the snapshot afterwards.
+
+The envelope tap in `.local/pi.md` answers it too and is the worst of the three: it writes
+plaintext message bodies to disk to learn one uuid.
+
+Known cost, unresolved until it is tried: this makes **five** device-code OAuth logins on one
+xAI subscription. If it refuses, the fallback is ADR 0012's — `main` holds the model
+credential only, and tool credentials stay out of it.
+
 ### Changed — signal-cli runs at the gateway uid, and the media tools go on (NVB-26 + NVB-27, 2026-08-14)
 
 `image_generate` and `video_generate` are enabled for both agents. They were never broken:

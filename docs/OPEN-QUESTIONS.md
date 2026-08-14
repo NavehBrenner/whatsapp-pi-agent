@@ -1496,3 +1496,72 @@ the `message` tool, but the docs describe it as "Send replies or channel actions
 ordinary replies route through it, denying it makes the assistant mute. Test this
 before anything else; the answer decides whether ADR 0009's outbox survives in any
 form or is simply given up.
+
+---
+
+## Q7 — Why does the default agent's auth store refill itself?
+
+**Status:** **Mitigated, not understood.** Not blocking. **Blocks:** nothing today;
+**gates NVB-17/18** — see below.
+
+[ADR 0011](decisions/0011-openclaw-owns-the-channel-the-gate-owns-the-room.md) closes
+OpenClaw's read-through credential inheritance with a structural rule: *"the default
+agent holds no credentials… an agent cannot inherit what does not exist upstream."*
+That rule is currently satisfied on the Pi, and we cannot fully explain why it ever
+stopped being satisfied, or why it now holds.
+
+### What is established
+
+Measured 2026-08-15, full account in the CHANGELOG:
+
+- `main` held an `xai` OAuth profile from 2026-08-14 to 2026-08-15 — long enough for a
+  newly deployed agent with no login of her own to work correctly, which is how it was
+  found. A new agent *working* was the symptom.
+- **Emptying `main` by hand did not hold.** Cleared with the gateway stopped, it
+  refilled itself within ~2 minutes of ordinary use. No login was run, and the calling
+  agent's own store was not touched in the same window.
+- **It holds once every other agent has its own profile.** After the last agent was
+  given her own login, `main` stayed empty through idle, `models status`, `models
+  list`, `models auth list`, agent turns, a deliberately failing turn by `main` itself,
+  and a gateway restart.
+- **Read-through resolves at gateway startup, not per turn.** Main's contents *at boot*
+  decide. A mistake therefore surfaces one restart later, which is the worst possible
+  latency for noticing it.
+- No `auth-profiles.json` flat file exists to be re-imported from, and no config key
+  disables read-through (checked against `openclaw config schema`, confirming ADR
+  0011's reading).
+
+### What is not established
+
+**Which code path writes the profile into the default agent's store.** Bisection
+cleared the obvious candidates; `resolveDefaultAgentDir` appears on several auth paths
+in `dist` but the one that fired was not pinned down. The working hypothesis — that the
+write is triggered by an agent resolving auth *through* the default store — fits every
+observation and is unproven.
+
+Because the cause is unknown, `deploy/check-agent-auth.sh` **detects rather than
+prevents**, and asserts both halves of the invariant: the default agent holds nothing,
+*and* every other agent has its own profile. The second is what keeps the first true,
+so checking only the first would pass right up until it mattered.
+
+### Why this needs a proper review before NVB-17/18
+
+Today the only credential involved is model inference on a subscription every agent
+shares anyway, so the blast radius of a bad day is spend. **NVB-17/18 mount real tool
+credentials** — a calendar, a mailbox — and at that point "absent, not refused"
+(ADR 0010) is resting on a mechanism nobody has traced.
+
+The review should answer, in this order:
+
+1. What writes the default agent's store? Instrument it rather than infer it.
+2. Is there an upstream fix or a supported way to disable read-through? If not, is this
+   worth filing, on the same reasoning as
+   [openclaw/openclaw#123815](https://github.com/openclaw/openclaw/issues/123815) — a
+   documented isolation boundary that ordinary operation silently reopens?
+3. Does the tool-credential design need to stop depending on this invariant altogether?
+   A per-agent credential that is mounted into the container, rather than resolved from
+   a store the gateway can read for every agent, would not care what `main` holds. That
+   is closer to what ADR 0010 originally described.
+
+**If `main` is ever found non-empty while every agent has its own profile, the working
+hypothesis is dead** and this question reopens immediately rather than at NVB-17.
