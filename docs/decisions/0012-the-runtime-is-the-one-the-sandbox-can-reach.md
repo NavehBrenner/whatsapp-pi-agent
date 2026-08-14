@@ -211,19 +211,27 @@ it must not be cited again without rechecking Anthropic's own support articles.
   throughout. Recorded because the mistake, not the setting, is the reusable lesson —
   **a capability that is missing is not evidence of what removed it.**
 
-- **`image_generate` and `video_generate` work too, and need `timeoutSeconds` raised.**
-  Media generation is asynchronous: the turn records a detached task and returns, and a
-  separate *completion run* delivers the result through the session's visible-reply mode.
-  Generation takes ~90s, and at the default `agents.defaults.timeoutSeconds` the
-  completion run is cut off — which trips an auth-profile cooldown, so the *next*,
-  unrelated turns fail with "xai hasn't been responding". `600` settles it: image
-  produced, completion `ended with stopReason=stop`, zero errors, on both the owner DM
-  and the family group path.
+- **`image_generate` and `video_generate` generate correctly but cannot be delivered,
+  because of ADR 0006's uid split.** The tools register, produce an image in ~90s inside
+  the sandbox, and the completion run ends with `stopReason=stop`. Then OpenClaw hands
+  signal-cli a *path* under `~/.openclaw/media/outbound`, and our signal-cli — a separate
+  uid by design (runbook 03) — cannot traverse that `0700` chain:
+  `AttachmentInvalidException … (Permission denied)`.
 
-  So the ADR's original consequence was right and this section's first draft was not.
-  The capabilities do arrive with the credential; the two settings they need
-  (`group:plugins`, and a run timeout that outlasts an async task) are both invisible in
-  the failure mode, which is what cost the time.
+  Granting the Signal uid traverse-only access does not hold: **OpenClaw re-asserts
+  `0700` on `media` on every generation** (measured: `0710` before a run, `0700` after),
+  so the grant is undone before the send and a watcher would race it. OpenClaw assumes
+  it owns the Signal transport at its own uid; our split is what makes that untrue.
+
+  Recorded here because it is the same shape as the rest of this ADR — **a deliberate
+  isolation boundary colliding with a capability that assumes there is none** — and
+  because the resolution is a real fork rather than a setting: relax the uid split for
+  media, get the fix upstream, or accept text-only replies. Tracked in NVB-26; the tools
+  stay out of the shipped config rather than shipping something that always fails at the
+  last step.
+
+  So the ADR's original consequence was two-thirds right. `web_search` does arrive free;
+  the media tools arrive and then cannot leave the machine.
 - **NVB-16 becomes a `before_tool_call` plugin** returning `requireApproval`, routed by
   `approvals.plugin`. Plugin approvals are a separate family from exec approvals and can be
   delivered to a chosen person, which is what makes a per-tool "ask first" gate possible at

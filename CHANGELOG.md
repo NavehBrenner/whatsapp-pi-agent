@@ -94,24 +94,37 @@ false, which drops the xAI plugin's provider registrations. A tool whose provide
 registered does not appear, is not logged as removed, and raises no error — the same
 silent-no-op shape as a deny naming an unknown tool.
 
-**`image_generate` and `video_generate` are on too, and needed one more key:**
-`agents.defaults.timeoutSeconds: 600`.
+**`image_generate` and `video_generate` are NOT enabled, and the reason is the uid
+split rather than anything about the tools.** Both work: they register, generate
+correctly in ~90s inside the sandbox, and the completion run ends with
+`stopReason=stop`. The failure is the last hop, found by a real Signal request:
 
-Media generation is **asynchronous by design** — the turn records a detached task and
-returns, then a separate *completion run* delivers the result through the session's
-normal visible-reply mode. Generation takes ~90s. At the default run timeout the
-completion run is cut off, and that failure trips an auth-profile cooldown, so the
-*next*, unrelated turns fail with "xai hasn't been responding". The damage shows up
-after the request that caused it, which is what makes it hard to read.
+```
+Signal RPC -32603: Failed to send message: …/media/outbound/image-….jpg
+  (Permission denied) (AttachmentInvalidException)
+```
 
-With the timeout raised: image produced, completion run `ended with stopReason=stop`,
-zero errors, `exec` still refused, memory still persisting, on both the owner DM and the
-family group path.
+OpenClaw hands signal-cli a *path* under `~/.openclaw/media/outbound`. Our signal-cli
+runs as `wpa-signal` under our own unit (runbook 03, for `--scrub-log` and `UMask=0007`)
+and cannot traverse that `0700` chain. The file itself is world-readable; the path is
+not.
 
-⚠️ **The completion is delivered through the session's reply path, so the CLI cannot
-show it** — there is no channel attached to `openclaw agent`. Everything up to delivery
-is verified here; that the picture actually lands in the Signal chat needs a real
-message.
+**A group grant does not survive.** Granting `wpa-signal` traverse-only on `.openclaw`
+and `media` plus read on `outbound` works for exactly as long as it takes to generate
+one more image: **OpenClaw re-asserts `0700` on `media` on every generation** — measured
+directly, `0710` before a run and `0700` after. Any chmod is undone before the send, and
+a watcher would race it. Reverted rather than left in place, since traversal into the
+agent state directory with no working capability is pure downside.
+
+So OpenClaw assumes it owns the Signal transport at its own uid, and
+[ADR 0006](docs/decisions/0006-two-process-privilege-split.md)'s split is what makes
+that untrue here. Shipping the tools anyway would mean shipping something that always
+fails at the last step, in a family group, after appearing to work. Tracked in NVB-26.
+
+Two settings recorded there for whenever it is solved: media generation needs
+`agents.defaults.timeoutSeconds` raised (it is async, and the default cuts the
+completion run off, which trips an auth-profile cooldown that breaks *later*,
+unrelated turns), and the media models must be named or the tools never register.
 
 #### Unflattering: the finding this replaces was wrong, and wrong in an avoidable way
 
