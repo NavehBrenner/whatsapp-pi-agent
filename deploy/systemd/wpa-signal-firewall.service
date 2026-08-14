@@ -1,0 +1,15 @@
+[Unit]
+Description=Restrict signal-cli's loopback JSON-RPC port to root and the gateway uid (NVB-27)
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/runbooks/03-signal-cli.md
+After=nftables.service
+Before=signal-cli.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/wpa-signal-8081.nft
+# Leaving the rule in place across a stop is deliberate: an unprotected 8081 is
+# worse than a port with no daemon behind it.
+
+[Install]
+WantedBy=multi-user.target
