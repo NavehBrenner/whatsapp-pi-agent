@@ -72,44 +72,60 @@ their own `xai/oauth` profile issued to the same account with independent expiri
 empty and the "main holds nothing" invariant stands as written rather than as a
 compromise.
 
-### Unflattering, 2026-08-14 (NVB-26) — the sandbox hides the web, image and video tools
+### Added, 2026-08-14 (NVB-26) — web search, with the sandbox still on
 
-ADR 0012 promised that "the image and video tools arrive free" on the xAI credential.
-**They do not arrive at all.** Established by running the same config twice with only
-`agents.defaults.sandbox.mode` changed, with the Signal channel *and* plugin disabled so
-nothing untrusted could reach a briefly-unsandboxed agent:
+Both agents now have `web_search` on their own xAI OAuth, with no separate key, while
+`sandbox.mode: "all"` and per-agent containers stay exactly as they were. Verified
+functionally rather than by tool name — live results through the owner's DM *and* the
+family group path — with `exec` still refused and memory still persisting.
 
-| `sandbox.mode` | agent's tools |
-|---|---|
-| `off` | `apply_patch, edit, image_generate, read, session_status, video_generate, web_search, write` |
-| `all` | `apply_patch, edit, read, session_status, write` |
+**One non-obvious token makes the difference, and its absence fails silently:**
 
-With the sandbox off, `web_search` **works** and returns live results on this account's
-OAuth alone — so the credential was never the problem, and the entitlement theory is dead.
+```json5
+tools: {
+  alsoAllow: ["read", "write", "edit", "apply_patch", "web_search"],
+  web: { search: { enabled: true, provider: "grok" } },
+  sandbox: { tools: { allow: [ /* … */ "group:plugins", "web_search"] } },
+}
+```
 
-**It is structural, not policy.** They stay absent under `all` even with an explicit
-`tools.sandbox.tools.allow` naming them. Consistent with the sandbox default allow list
-containing `image` but not `image_generate`: the handling tool, not the generating one.
-A sandboxed agent is simply not offered gateway-side tools.
+An allowlist built only from known core tool names resolves `includePluginTools` to
+false, which drops the xAI plugin's provider registrations. A tool whose provider never
+registered does not appear, is not logged as removed, and raises no error — the same
+silent-no-op shape as a deny naming an unknown tool.
 
-Three layers had to be peeled back before this was visible, each hiding the next, and the
-first two are real settings worth knowing: `tools.profile: "minimal"` strips them (fixed
-by `alsoAllow`), then `tools.sandbox.tools.*` strips them again (a second, independent
-allowlist), and only then does the structural exclusion show.
+**`image_generate` and `video_generate` stay off**, for reliability rather than
+isolation. Calling `image_generate` starts a detached media task whose completion turn
+times out (`rawError=terminated`), tripping an auth-profile cooldown so that *later*
+turns fail with "xai hasn't been responding". The provider error underneath is
+`400 Could not decrypt the provided encrypted_content` from xAI's Responses API — a
+conversation-continuation problem, not a setting. Having the tools listed is harmless;
+calling them is not, and in a shared room that means one request for a picture leaves the
+conversation unresponsive.
 
-**The tempting fix is a trap.** Turning the sandbox off to get these tools is *strictly
-worse than before ADR 0012 shipped*: unsandboxed `write` accepts absolute paths as the
-gateway uid, and that uid is now in the `docker` group, so injection → write the config →
-re-enable `exec` → drive Docker → root. Before a container runtime existed on this Pi the
-same chain stopped at uid 991. The capability and the isolation are genuinely exclusive
-here, and choosing capability now requires NVB-22 first.
+#### Unflattering: the finding this replaces was wrong, and wrong in an avoidable way
 
-Also found while peeling: **`alsoAllow` with no `allow` produces `["*", …]`** —
-`pickSandboxToolPolicy` unions against a wildcard. So `tools.sandbox.tools.alsoAllow`
-opens that layer to everything rather than adding to the default set, which is the
-opposite of what the name suggests. It was set that way briefly during this
-investigation and is not in the shipped config; whether top-level `tools.alsoAllow`
-behaves the same way — which we now depend on for the file tools — is open in NVB-26.
+An earlier entry here — and a struck consequence in ADR 0012 — claimed the sandbox
+*structurally* excluded these tools, and concluded that per-agent isolation and web search
+were mutually exclusive. That conclusion would have justified containerizing the gateway
+as a prerequisite and re-architecting the channel. It was wrong.
+
+The evidence was a sandbox-on/sandbox-off comparison in which the sandbox-off run **also**
+had no sandbox allowlist — so the plugin providers loaded there and nowhere else. Two
+variables moved and one was reported as the cause. The tell was visible before the
+conclusion was written: `session_status` is equally gateway-side and was available under
+the sandbox the whole time.
+
+The reusable lesson is not about `group:plugins`. It is that **a capability that is
+missing is not evidence of what removed it** — on this stack, three independent layers
+(`tools.profile`, `tools.sandbox.tools.*`, and provider registration) each remove tools,
+and only the first two say so in the log.
+
+Also found: **`alsoAllow` with no `allow` produces `["*", …]`** — `pickSandboxToolPolicy`
+unions against a wildcard, so `tools.sandbox.tools.alsoAllow` opens that layer to
+everything rather than adding to the default set. The shipped config uses an explicit
+`allow` instead. Whether top-level `tools.alsoAllow` behaves the same way — which we
+depend on for the file tools — is still open in NVB-26.
 
 ### Verified on hardware, 2026-08-14 (NVB-23) — the container runtime
 

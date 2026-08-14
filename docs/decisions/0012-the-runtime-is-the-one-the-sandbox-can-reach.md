@@ -157,14 +157,10 @@ it must not be cited again without rechecking Anthropic's own support articles.
   the several device-code logins the per-agent auth stores need.
   *(Settled 2026-08-14: obtainable, and one subscription permits a login per agent.)*
 - Model quality on family-facing work proves materially worse than the Claude baseline.
-- **Web search, image and video generation are judged necessary.** Verified 2026-08-14:
-  a sandboxed agent is not offered them at all, at any policy setting. Getting them means
-  giving up the per-agent sandbox, which is this ADR's entire product — so it is not a
-  config change but a reopening, and it makes
-  [NVB-22](https://linear.app/naveh-brenner/issue/NVB-22) (containerize the gateway) a
-  prerequisite rather than a deferred upgrade, exactly as the vendor fork below does.
-  Note the cost even then: agents inside one gateway container share it, so family members
-  lose the kernel-enforced separation from *each other* that ADR 0009 and 0010 ask for.
+- ~~Web search, image and video generation are judged necessary.~~ **Withdrawn
+  2026-08-14 — this was based on a wrong finding and never applied.** `web_search` runs
+  fine alongside per-agent sandboxing (see Consequences), so no capability-vs-isolation
+  fork exists here and NVB-22 stays a deferred upgrade rather than a prerequisite.
 
 ## Consequences
 
@@ -185,37 +181,45 @@ it must not be cited again without rechecking Anthropic's own support articles.
   what the least-trusting family profile is for.
 - **Session stores must be cleared** when the tool policy changes. Policy binds at session
   creation, and a tightened policy does not reach an existing session.
-- ~~**The image and video tools arrive free.**~~ **FALSIFIED ON HARDWARE 2026-08-14
-  ([NVB-26](https://linear.app/naveh-brenner/issue/NVB-26)).** The claim was that one xAI
-  OAuth credential also powers `image_generate`, `video_generate`, `web_search`,
-  `x_search`, `code_execution` and speech, so the least-trusting profile would get real
-  web search with no separate key. The credential half is true — with the sandbox off,
-  `web_search` works and returns live results on this account's OAuth alone.
+- **The web search tool arrives free, and it works alongside the sandbox.** Confirmed on
+  hardware 2026-08-14 ([NVB-26](https://linear.app/naveh-brenner/issue/NVB-26)): with
+  `sandbox.mode: "all"`, `scope: "agent"` and per-agent containers running, both the owner
+  and the family group return live results through `web_search` on the agent's own xAI
+  OAuth, with no separate key. `exec` stays refused and memory still persists.
 
-  **But a sandboxed agent is never offered those tools.** Same config, only
-  `agents.defaults.sandbox.mode` differing:
+  **Getting there needed one non-obvious token, and its absence fails silently.** The
+  sandbox tool allowlist must contain **`group:plugins`**:
 
-  | `sandbox.mode` | agent's tools |
-  | --- | --- |
-  | `off` | `apply_patch, edit, image_generate, read, session_status, video_generate, web_search, write` |
-  | `all` | `apply_patch, edit, read, session_status, write` |
+  ```json5
+  tools: {
+    alsoAllow: ["read", "write", "edit", "apply_patch", "web_search"],
+    web: { search: { enabled: true, provider: "grok" } },
+    sandbox: { tools: { allow: [ /* … */ "group:plugins", "web_search"] } },
+  }
+  ```
 
-  It is structural rather than policy: they stay absent under `all` **even with an
-  explicit `tools.sandbox.tools.allow` naming them**. The sandbox default allow list
-  contains `image` but not `image_generate` — the handling tool, not the generating one —
-  which is the same distinction drawn deliberately.
+  An allowlist built only from known core tool names resolves `includePluginTools` to
+  false, which drops the xAI plugin's provider registrations — and a tool whose provider
+  never registered does not appear, is not logged as removed, and produces no error. It
+  reads exactly like the sandbox suppressing it.
 
-  So this ADR's own sentence, "the runtime is the one the sandbox can reach", now cuts
-  the other way: **the sandbox cannot reach the gateway-side tools either.** Nothing here
-  reverses the decision — durable memory and per-agent isolation both hold, and they were
-  what the switch was for — but the free capabilities were not free, and the reason is the
-  isolation itself rather than the vendor.
+  ⚠️ **An earlier revision of this ADR claimed the sandbox structurally excluded these
+  tools, and that was wrong.** The evidence for it was a sandbox-on/sandbox-off comparison
+  where the sandbox-off run also had no sandbox allowlist, so the plugin providers loaded
+  there and nowhere else. The variable was never isolated. The tell was visible and
+  ignored: `session_status` is equally gateway-side and was available under the sandbox
+  throughout. Recorded because the mistake, not the setting, is the reusable lesson —
+  **a capability that is missing is not evidence of what removed it.**
 
-  **Do not respond to this by turning the sandbox off.** That option is strictly worse
-  than it was before this ADR shipped, because of a consequence recorded below: unsandboxed
-  `write` accepts absolute paths as the gateway uid, and that uid is now in the `docker`
-  group. Injection → write the config → re-enable `exec` → drive Docker → root. Before a
-  container runtime existed on the Pi, the same chain stopped at uid 991.
+- **`image_generate` and `video_generate` remain off**, and not for isolation reasons.
+  Calling `image_generate` starts a detached media task whose completion turn times out
+  (`rawError=terminated`), and that trips an auth-profile cooldown, so *later* turns fail
+  with "xai hasn't been responding". The underlying provider error is
+  `400 Could not decrypt the provided encrypted_content` from xAI's Responses API — a
+  conversation-continuation problem between OpenClaw and xAI rather than a config one.
+  Merely having the tools in the list is harmless; calling them is not. In a shared room
+  that means one request for a picture leaves the conversation unresponsive, which is why
+  they stay off until NVB-26 settles it.
 - **NVB-16 becomes a `before_tool_call` plugin** returning `requireApproval`, routed by
   `approvals.plugin`. Plugin approvals are a separate family from exec approvals and can be
   delivered to a chosen person, which is what makes a per-tool "ask first" gate possible at

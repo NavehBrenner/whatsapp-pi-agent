@@ -89,13 +89,23 @@
           // MEMORY.md at all. The agent-level policy looked correct throughout;
           // only a probe against the real group session key showed it.
           //
-          // The list below is "everything needed to manage its own state, and
-          // nothing else": the memory path, plus session_status. No exec — that is
-          // denied globally too, and belt-and-braces is right for the shared room.
-          // Outward-facing tools get added deliberately, one at a time, each
-          // answering "what does a successful injection do with this?"
+          // The memory path, plus session_status, plus web_search. No exec — denied
+          // globally too, and belt-and-braces is right for the shared room. Anything
+          // outward-facing gets added one at a time, each answering "what does a
+          // successful injection do with this?"
+          //
+          // `web_search` is the one content-ingestion path currently open, and it is
+          // the reason `group:plugins` appears here: without it the xAI plugin's
+          // provider never registers and web_search silently does not exist. Note
+          // what it costs — search results are attacker-influenceable text entering
+          // the context of an agent that now has durable memory, so a poisoned result
+          // can persist past the turn. Acceptable today because nothing outbound
+          // exists to pivot to; revisit when NVB-17/18 add real tools.
           tools: {
-            allow: ["session_status", "read", "write", "edit", "apply_patch"],
+            allow: [
+              "session_status", "read", "write", "edit", "apply_patch",
+              "group:plugins", "web_search",
+            ],
           },
 
           // ⛔ STILL NO toolsBySender HERE — but the reason has changed, and the
@@ -429,7 +439,7 @@
     // NATIVE_TOOL_EXCLUDE regardless, so their absence from that list proved nothing
     // about the profile. Carrying that measurement across a runtime change is the
     // "TOOL NAMES ARE RUNTIME-DEPENDENT" trap below, sprung on us rather than by us.
-    alsoAllow: ["read", "write", "edit", "apply_patch"],
+    alsoAllow: ["read", "write", "edit", "apply_patch", "web_search"],
 
     // ⚠️ AND THEY ARE NOT DENIED, ON PURPOSE.
     //
@@ -450,15 +460,46 @@
     // So: if sandbox.mode ever goes back to "off", these must be denied again in
     // the same commit. The two settings are one decision.
 
-    // `web_search` stays stripped by `minimal` for now. ADR 0012 notes the xAI
-    // credential powers it with no separate key and that the least-trusting profile
-    // is exactly what it is for — that is a real argument, and it belongs to
-    // NVB-18, not here. Adding a new content-ingestion path in the same change as a
-    // runtime switch means a regression in either one cannot be attributed to
-    // either one. Widen with `alsoAllow: ["web_search"]` when the injection smoke
-    // test exists to catch what it lets in.
-
     elevated: { enabled: false }, // WHY: exec is denied; this closes the escape hatch
+
+    // Provider-side search on the agent's own xAI OAuth — no separate key. `grok` is
+    // a `web_search` provider that reuses an existing xAI OAuth sign-in.
+    web: { search: { enabled: true, provider: "grok" } },
+
+    // -----------------------------------------------------------------------
+    // A SECOND, INDEPENDENT ALLOWLIST that applies only to sandboxed runs.
+    //
+    // Its default set is narrower than the global policy and excludes `web_search`,
+    // so without this block the tool is stripped here after surviving everything
+    // above. The gateway does say so: "tool policy removed 3 tool(s) via sandbox
+    // tools.allow".
+    //
+    // ⚠️ `group:plugins` IS LOAD-BEARING AND ITS ABSENCE FAILS SILENTLY. An allowlist
+    // built only from known core tool names resolves `includePluginTools` to false,
+    // which drops the xAI plugin's PROVIDER registrations — and a tool whose provider
+    // never registered does not appear, is not logged as removed, and raises no
+    // error. It reads exactly like the sandbox suppressing it, and cost most of an
+    // afternoon and one wrong conclusion in ADR 0012 (see the changelog).
+    //
+    // ⚠️ Use `allow`, NOT `alsoAllow`. `pickSandboxToolPolicy` unions `alsoAllow`
+    // against a wildcard, so `alsoAllow` here silently means "allow everything plus
+    // these" rather than "add these to the default set".
+    //
+    // NOT listed, deliberately: `image_generate` and `video_generate`. Calling
+    // image_generate starts a detached media task whose completion turn times out and
+    // trips an auth-profile cooldown, so later turns fail with "xai hasn't been
+    // responding" — one request for a picture leaves the conversation unresponsive.
+    // Reliability, not isolation; they work under the sandbox once that is fixed.
+    sandbox: {
+      tools: {
+        allow: [
+          "read", "write", "edit", "apply_patch",
+          "session_status",
+          "group:plugins",
+          "web_search",
+        ],
+      },
+    },
   },
 
   // -------------------------------------------------------------------------
