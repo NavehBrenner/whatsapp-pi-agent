@@ -67,6 +67,17 @@ binary-override key in the schema. Nothing on the Pi provided it, so `sandbox.mo
   `--network host` when there is no bridge. `python3` in that image is load-bearing —
   it backs the write/edit helpers, which is why OpenClaw refuses to substitute plain
   `debian:bookworm-slim`.
+- **`plugins.allow` is a hard allowlist over every plugin, stock ones included** — not
+  just external ones, which is what the Signal work left us assuming. Each provider is
+  one of ~68 stock plugins, so xAI had to be trusted there before it could be enabled;
+  `entries.xai.enabled: true` on its own does nothing, and `openclaw plugins enable xai`
+  says so plainly ("blocked by allowlist"). **The error that actually surfaces does
+  not.** `openclaw models auth login --provider xai` reports `No provider plugins
+  found. Install one via openclaw plugins install` — for a plugin that is installed,
+  stock, and listed. Following that advice installs something you already have. Worse,
+  the gateway *auto-enables* the provider plugin for the configured model at runtime
+  "without writing config", so a running gateway can be happy on a provider the CLI
+  swears is missing. `plugins list` is the ground truth; the error text is not.
 - **The `openclaw` uid is now in the `docker` group, which is root-equivalent on this
   host.** Recorded as a decision rather than a detail: it widens what a compromised
   *gateway* reaches, which ADR 0012 scopes out to NVB-22 on the grounds that injection

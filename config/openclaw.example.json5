@@ -452,20 +452,45 @@
   // -------------------------------------------------------------------------
 
   // -------------------------------------------------------------------------
-  // The Signal channel is an EXTERNAL PLUGIN and is not trusted implicitly.
+  // `allow` IS A HARD ALLOWLIST OVER EVERY PLUGIN, STOCK ONES INCLUDED.
   //
-  // Both keys are required. With neither, the gateway starts, logs one WARN
-  // ("channel is configured, but external plugin \"signal\" is installed without
-  // explicit trust"), and then simply never connects — no error, no retry, no clue
-  // at the channel level. Undocumented in every page we read; found by reading the
-  // gateway log on 2026-08-12.
+  // Not just external ones, which is what we assumed until 2026-08-14. OpenClaw
+  // ships ~68 stock plugins and each provider is one of them, so a provider absent
+  // from this list cannot be enabled at all — `openclaw plugins enable xai` answers
+  // "blocked by allowlist" and setting `entries.xai.enabled: true` alone does
+  // nothing.
   //
-  // It is a good default on their part: an external plugin that can see every
-  // message should not load because a channel block mentions it.
+  // ⚠️ The error that actually surfaces is worse than that one. `openclaw models
+  // auth login --provider xai` reports:
+  //
+  //     Error: No provider plugins found. Install one via `openclaw plugins install`.
+  //
+  // The plugin IS installed — it is stock, it is right there in `plugins list` — it
+  // is merely untrusted. Following that advice would have you installing something
+  // you already have. `plugins list` shows the truth ("N/68 enabled" plus a
+  // per-plugin status column); trust it over the error text.
+  //
+  // Compounding it: the gateway AUTO-ENABLES the provider plugin for whatever model
+  // is configured, logging "enabled automatically ... without writing config". So
+  // the running gateway can be perfectly happy on a provider the CLI swears is not
+  // installed. Config is what the CLI reads; the auto-enable is runtime-only.
+  //
+  // The Signal channel is here for the original reason, which still holds: it is an
+  // EXTERNAL plugin and is not trusted implicitly. With neither key, the gateway
+  // starts, logs one WARN ("channel is configured, but external plugin \"signal\" is
+  // installed without explicit trust"), and then simply never connects — no error,
+  // no retry, no clue at the channel level. Found by reading the gateway log on
+  // 2026-08-12.
+  //
+  // It is a good default on their part: a plugin that can see every message, or
+  // hold every credential, should not load because some other block mentions it.
   // -------------------------------------------------------------------------
   plugins: {
-    allow: ["signal"],
-    entries: { signal: { enabled: true } },
+    allow: ["signal", "xai"],
+    entries: {
+      signal: { enabled: true },
+      xai: { enabled: true }, // the model provider (ADR 0012)
+    },
   },
 
   // -------------------------------------------------------------------------
