@@ -103,6 +103,8 @@ creation.
 | Generation works | `IMG-OK /var/lib/openclaw/.openclaw/media/tool-image-generation/red_bicycle---….jpg` |
 | **Delivery works — the whole point** | a **real Signal DM** asking for a picture returned the image in the chat; `run image_generate:2ac96d79…:ok ended with stopReason=stop`. The CLI cannot prove this hop, it has no channel attached |
 | Delivery works in the family group too | `@Pi make a picture of a red bicycle` → `Here's a red bicycle:` + attachment, `stopReason=stop`, no delivery error — the room the tools were mostly enabled for |
+| `video_generate` end to end | a real Signal DM returned a video; `run video_generate:eb9cd0a9…:ok`. This is what `timeoutSeconds: 600` is for |
+| `--receive-mode on-connection` intact | signal-cli stopped for 55s, a DM sent into the gap showed undelivered on the sender's client, and was delivered and answered ~15s after the daemon returned. A restart costs latency, not commands |
 | `web_search` did not regress | `SEARCH-OK` from the family agent after the config batch |
 | Durable memory survived the session clear | wrote a token through the sandboxed file tools, read it back in a **fresh** session, file present in the real host workspace |
 | NVB-25's sandbox invariants hold | both containers `user=0:0 mem=536870912 pids=256 ro=true caps=[ALL] net=none`; the rootful socket still refuses `openclaw` |
@@ -110,6 +112,32 @@ creation.
 | `web_fetch` still absent | not in either agent's tool list |
 | Survives a cold boot | power-cycled: signal-cli back as `openclaw` with the socket at the right mode, the nftables rule re-applied by its unit, rootless Docker back under linger, gateway `ready`, Waydroid `RUNNING` on the same IP, tool surface unchanged |
 | Nothing else broke | Waydroid `RUNNING` on 192.168.240.112; reader, gate, gateway, sandbox containers all active |
+
+#### The outage test passed, and showed the gate missing a message the gateway got
+
+Stopping signal-cli for 55 seconds and sending a DM into the gap did what runbook 03 promised:
+the sender's client showed it undelivered, and it was delivered and answered about fifteen
+seconds after the daemon came back. `--receive-mode on-connection` is intact under the new uid.
+
+But **the gate never logged that message**, and the gateway did answer it. Two independent
+clients attach to signal-cli — the gate on the unix socket, the gateway over HTTP — and the
+daemon starts fetching as soon as *any* of them attaches. The gate reconnected 8 seconds after
+the HTTP server came up, and the message had already been dispatched. Its `commands.jsonl` has
+a hole in it, its drop counters undercount, and ADR 0008's membership-drift refusal cannot
+refuse what it never sees. Nothing unauthorised ran — OpenClaw remains the enforcement point —
+but "a restart costs latency, not commands" turns out to be true of the gateway and not of the
+gate's record. Filed as [NVB-31](https://linear.app/naveh-brenner/issue/NVB-31), with the
+mechanism marked inferred: signal-cli logs socket client attach and says nothing about HTTP
+clients, so the ordering is the best explanation rather than an observed one.
+
+Also worth keeping, from signal-cli's own startup log:
+
+```
+WARN HttpServerHandler - HTTP server has no authentication; Host header is pinned to [localhost, ::1, …]
+```
+
+It warns about exactly the hole this change closed. Host-header pinning is not an access
+control — the nftables rule is.
 
 #### `requireMention` means the agent's name as text, and a native Signal mention is invisible
 
@@ -127,12 +155,13 @@ a silent no-op, and worth adding to the list of shapes to recognise. Filed as
 [NVB-30](https://linear.app/naveh-brenner/issue/NVB-30); the workaround costs three characters
 and is in force.
 
-**Drift found and closed:** the live family group carried `requireMention: false` while
-`config/openclaw.example.json5` has always argued for `true`. Set to `true` on the box before
-the group was tested with media tools — in a shared room every reply is disclosed to everyone
-present, and an agent that answers every message is one that answers messages nobody addressed
-to it. Being addressed should be explicit, and that matters more once the agent can spend
-quota on a picture.
+**`requireMention` was turned on, and then deliberately back off.** The live family group
+carried `false` while the example config argued for `true`, so it was flipped to `true` before
+testing media in that room. That is what surfaced the mention finding above. It is now `false`
+again, on purpose: that room exists only to talk to the assistant, so every message in it is
+addressed to it and a mention requirement is friction with no disclosure benefit. The example
+config now states both the default and this deployment's exception, rather than quietly
+disagreeing with the box.
 
 #### Unflattering, again: the known-phrase grep found a real leak, and it is not ours
 

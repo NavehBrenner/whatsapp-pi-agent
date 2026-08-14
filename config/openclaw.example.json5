@@ -87,8 +87,15 @@
       // default tools. Deny wins. Each entry takes allow | alsoAllow | deny.
       groups: {
         "<base64 groupId from listGroups>": {
-          // WHY true: in a shared room everything the assistant says is disclosed to
-          // everyone present. Requiring a mention makes being addressed explicit.
+          // WHY true by default: in a shared room everything the assistant says is
+          // disclosed to everyone present, so being addressed should be explicit.
+          //
+          // ⚠️ THE LIVE FAMILY ROOM RUNS `false`, DELIBERATELY. That room exists only
+          // to talk to the assistant — every message in it is addressed to it — so a
+          // mention requirement is friction with no disclosure benefit. Turn it back
+          // on the moment the room is used for anything else, and note that the switch
+          // is not free: read the paragraph below before assuming a mention works the
+          // way it looks.
           //
           // ⚠️ "MENTION" HERE MEANS THE AGENT'S `identity.name` AS LITERAL TEXT, and
           // a native Signal mention DOES NOT COUNT. The plugin builds
