@@ -32,6 +32,20 @@ change at all**, and `StateDirectoryMode=0700` still leaves the group no execute
 account directory is exactly as unreadable to the gate as it was before. The planned
 `SupplementaryGroups=openclaw` on the gate was not needed and was not applied.
 
+#### Filed upstream: attachments travel as a path, not as bytes
+
+[openclaw/openclaw#123815](https://github.com/openclaw/openclaw/issues/123815). NVB-27 promised
+to file this whatever we decided locally, because path-based delivery silently assumes the
+gateway and the transport share a uid — and the failure surfaces at the last hop, after
+everything appears to work.
+
+Checked first, as it should be: no existing issue covers it, and `send.ts` on `main` still
+does `attachments = [resolved.path]`, so it is not fixed in an unreleased branch either. The
+suggested fix needs no signal-cli change — its own `--help` documents that `--attachment`
+accepts "either a file path **or a data URI**" per RFC 2397, with an optional `filename=`. So
+the bytes can travel over the JSON-RPC connection that is already open. Proposed as opt-in,
+since base64 costs about a third in size and video runs against `mediaMaxMb`.
+
 #### Unflattering: the firewall rule protecting the control channel did not exist
 
 NVB-27's checklist said to *confirm* that `tcp dport 8081 meta skuid { 0, 991 }` was still
@@ -142,18 +156,32 @@ control — the nftables rule is.
 #### `requireMention` means the agent's name as text, and a native Signal mention is invisible
 
 Turning `requireMention` on made the group stop answering entirely, which read like the media
-change having broken something. It had not. The Signal plugin builds
-`\b@?<identity.name>\b` (flag `"i"`) from the agent's identity, matches it against the message
-**body**, and hardcodes `hasAnyMention: false` — `dataMessage.mentions` appears nowhere in it.
-Core exports `matchesMentionWithExplicit()` for precisely this case and Discord's path uses it;
-Signal's does not.
+change having broken something. It had not.
 
-So `@Pi …` typed as text works, and tapping the assistant in Signal's mention picker does
-nothing. The miss logs `reason: "no mention"` at **verbose only**, so at a normal log level the
-gate says `accepted` and the gateway says nothing at all — the third time this project has met
-a silent no-op, and worth adding to the list of shapes to recognise. Filed as
-[NVB-30](https://linear.app/naveh-brenner/issue/NVB-30); the workaround costs three characters
-and is in force.
+Signal sends a mention as U+FFFC in the body plus a `mentions` array. The plugin substitutes
+it — `renderSignalMentions` replaces the placeholder with `@<uuid>`, the target's **ACI, not
+their name** — and gating then matches `\b@?<identity.name>\b` (flag `"i"`) against that text.
+`@b0c72586-…` contains no "Pi", so the mention is read and then fails to match. `@Pi …` typed
+as ordinary text works.
+
+The miss logs `reason: "no mention"` at **verbose only**, so at a normal log level the gate
+says `accepted` and the gateway says nothing at all — the third silent no-op this project has
+met, and worth adding to the list of shapes to recognise. Tracked as
+[NVB-30](https://linear.app/naveh-brenner/issue/NVB-30); the workaround costs three characters.
+
+**Corrected the same day.** The first version of this entry said the plugin "never reads
+`dataMessage.mentions`" and that it discarded the metadata outright. That was wrong, and the
+cause is worth recording because it will happen again: `grep "dataMessage.mentions"` does not
+match `dataMessage?.mentions`, and optional chaining is what the code uses. A regex whose dot
+silently ate the `?` produced a confident negative, and a negative from a search is only as
+good as the pattern. The real mechanism is narrower and less damning than the one first
+published.
+
+**And it is already fixed upstream**, which the first version also did not check:
+`fix(signal): detect native bot mentions in group gating` (#96738, 2026-07-13) adds
+`resolveSignalMentionFacts`, comparing each mention against the bot's own account. Present in
+`v2026.7.2-beta.7`, absent in `v2026.7.1-2` (ours) and `v2026.6.34`. So nothing was filed
+upstream for it — it arrives with an upgrade we will do for other reasons.
 
 **`requireMention` was turned on, and then deliberately back off.** The live family group
 carried `false` while the example config argued for `true`, so it was flipped to `true` before

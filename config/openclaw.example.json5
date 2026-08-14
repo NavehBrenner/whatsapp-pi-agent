@@ -97,17 +97,25 @@
           // is not free: read the paragraph below before assuming a mention works the
           // way it looks.
           //
-          // ⚠️ "MENTION" HERE MEANS THE AGENT'S `identity.name` AS LITERAL TEXT, and
-          // a native Signal mention DOES NOT COUNT. The plugin builds
-          // `\b@?<identity.name>\b` with flag "i" from `deriveMentionPatterns`, matches
-          // it against the message body, and hardcodes `hasAnyMention: false` —
-          // `dataMessage.mentions` appears nowhere in it. Core exports
-          // `matchesMentionWithExplicit()` for exactly this and the Signal plugin does
-          // not call it (NVB-30).
+          // ⚠️ "MENTION" HERE MEANS THE AGENT'S `identity.name` AS LITERAL TEXT, and on
+          // 2026.7.1-2 a native Signal mention DOES NOT COUNT.
+          //
+          // Signal sends a mention as U+FFFC in the body plus a `mentions` array. The
+          // plugin does substitute it — `renderSignalMentions` replaces the placeholder
+          // with `@<uuid>`, the target's ACI, NOT their name. Gating then matches
+          // `\b@?<identity.name>\b` (flag "i", from `deriveMentionPatterns`) against
+          // that text, and `@b0c72586-…` contains no "Pi". So the mention is read and
+          // then fails to match, which is not the same as being ignored.
           //
           // So with `identity.name: "Pi"`, typing `@Pi …` works and tapping the
           // assistant in Signal's mention picker does nothing. Note also that the
           // trigger is then the WORD "pi" in any casing — looser than "mention" reads.
+          //
+          // Fixed upstream in the 2026.7.2 beta (`resolveSignalMentionFacts` compares
+          // each mention against the bot's own account); absent from 2026.7.1-2 and
+          // 2026.6.34. Until we upgrade, `groupChat.mentionPatterns` can carry a
+          // pattern matching our own ACI — but it REPLACES the identity-derived
+          // patterns rather than extending them, so it must list both. NVB-30.
           //
           // And the miss is silent: it logs `reason: "no mention"` at VERBOSE only, so
           // at a normal log level the gate says `accepted` and the gateway says
