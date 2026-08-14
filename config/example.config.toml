@@ -97,6 +97,45 @@ uuid = "00000000-0000-0000-0000-000000000000"
 name = "owner"                                     # the pair name: unique everywhere
 # number = "+447700900000"
 
+# One 1:1 per family member. Three conversations, three agents, three profiles' worth
+# of the same bundle — a DM is a conversation whose id is the other party's ACI and
+# whose member set is exactly that person, so these have the same shape as owner-1to1
+# and differ only in who and how much.
+#
+# `family-dm` is narrower than `owner-full`: it is the same tool surface the assistant
+# runs with today, minus the WhatsApp read. Nobody but the owner gets a view of the
+# owner's chats, and a private DM is not a reason to widen that.
+#
+# [[signal.conversations]]
+# label   = "aryeh-1to1"
+# id      = "<aryeh uuid>"
+# members = ["<aryeh uuid>"]
+# agent   = "aryeh"
+# profile = "family-dm"
+# [[signal.conversations.senders]]
+# uuid = "<aryeh uuid>"
+# name = "aryeh"
+#
+# [[signal.conversations]]
+# label   = "aviv-1to1"
+# id      = "<aviv uuid>"
+# members = ["<aviv uuid>"]
+# agent   = "aviv"
+# profile = "family-dm"
+# [[signal.conversations.senders]]
+# uuid = "<aviv uuid>"
+# name = "aviv"
+#
+# [[signal.conversations]]
+# label   = "liron-1to1"
+# id      = "<liron uuid>"
+# members = ["<liron uuid>"]
+# agent   = "liron"
+# profile = "family-dm"
+# [[signal.conversations.senders]]
+# uuid = "<liron uuid>"
+# name = "liron"
+
 # A family group. Everyone listed reaches ONE shared agent holding a narrow profile,
 # except the owner, who overrides both to get their own session with more reach.
 # Uncomment and fill in to add it.
@@ -160,6 +199,14 @@ name  = "owner-full"
 tools = ["whatsapp.read", "calendar.personal.rw", "calendar.family.rw",
          "email.personal.draft", "notes.rw"]
 # send_to = ["self", "family"]
+
+# A family member in their own chat. Shared by all three of them as a NAME, not as a
+# session — each names it from their own conversation, and a profile is a bundle, not
+# an identity. `send_to` stays at the default ["self"]: an agent that can address the
+# family room from a private DM is a way to speak to the room as the assistant.
+# [[agent.profiles]]
+# name  = "family-dm"
+# tools = ["calendar.family.rw", "notes.rw"]
 
 # The owner, in a room other people read. Narrower than owner-full on purpose: a
 # reply here is disclosed to everyone present, so this is an egress boundary and not
