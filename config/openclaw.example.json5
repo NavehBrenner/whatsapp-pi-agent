@@ -89,6 +89,22 @@
         "<base64 groupId from listGroups>": {
           // WHY true: in a shared room everything the assistant says is disclosed to
           // everyone present. Requiring a mention makes being addressed explicit.
+          //
+          // ⚠️ "MENTION" HERE MEANS THE AGENT'S `identity.name` AS LITERAL TEXT, and
+          // a native Signal mention DOES NOT COUNT. The plugin builds
+          // `\b@?<identity.name>\b` with flag "i" from `deriveMentionPatterns`, matches
+          // it against the message body, and hardcodes `hasAnyMention: false` —
+          // `dataMessage.mentions` appears nowhere in it. Core exports
+          // `matchesMentionWithExplicit()` for exactly this and the Signal plugin does
+          // not call it (NVB-30).
+          //
+          // So with `identity.name: "Pi"`, typing `@Pi …` works and tapping the
+          // assistant in Signal's mention picker does nothing. Note also that the
+          // trigger is then the WORD "pi" in any casing — looser than "mention" reads.
+          //
+          // And the miss is silent: it logs `reason: "no mention"` at VERBOSE only, so
+          // at a normal log level the gate says `accepted` and the gateway says
+          // nothing whatsoever. Verified on hardware 2026-08-14.
           requireMention: true,
           // The room's ceiling — nobody in it gets more than this.
           // An {allow|alsoAllow|deny} object, NOT the bare array the docs show.

@@ -102,10 +102,30 @@ creation.
 | Both agents have the tools | `owner` and `family` both report exactly `apply_patch, edit, image_generate, read, session_status, video_generate, web_search, write` |
 | Generation works | `IMG-OK /var/lib/openclaw/.openclaw/media/tool-image-generation/red_bicycle---….jpg` |
 | **Delivery works — the whole point** | a **real Signal DM** asking for a picture returned the image in the chat; `run image_generate:2ac96d79…:ok ended with stopReason=stop`. The CLI cannot prove this hop, it has no channel attached |
+| Delivery works in the family group too | `@Pi make a picture of a red bicycle` → `Here's a red bicycle:` + attachment, `stopReason=stop`, no delivery error — the room the tools were mostly enabled for |
+| `web_search` did not regress | `SEARCH-OK` from the family agent after the config batch |
+| Durable memory survived the session clear | wrote a token through the sandboxed file tools, read it back in a **fresh** session, file present in the real host workspace |
+| NVB-25's sandbox invariants hold | both containers `user=0:0 mem=536870912 pids=256 ro=true caps=[ALL] net=none`; the rootful socket still refuses `openclaw` |
 | `exec` still denied | probe answers `NO_SHELL_TOOL` |
 | `web_fetch` still absent | not in either agent's tool list |
 | Survives a cold boot | power-cycled: signal-cli back as `openclaw` with the socket at the right mode, the nftables rule re-applied by its unit, rootless Docker back under linger, gateway `ready`, Waydroid `RUNNING` on the same IP, tool surface unchanged |
 | Nothing else broke | Waydroid `RUNNING` on 192.168.240.112; reader, gate, gateway, sandbox containers all active |
+
+#### `requireMention` means the agent's name as text, and a native Signal mention is invisible
+
+Turning `requireMention` on made the group stop answering entirely, which read like the media
+change having broken something. It had not. The Signal plugin builds
+`\b@?<identity.name>\b` (flag `"i"`) from the agent's identity, matches it against the message
+**body**, and hardcodes `hasAnyMention: false` — `dataMessage.mentions` appears nowhere in it.
+Core exports `matchesMentionWithExplicit()` for precisely this case and Discord's path uses it;
+Signal's does not.
+
+So `@Pi …` typed as text works, and tapping the assistant in Signal's mention picker does
+nothing. The miss logs `reason: "no mention"` at **verbose only**, so at a normal log level the
+gate says `accepted` and the gateway says nothing at all — the third time this project has met
+a silent no-op, and worth adding to the list of shapes to recognise. Filed as
+[NVB-30](https://linear.app/naveh-brenner/issue/NVB-30); the workaround costs three characters
+and is in force.
 
 **Drift found and closed:** the live family group carried `requireMention: false` while
 `config/openclaw.example.json5` has always argued for `true`. Set to `true` on the box before
