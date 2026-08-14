@@ -320,13 +320,24 @@
         docker: {
           image: "openclaw-sandbox:bookworm-slim", // the default; NOT auto-built
 
+          // NVB-25. Reads like a privilege grant and is the opposite of one: the
+          // daemon is ROOTLESS, so container uid 0 maps to the host's `openclaw`
+          // uid — the gateway's own identity, and nothing more. Without it the
+          // image's `sandbox` user (uid 1000) maps to an unrelated subuid, and the
+          // workspace bind is writable in name only: `write` and `edit` fail with
+          // EACCES, which reads as a broken tool rather than a mapping problem.
+          // capDrop/readOnlyRoot/network still apply — this changes who the
+          // container is, not what it may do.
+          // If the daemon is ever rootful again, DELETE THIS LINE in the same
+          // commit: there it means real root on a host bind mount.
+          user: "0:0",
+
           // "none" is OpenClaw's own default for sandbox containers, stated here
           // because it is load-bearing rather than incidental: the agent's tool
           // calls that reach the network (calendar, mail) are made by the GATEWAY,
           // above the sandbox — the container needs no egress at all. The Pi's
-          // docker daemon is configured with "bridge": "none" to match, so a
-          // container asking for a network fails loudly instead of quietly getting
-          // one.
+          // daemon is rootless (NVB-25), so its networking lives in its own netns
+          // and cannot reach the host's firewall or Waydroid's bridge either way.
           network: "none",
 
           readOnlyRoot: true,
