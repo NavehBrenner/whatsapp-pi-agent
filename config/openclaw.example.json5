@@ -80,7 +80,23 @@
           requireMention: true,
           // The room's ceiling — nobody in it gets more than this.
           // An {allow|alsoAllow|deny} object, NOT the bare array the docs show.
-          tools: { allow: ["read", "ask_user"] },
+          //
+          // ⚠️ THIS CEILING IS WHAT THE AGENT ACTUALLY GETS IN THE ROOM, and it is
+          // easy to set once and forget. It sat at `["session_status"]` after the
+          // ADR 0012 switch, which meant the family agent had durable memory
+          // everywhere except the one place it is actually used — a message in the
+          // group resolved to a single read-only tool, so it could not write
+          // MEMORY.md at all. The agent-level policy looked correct throughout;
+          // only a probe against the real group session key showed it.
+          //
+          // The list below is "everything needed to manage its own state, and
+          // nothing else": the memory path, plus session_status. No exec — that is
+          // denied globally too, and belt-and-braces is right for the shared room.
+          // Outward-facing tools get added deliberately, one at a time, each
+          // answering "what does a successful injection do with this?"
+          tools: {
+            allow: ["session_status", "read", "write", "edit", "apply_patch"],
+          },
 
           // ⛔ STILL NO toolsBySender HERE — but the reason has changed, and the
           // change has NOT been re-verified on hardware. Do not add one on the

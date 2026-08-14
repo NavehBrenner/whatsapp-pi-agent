@@ -54,6 +54,18 @@ sandbox, with durable memory. Each acceptance criterion and what actually proved
 | `exec` denied | probe answers `NO_SHELL_TOOL` |
 | Nothing else broke | Waydroid RUNNING on the same IP; reader, signal-cli, gate all active |
 
+**The group's tool ceiling had to move too, and it was the last thing hiding a broken
+memory path.** `channels.signal.groups[].tools.allow` was `["session_status"]`, set when
+the room's ceiling was deliberately minimal under the old runtime. Every agent-level
+check looked right, and the family agent did have the file tools — but a message *in the
+group*, which is the only way that agent is ever actually reached, resolved to one
+read-only tool. So it had durable memory everywhere except in production. Now
+`["session_status", "read", "write", "edit", "apply_patch"]`: everything needed to manage
+its own state, nothing outward-facing, `exec` still refused (`NO_SHELL_TOOL`) in that
+room. Verified by probing the real group session key rather than the CLI's default
+session — the default session is a different resolution path and would not have caught
+it.
+
 **One subscription permits a device-code login per agent.** `owner` and `family` each hold
 their own `xai/oauth` profile issued to the same account with independent expiries, so ADR
 0012's fallback — letting `main` hold the model credential — was not needed. `main` stays
