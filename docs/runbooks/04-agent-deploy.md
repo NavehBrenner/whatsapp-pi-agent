@@ -233,6 +233,11 @@ sudo waydroid status
 - [ ] Agent does not start on a WhatsApp event — only on a verified Signal message
 - [ ] Sender allowlist rejects messages from any number but mine
 - [ ] **No `send_email` tool exists.** `create_draft` only. Grep for it.
+- [ ] `image_generate` / `video_generate` are enabled, and the reason they pass the tool test
+      is that **they cannot choose a recipient** — the reply goes to the room the turn came
+      from. A successful injection burns quota and puts unwanted imagery in a room that
+      already reads everything the assistant says. If a future media tool takes a
+      destination, it fails this test and does not ship.
 - [ ] Calendar events are created without dispatching invites
 - [ ] Confirmation hook fires on every outbound action and blocks until `YES`
 - [ ] A `YES` is matched to a specific pending action, not treated as a global proceed

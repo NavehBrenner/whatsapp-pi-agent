@@ -267,7 +267,8 @@ and the number loses the account regardless of how good the backups are. Passwor
 
 ## 4. Run as a daemon
 
-JSON-RPC over a unix socket, so nothing listens on the network. The unit lives in the repo
+JSON-RPC over a unix socket for the gate, and over loopback HTTP for the gateway — nothing
+listens on a routable address, which is not the same as nothing listening (see 4b). The unit lives in the repo
 at [`deploy/systemd/signal-cli.service`](../../deploy/systemd/signal-cli.service); install it
 with:
 
@@ -275,9 +276,11 @@ with:
 sudo deploy/install-signal.sh +972XXXXXXXXX
 ```
 
-That creates the `wpa-signal` system user, migrates the account state out of whichever home
-directory `register` left it in, writes the number to `/etc/wpa-signal.env`, and enables the
-unit.
+That creates the `wpa-signal` system user (still the daemon's *group*), migrates the account
+state out of whichever home directory `register` left it in, writes the number to
+`/etc/wpa-signal.env`, installs the firewall rule, and enables the unit. **It now refuses to
+run until the `openclaw` user exists** — since NVB-27 the daemon runs at that uid, so the
+gateway (runbook 04) is a prerequisite of the Signal install rather than a later step.
 
 Three things in that unit are load-bearing:
 
@@ -297,8 +300,90 @@ credentials.
 `wpa-signal`. A phone number is not a secret, but this repo is public and publishing a
 working number invites traffic at exactly the endpoint that triggers privileged actions.
 
-**Its own user.** The account state directory *is* the account — anyone who can read it can
-be the assistant. It has no business sitting in a human's home directory.
+**Its own user — until NVB-27, which is the next section.** The account state directory *is*
+the account: anyone who can read it can be the assistant, and it has no business sitting in a
+human's home directory. It now sits under the *gateway's* uid instead, for a reason worth
+reading before assuming that is a mistake.
+
+## 4a. The uid it runs as, and why it is the gateway's (NVB-27)
+
+`User=openclaw`, `Group=wpa-signal`. Only the user moved.
+
+OpenClaw delivers a generated image by handing this daemon a **path** under
+`~openclaw/.openclaw/media/outbound`, and re-asserts `0700` on `media` on every generation —
+measured, `0710` before a run and `0700` after. So a group grant is undone before the send, a
+watcher racing the chmod is not a design, and the only process that can read the attachment is
+one running as `openclaw`. Without this, `image_generate` fails at the last hop with
+`AttachmentInvalidException … (Permission denied)` after appearing to work.
+
+The cost is real and is recorded in the
+[ADR 0006 amendment](../decisions/0006-two-process-privilege-split.md): the gateway uid can
+now read the account key material. Two costs it *looks* like it also has were already paid —
+the gateway has always received every inbound envelope, and the JSON-RPC port was open to
+every local uid until the firewall rule below.
+
+**Keeping `Group=wpa-signal` is what makes this cheap.** `RuntimeDirectory` and
+`StateDirectory` follow `User:Group`, so the socket stays `openclaw:wpa-signal` and
+`wpa-gate.service` needs no change at all. `StateDirectoryMode=0700` leaves the group no
+execute bit, so the account directory is no more readable to the gate than before.
+
+```bash
+sudo systemctl stop signal-cli.service          # BEFORE the chown, not after
+sudo chown -R openclaw:wpa-signal /var/lib/wpa-signal
+sudo chgrp openclaw /etc/wpa-signal.env
+sudo systemctl start signal-cli.service
+```
+
+Two traps:
+
+- **systemd will not do the chown for you.** It sets ownership on a `StateDirectory` it
+  creates, not on a pre-existing tree. Skip the `chown -R` and the daemon starts and cannot
+  read its own account.
+- **Stop first.** Between the chown and the restart, an inbound message meets `EACCES` on the
+  account store. It is a small window and it is on the one directory worth being careful with.
+
+`ProtectHome=yes` is not in the way: it covers `/home`, `/root` and `/run/user`, and
+openclaw's `HOME` is `/var/lib/openclaw`.
+
+Verify:
+
+```bash
+ps -o user,pid -p "$(systemctl show signal-cli -p MainPID --value)"   # openclaw
+sudo ls -l /run/wpa-signal/socket                    # srwxrwx--- openclaw wpa-signal
+sudo journalctl -u signal-cli | grep 'Accepted new client'
+#   → UnixDomainPrincipal[user=wpa-gate, group=wpa-gate]
+```
+
+## 4b. The JSON-RPC port is not protected by being on loopback
+
+The unit also passes `--http 127.0.0.1:8081`, because OpenClaw's Signal plugin speaks nothing
+else (`wpa-gate` uses the unix socket on the same daemon). **A loopback TCP port has no owner
+check.** From the NVB-20 spike until NVB-27 found it, any local uid could send as the
+assistant and read the whole inbound stream, with no credential — on the most trusted channel
+in the system. The drop-in that opened the port said so in its own comment and nothing was
+done about it for two days.
+
+`wpa-signal-firewall.service` applies `deploy/nftables/wpa-signal-8081.nft`, which admits uid
+0 and uid 991 (`openclaw`) and drops everything else. It is a `Wants=` of the daemon, not a
+`Requires=`: a firewall failure should be a visible failed unit, not a dead control channel.
+
+Three things in that file are load-bearing, and each fails the other way in silence:
+
+| | |
+|---|---|
+| **no `flush ruleset`** | Waydroid's bridge lives in `table inet lxc`; flushing takes Android's networking with it |
+| **output hook, not input** | `meta skuid` is the originating socket's owner and exists only on locally generated packets — on input the rule matches nothing and allows everything |
+| **`oif "lo"`** | without it, every other uid loses outbound connections to port 8081 on *any* host |
+
+```bash
+sudo nft list table inet wpa_signal
+curl -s -o /dev/null -w '%{http_code} %{time_total}s\n' --max-time 6 \
+  http://127.0.0.1:8081/api/v1/rpc -X POST          # as you: 000, times out
+sudo -u openclaw curl -s -o /dev/null -w '%{http_code}\n' \
+  http://127.0.0.1:8081/api/v1/rpc -X POST          # as openclaw: 415, instantly
+```
+
+A `415` is a pass: it means the request reached signal-cli and it disliked the content type.
 
 Cap the JVM heap (`-Xmx256m` via `JAVA_OPTS` — the launcher honours `JAVA_OPTS` and
 `SIGNAL_CLI_OPTS`, not `JAVA_TOOL_OPTIONS`). It'll happily take more than it needs, and
@@ -333,10 +418,14 @@ id of the quoted message, which is what M4's pending-action registry matches on.
 
 Two consequences for this runbook:
 
-- `signal-cli.service` runs with **`UMask=0027`** so the socket is created `srwxr-x---` and
-  the gate can reach it as a member of the `wpa-signal` group. The gate deliberately does not
-  run *as* `wpa-signal`: `/var/lib/wpa-signal` is the account, and the process parsing
-  messages from strangers has no business being able to read it.
+- `signal-cli.service` runs with **`UMask=0007`** so the socket is created `srwxrwx---` and
+  the gate can reach it as a member of the `wpa-signal` group. Group-*writable* is the point:
+  `connect(2)` on a unix socket needs write permission, and `0027` fails `EACCES` in a way
+  that looks exactly like a socket that is not there yet. The gate deliberately does not run
+  *as* the daemon's user: `/var/lib/wpa-signal` is the account, and the process parsing
+  messages from strangers has no business being able to read it. That still holds after the
+  uid move below — the state directory is `0700`, so the group buys the socket and nothing
+  else.
 - The allowlist lives in `config.toml` under `[[signal.conversations]]` — one entry per room,
   each naming its permitted senders and the profile that applies to each of them *there*
   (ADR 0008). An empty table is a startup refusal, not a permissive default. Group entries

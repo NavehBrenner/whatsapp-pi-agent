@@ -11,6 +11,110 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Changed — signal-cli runs at the gateway uid, and the media tools go on (NVB-26 + NVB-27, 2026-08-14)
+
+`image_generate` and `video_generate` are enabled for both agents. They were never broken:
+they registered, generated correctly in ~90s inside the sandbox, and finished cleanly. What
+failed was the last hop — OpenClaw hands signal-cli a **path** under
+`~openclaw/.openclaw/media/outbound`, and signal-cli ran as `wpa-signal`, which could not
+traverse that `0700` chain. No group grant survives it: OpenClaw re-asserts `0700` on `media`
+on every generation (`0710` before a run, `0700` after), so the only process that can read a
+generated attachment is one running as `openclaw`.
+
+So `signal-cli.service` now runs as `openclaw`. [ADR 0006](docs/decisions/0006-two-process-privilege-split.md)
+is amended with the narrowed split and what would reverse it.
+
+**Only `User=` moved. `Group=` stays `wpa-signal`,** which the issue's own plan did not
+anticipate and which removes half the cost it budgeted for. `RuntimeDirectory` and
+`StateDirectory` follow `User:Group`, so the socket is `openclaw:wpa-signal` and `wpa-gate`
+reaches it through the supplementary group it already had — **`wpa-gate.service` did not
+change at all**, and `StateDirectoryMode=0700` still leaves the group no execute bit, so the
+account directory is exactly as unreadable to the gate as it was before. The planned
+`SupplementaryGroups=openclaw` on the gate was not needed and was not applied.
+
+#### Unflattering: the firewall rule protecting the control channel did not exist
+
+NVB-27's checklist said to *confirm* that `tcp dport 8081 meta skuid { 0, 991 }` was still
+correct after the uid change. There was no such rule. There was no rule on that port at all —
+the only nftables table on the box is `inet lxc`, and `iptables-legacy` was empty.
+
+`signal-cli.service.d/10-http.conf` — the NVB-20 spike drop-in that opened the port — flagged
+this in its own comment ("an HTTP port is reachable by ANY local user. Revisit before this is
+permanent") and it was never revisited. So since the spike, **any local uid could send as the
+assistant and read the entire inbound stream**, with no credential, on the machine's most
+trusted channel. Measured after the fix: uid 1000 gets a dropped SYN and a 6s timeout, uid
+991 gets an HTTP response in 2.6ms.
+
+This also changes the honest accounting for the uid change itself. Two of the three costs the
+issue listed were **already paid**: the gateway has always seen every inbound envelope (it is
+a JSON-RPC client of the same daemon), and sending as the assistant was open to every local
+uid until today. What actually moves is the account **key material at rest** — which is the
+durable half, and the half worth writing an ADR amendment about.
+
+The rule ships as `deploy/nftables/wpa-signal-8081.nft` plus a oneshot unit, rather than as a
+live-only change. Three things in it are load-bearing and each fails silently the other way:
+**no `flush ruleset`** (it would take Waydroid's lxc bridge with it), the **output** hook
+(`meta skuid` is only available on locally generated packets — the same rule on input matches
+nothing and allows everything), and **`oif "lo"`** (without it, every other uid loses
+outbound connections to port 8081 on any host).
+
+`--http 127.0.0.1:8081` also moved out of the spike drop-in and into the unit. It is not a
+spike any more; it is the control channel, and a drop-in that silently wins over the unit's
+`ExecStart` is a bad place for it.
+
+#### What the change needed on the box
+
+- `chown -R openclaw:wpa-signal /var/lib/wpa-signal`, **explicitly**. systemd sets ownership
+  on a `StateDirectory` it creates but does not recursively chown a pre-existing one, so the
+  unit alone leaves the daemon unable to read its own account.
+- Stop the daemon *before* the chown. The window between changing ownership and restarting is
+  where an inbound message meets `EACCES` on the account store.
+- `/etc/wpa-signal.env` regrouped to `openclaw`. Cosmetic — systemd reads `EnvironmentFile`
+  as root before dropping privileges — but "who can read this" should have one answer.
+- `ProtectHome=yes` on the unit is *not* in the way, because openclaw's `HOME` is
+  `/var/lib/openclaw`. That is the same directive that cost NVB-25 an afternoon in the other
+  direction, where the target was under `/run/user`.
+
+#### Config, and the layer that hides
+
+Six paths, all through `openclaw config set --batch-file` (the live file is plain JSON and a
+hand edit is stripped on the next write): the two generation models, `timeoutSeconds: 600`,
+and `image_generate`/`video_generate` added to `tools.alsoAllow`, `tools.sandbox.tools.allow`
+and **the family group's `tools.allow` ceiling**. That last one is the layer that hid a broken
+memory path in NVB-23 — every agent-level check reads correct while the only path production
+uses resolves narrower.
+
+`timeoutSeconds: 600` is part of the media settings, not a general timeout. Generation is
+async and the default run timeout cuts the completion run off mid-flight, which trips an
+auth-profile cooldown that breaks *later*, unrelated turns — a symptom that appears nowhere
+near its cause.
+
+Session stores were archived and cleared afterwards, because tool policy binds at session
+creation.
+
+#### Verified on hardware, 2026-08-14
+
+| Criterion | Evidence |
+|---|---|
+| Daemon runs at the gateway uid | `ps -o user` → `openclaw`; socket `srwxrwx--- openclaw wpa-signal` |
+| The gate is unaffected | `wpa-gate.service` unchanged; `Accepted new client connection 0: UnixDomainPrincipal[user=wpa-gate…]` after restart |
+| 8081 is uid-restricted | uid 1000 → dropped, 6s timeout; uid 991 → HTTP 415 in 2.6ms |
+| Both agents have the tools | `owner` and `family` both report exactly `apply_patch, edit, image_generate, read, session_status, video_generate, web_search, write` |
+| Generation works | `IMG-OK /var/lib/openclaw/.openclaw/media/tool-image-generation/red_bicycle---….jpg` |
+| `exec` still denied | probe answers `NO_SHELL_TOOL` |
+| `web_fetch` still absent | not in either agent's tool list |
+| Nothing else broke | Waydroid `RUNNING` on 192.168.240.112; reader, gate, gateway, sandbox containers all active |
+
+**Also observed, not changed:** the live family group carries `requireMention: false` while
+`config/openclaw.example.json5` argues for `true`. Left alone rather than flipped inside an
+unrelated change, but it is drift between the shipped config and the box.
+
+**The Pi's WiFi dropped twice during this work**, taking SSH and the uplink with it. It is
+worth recording only because signal-cli's failure mode looks alarming and is not: the startup
+account check exits `3/NOTIMPLEMENTED` with `Error while checking account …: Closed
+unexpectedly`, and `Restart=on-failure` retries until the link returns. The same line appears
+in the journal for 2026-08-11 17:26, the minute the backup's DNS also failed.
+
 ### Changed — the sandbox daemon runs as the gateway now (NVB-25, 2026-08-14)
 
 The `openclaw` uid is **out of the `docker` group**, and the rootful daemon is stopped,

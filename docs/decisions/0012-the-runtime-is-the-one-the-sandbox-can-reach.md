@@ -211,27 +211,34 @@ it must not be cited again without rechecking Anthropic's own support articles.
   throughout. Recorded because the mistake, not the setting, is the reusable lesson —
   **a capability that is missing is not evidence of what removed it.**
 
-- **`image_generate` and `video_generate` generate correctly but cannot be delivered,
-  because of ADR 0006's uid split.** The tools register, produce an image in ~90s inside
-  the sandbox, and the completion run ends with `stopReason=stop`. Then OpenClaw hands
-  signal-cli a *path* under `~/.openclaw/media/outbound`, and our signal-cli — a separate
-  uid by design (runbook 03) — cannot traverse that `0700` chain:
-  `AttachmentInvalidException … (Permission denied)`.
+- **`image_generate` and `video_generate` generate correctly but could not be delivered,
+  because of ADR 0006's uid split — resolved 2026-08-14 by narrowing that split.** The
+  tools register, produce an image in ~90s inside the sandbox, and the completion run ends
+  with `stopReason=stop`. Then OpenClaw hands signal-cli a *path* under
+  `~/.openclaw/media/outbound`, and our signal-cli — a separate uid by design (runbook 03)
+  — could not traverse that `0700` chain: `AttachmentInvalidException … (Permission
+  denied)`.
 
   Granting the Signal uid traverse-only access does not hold: **OpenClaw re-asserts
   `0700` on `media` on every generation** (measured: `0710` before a run, `0700` after),
   so the grant is undone before the send and a watcher would race it. OpenClaw assumes
-  it owns the Signal transport at its own uid; our split is what makes that untrue.
+  it owns the Signal transport at its own uid; our split is what made that untrue.
 
   Recorded here because it is the same shape as the rest of this ADR — **a deliberate
   isolation boundary colliding with a capability that assumes there is none** — and
-  because the resolution is a real fork rather than a setting: relax the uid split for
-  media, get the fix upstream, or accept text-only replies. Tracked in NVB-26; the tools
-  stay out of the shipped config rather than shipping something that always fails at the
-  last step.
+  because the resolution was a real fork rather than a setting: relax the uid split for
+  media, get the fix upstream, or accept text-only replies.
 
-  So the ADR's original consequence was two-thirds right. `web_search` does arrive free;
-  the media tools arrive and then cannot leave the machine.
+  **Taken deliberately in NVB-27: signal-cli now runs at the gateway uid**, only `User=`
+  moving and `Group=wpa-signal` staying so the gate is untouched. The
+  [ADR 0006 amendment](0006-two-process-privilege-split.md) carries the reasoning, including
+  the two costs that turned out to be already paid and the one that is real — the account
+  key material at rest. Upstream delivering attachments as bytes over JSON-RPC, or a
+  configurable outbound media directory, reverses it.
+
+  So the ADR's original consequence was two-thirds right, and the last third cost a uid
+  boundary rather than a config line. `web_search` does arrive free; the media tools
+  arrive, and getting them off the machine is what had a price.
 - **NVB-16 becomes a `before_tool_call` plugin** returning `requireApproval`, routed by
   `approvals.plugin`. Plugin approvals are a separate family from exec approvals and can be
   delivered to a chosen person, which is what makes a per-tool "ask first" gate possible at
