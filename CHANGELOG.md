@@ -11,6 +11,75 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Changed — the runtime switch itself (NVB-23, 2026-08-14)
+
+ADR 0012 said what to run on. This is the executing of it, and the config now says
+`xai/grok-4.3` on OpenClaw's built-in runtime with `agentRuntime.id: "openclaw"`
+**pinned**. `auto` prefers a registered harness when one supports the provider, so the
+pin is what stops a future CLI install from silently moving the runtime back out from
+under the sandbox.
+
+- **`agents.defaults.cliBackends` is deleted.** It existed to floor Claude Code's own
+  `Bash`/`Read`/`Write`, which OpenClaw's `tools.*` policy did not reach. With no CLI
+  backend there is no host subprocess to floor. The lesson that outlived it is kept in
+  the config as a comment: tool policy binds at session creation.
+- **`sandbox.workspaceAccess` is `"rw"`, which was a live bug at `"none"`.** `none`
+  gives tools a throwaway directory under `~/.openclaw/sandboxes`, so `MEMORY.md` is
+  written and silently lost; `ro` disables `write`/`edit`/`apply_patch` outright. Only
+  `rw` delivers the durable memory the switch exists to restore.
+- **`read`/`write`/`edit`/`apply_patch` are deliberately not denied.** They are the
+  memory path, and what makes them safe is the sandbox rather than the policy list —
+  they are OpenClaw's own tools, so they execute inside the container against a
+  workspace bind-mounted at `/workspace`. If `sandbox.mode` ever returns to `"off"`,
+  they must be denied again in the same commit. The two settings are one decision.
+- **`web_search` stays stripped by `minimal` for now**, against ADR 0012's note that
+  the xAI credential powers it for free. Adding a content-ingestion path in the same
+  change as a runtime switch means a regression in either cannot be attributed to
+  either. It belongs with NVB-18's injection smoke test.
+- `sandbox.docker` hardening: `network: "none"`, `readOnlyRoot`, `capDrop: ["ALL"]`,
+  `pidsLimit: 256`, `memory: "512m"`, `tmpfs: ["/tmp"]`.
+
+### Verified on hardware, 2026-08-14 (NVB-23) — the container runtime
+
+The ADR assumed a sandbox backend existed. **There was none.** OpenClaw registers
+exactly two — `docker` and `ssh` — and shells out to `docker` on PATH with no
+binary-override key in the schema. Nothing on the Pi provided it, so `sandbox.mode:
+"all"` would have had nothing to run in. Four findings, all of which cost time:
+
+- **Docker's default startup is what this project spent a day avoiding.** It installs a
+  `DOCKER-USER` chain and flips the `FORWARD` policy to DROP — the documented reason Q6
+  leaned toward rootless Podman, because Waydroid's networking would have been
+  collateral. `"iptables": false`, `"ip6tables": false` and `"bridge": "none"` in
+  `/etc/docker/daemon.json`, **written before the first daemon start**, avoid it
+  entirely. Checked before and after: `FORWARD` still ACCEPT, no `docker0`, Waydroid
+  still RUNNING on the same IP. Sandbox containers run with no network anyway, which is
+  OpenClaw's own default and correct here — the tool calls that reach the network are
+  made by the gateway, above the sandbox.
+- **Every registry pull failed with `connect: network is unreachable`, and the network
+  was fine.** The Pi has no global IPv6 address, only link-local; dockerd's Go resolver
+  prefers AAAA and does not fall back, while glibc orders IPv4 first — `curl -4` reached
+  the registry throughout. A one-line drop-in setting `GODEBUG=netdns=cgo` fixes it.
+  Worth recording because the symptom points squarely at the uplink and the uplink is
+  not the problem.
+- **The sandbox image is not shipped in the npm package and is not auto-built.**
+  OpenClaw fails fast pointing at `scripts/sandbox-setup.sh`, which exists only in a
+  source checkout. The inline Dockerfile in the shipped docs is the npm path; it needs
+  `--network host` when there is no bridge. `python3` in that image is load-bearing —
+  it backs the write/edit helpers, which is why OpenClaw refuses to substitute plain
+  `debian:bookworm-slim`.
+- **The `openclaw` uid is now in the `docker` group, which is root-equivalent on this
+  host.** Recorded as a decision rather than a detail: it widens what a compromised
+  *gateway* reaches, which ADR 0012 scopes out to NVB-22 on the grounds that injection
+  into an *agent* is the likelier event. That reasoning is unchanged but its price is
+  now higher, and NVB-22's trigger should be read with that in mind.
+
+Also confirmed while checking that the Pi was healthy: **the reader's cursor and its
+liveness file measure different things**, and the gap between them is not a fault. The
+cursor advances on allowlisted rows only (46185, unchanged since 2026-08-13 08:53);
+liveness records the DB's max `_id` (46444). The 259-row gap plus a `msgstore.db-wal`
+written minutes earlier is the signature of a healthy reader and a silent allowlist —
+which is the NVB-6 finding, now three days old and unlikely to change by waiting.
+
 ### Added
 
 - **The runtime is the one the sandbox can reach**

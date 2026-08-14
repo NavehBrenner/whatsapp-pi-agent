@@ -1,7 +1,8 @@
 // Copy to ~/.openclaw/openclaw.json on the Pi and fill in the uuids.
 //
-// VALIDATED against `openclaw config schema` (OpenClaw 2026.7.1-2, 2026-08-12) with
-// `openclaw config validate`. Do not hand-edit a key you have not seen in the schema —
+// VALIDATED against `openclaw config schema` (OpenClaw 2026.7.1-2, re-checked
+// 2026-08-14 for the ADR 0012 runtime switch) with `openclaw config validate`.
+// Do not hand-edit a key you have not seen in the schema —
 // the prose docs are stale in at least three places and were wrong here before this
 // file was checked (NVB-20 phase 0.1). To re-check after an OpenClaw upgrade:
 //
@@ -81,20 +82,28 @@
           // An {allow|alsoAllow|deny} object, NOT the bare array the docs show.
           tools: { allow: ["read", "ask_user"] },
 
-          // ⛔ NO toolsBySender HERE, DELIBERATELY. Verified on hardware 2026-08-12
-          // by instrumenting matchToolsBySenderPolicy: it resolves on the dispatch
-          // path, but a CLI-backed agent is served over the MCP loopback, whose
-          // context is rebuilt from HTTP headers that carry no sender. So the
-          // deciding call sees no identity, falls through to "*", and any per-sender
-          // rule here is silently inert — the dangerous kind of inert, since a
-          // narrowing rule that never matches fails OPEN.
+          // ⛔ STILL NO toolsBySender HERE — but the reason has changed, and the
+          // change has NOT been re-verified on hardware. Do not add one on the
+          // strength of this comment alone.
           //
-          // Fixed upstream, but only in the beta channel (v2026.7.2-beta.7 onward);
-          // npm `latest` is 2026.7.1-2. The beta was tried and rolled back: it drops
-          // `agents.defaults.cliBackends`, and without those flags the Claude CLI's
-          // native Bash is ungoverned by OpenClaw tool policy. Until a stable release
-          // carries the fix AND keeps a tool-flag surface, everyone in a room shares
-          // ONE tool set — the line above. Re-check with NVB-21.
+          // The original finding (2026-08-12, by instrumenting
+          // matchToolsBySenderPolicy): it resolves on the dispatch path, but a
+          // CLI-backed agent is served over the MCP loopback, whose context is
+          // rebuilt from HTTP headers that carry no sender. The deciding call saw no
+          // identity, fell through to "*", and any per-sender rule was silently
+          // inert — the dangerous kind of inert, since a narrowing rule that never
+          // matches fails OPEN.
+          //
+          // ADR 0012 removed the CLI backend, so the loopback bridge is no longer in
+          // that path and the premise of that finding no longer holds. What it does
+          // NOT establish is that toolsBySender now works: nobody has re-run the
+          // instrumentation on the built-in runtime. Until someone does (NVB-21),
+          // everyone in a room shares ONE tool set — the `tools` line above — and
+          // that is a deliberate ceiling rather than an unknown.
+          //
+          // Also note the beta rollback recorded here previously is moot:
+          // v2026.7.2-beta.7 dropped `agents.defaults.cliBackends`, which was a
+          // blocker only while we depended on that block. We no longer do.
         },
       },
 
@@ -161,26 +170,41 @@
   // -------------------------------------------------------------------------
   // Model auth. NOT set here — credentials never live in this file.
   //
-  // We start on the Claude CLI, the sanctioned subscription-backed path:
+  // xAI OAuth, per agent, and the provider choice is an ISOLATION decision rather
+  // than a billing or quality one (ADR 0012). The rule it comes from:
   //
-  //     openclaw models auth login --provider anthropic --method cli --set-default
+  //     the runtime is the one the sandbox can reach.
   //
-  // OpenClaw shells out to `claude -p` and lets that subprocess authenticate as
-  // itself against the host's existing login, so no token is pasted anywhere and
-  // usage draws on the Pro/Max allowance rather than metered API spend.
+  // Anthropic cannot satisfy that. For Anthropic, OAuth *is* Claude CLI reuse, the
+  // CLI runs as a host subprocess beside the gateway, and OpenClaw's sandbox never
+  // touches it — so subscription auth and sandbox coverage are structurally
+  // exclusive there. Providers with OpenClaw-managed OAuth and NO registered
+  // harness — xAI/Grok, Qwen — run on the built-in runtime, where the sandbox
+  // applies. That is the whole reason this file says xai.
   //
-  // The thing to watch is not technical: a family group means people other than the
-  // account holder cause requests against the owner's limits, and OpenClaw's own
-  // guidance is to use an API key for shared production automation. Auth is per
-  // agent, so the family agent can move to a key while the owner's stays on the
-  // subscription — that is the first switch to make, not an all-or-nothing one.
+  //     openclaw models auth --agent <id> login --provider xai --method oauth
   //
-  // Alternatives, in the order we would reach for them:
-  //   1. anthropic API key      metered ($5/$25 per MTok on Opus 5), no ambiguity.
-  //   2. xai OAuth              SuperGrok / X Premium; OpenClaw's *recommended* xAI
-  //                             path. Eligibility is xAI's call.
-  //   3. openai OAuth           ChatGPT/Codex subscription, supported outside Codex.
-  //   4. qwen / minimax / z.ai  flat-rate coding plans, well under per-token rates.
+  // Note the flag order: `--agent` is an option on `models auth`, so it comes
+  // BEFORE the `login` subcommand. Put it after and OpenClaw rejects it outright.
+  // The flow is device-code (no localhost callback) and REQUIRES AN INTERACTIVE
+  // TTY — there is no form a generator can emit, unlike the claude-cli pin this
+  // replaces. xAI labels the consent app "Grok Build"; that is OpenClaw's shared
+  // OAuth client, not a wrong app.
+  //
+  // EVERY AGENT NEEDS ITS OWN LOGIN. Credential read-through is two-tier — local
+  // agentDir, then the default agent's store — and `main` is deliberately empty
+  // (see agents.list below), so there is nothing to inherit. If one subscription
+  // refuses several device-code logins, the narrow fix is to let `main` hold THE
+  // MODEL CREDENTIAL ONLY: every agent needs inference, a shared subscription
+  // under a provider-side cap is already accepted, and tool credentials — the part
+  // that was ever load-bearing — stay out of main.
+  //
+  // SecretRefs cannot help here: an OAuth-mode auth profile combined with SecretRef
+  // input fails activation.
+  //
+  // Fallbacks, if xAI OAuth is refused for this account: Qwen OAuth on the same
+  // reasoning, or reopen ADR 0012. NOT an API key by default — that is a billing
+  // decision wearing an isolation decision's clothes.
   //
   // NOT available, checked 2026-08-12: Google. Consumer Gemini CLI "Login with
   // Google" ended 2026-06-18 and Antigravity's terms prohibit third-party tools, so
@@ -191,76 +215,79 @@
   // -------------------------------------------------------------------------
   agents: {
     defaults: {
-      model: { primary: "anthropic/claude-opus-5" },
+      // xAI's own default model ref, read out of dist (XAI_DEFAULT_MODEL_ID).
+      model: { primary: "xai/grok-4.3" },
 
       // ---------------------------------------------------------------------
-      // THE FLOOR UNDER CLAUDE CODE'S OWN TOOLS. Without this the agent has
-      // Bash/Write/Edit and OpenClaw's tools.* policy does not touch them —
-      // measured on hardware 2026-08-12, and it ran `id` as a NOPASSWD:ALL user.
+      // THERE IS NO `cliBackends` BLOCK, AND ITS ABSENCE IS DELIBERATE.
       //
-      // `--tools <names>` is a DEFAULT-DENY ALLOWLIST over Claude Code's built-in
-      // set. `--disallowedTools` is a deny list and propagates to subagents
-      // ("disabled for this session, in subagents as well as here").
-      // `--allowedTools` is only auto-approval — it restricts nothing, which is why
-      // OpenClaw's own default (`--allowedTools mcp__openclaw__*`) left Bash live.
+      // It used to hold a `--tools` floor under Claude Code's own Bash/Read/Write,
+      // because OpenClaw's tools.* policy did not touch them — measured on hardware
+      // 2026-08-12, where the agent ran `id` as a NOPASSWD:ALL user and read this
+      // very config, reporting a plaintext gateway.auth.token out of it.
       //
-      // Do NOT try to express "no tools": `--tools ""` and `--tools=` were both
-      // tested and neither disables anything. Name a minimal set instead. And
-      // `--tools` takes BUILT-IN names only — a `mcp__openclaw__*` glob hung the
-      // turn for 282s and ended in FailoverError.
+      // That floor is gone because the thing it was propping up is gone. `cliBackends`
+      // governs CLI backends only; on the built-in runtime there is no host
+      // subprocess to floor. If you find yourself re-adding it, you have switched
+      // back to a CLI runtime — go read ADR 0012 first, because the sandbox does not
+      // reach one.
       //
-      // WHY `TodoWrite` AND NOT `Read`: with `--tools Read` the agent read
-      // arbitrary absolute paths as the gateway uid — /etc/passwd, and this very
-      // config, out of which it reported a plaintext gateway.auth.token. That uid
-      // owns EVERY agent's auth store, so a file-reading tool defeats per-agent
-      // credential isolation outright. Naming a builtin the CLI does not have
-      // grants nothing at all, which is the closest thing to "no tools" that works.
-      //
-      // Two mechanics, both measured, both counter-intuitive:
-      //   * `--disallowedTools` does NOT override `--tools`. The allowlist wins, so
-      //     a capability must LEAVE the allowlist; adding it to the deny list is a
-      //     no-op. (`Read` appears in both lists below; only its absence above did
-      //     the work.)
-      //   * Tool policy binds at SESSION CREATION. Tightening this leaves existing
-      //     sessions on the old capability set until their session store is
-      //     cleared — a fresh agent had one tool while a resumed one still had
-      //     `Read`. Whatever regenerates this config must clear affected sessions.
-      //
-      // cliBackends is GLOBAL — the schema has no per-agent equivalent. So this is a
-      // fixed floor for every agent, and all per-(conversation, sender) capability
-      // lives in the OpenClaw MCP layer below, where policy actually discriminates.
-      //
-      // The base args replicate OpenClaw's own defaults; only the three tool flags
-      // are ours. Keep the rest verbatim or the invocation breaks.
+      // The lesson that outlived the block: TOOL POLICY BINDS AT SESSION CREATION.
+      // Tightening it leaves existing sessions on the old capability set until their
+      // session store is cleared — a fresh agent had one tool while a resumed one
+      // still had `Read`. Whatever regenerates this config must clear affected
+      // sessions.
       // ---------------------------------------------------------------------
-      cliBackends: {
-        "claude-cli": {
-          command: "claude", // required, even when only overriding args
-          args: [
-            "-p", "--output-format", "stream-json", "--include-partial-messages",
-            "--verbose", "--setting-sources", "user",
-            "--tools", "TodoWrite",
-            "--allowedTools", "mcp__openclaw__*",
-            "--disallowedTools", "Bash,Write,Edit,NotebookEdit,Agent,Skill,ScheduleWakeup,CronCreate,Monitor",
-          ],
-          resumeArgs: [
-            "-p", "--output-format", "stream-json", "--include-partial-messages",
-            "--verbose", "--setting-sources", "user",
-            "--tools", "TodoWrite",
-            "--allowedTools", "mcp__openclaw__*",
-            "--disallowedTools", "Bash,Write,Edit,NotebookEdit,Agent,Skill,ScheduleWakeup,CronCreate,Monitor",
-            "--resume", "{sessionId}",
-          ],
-        },
-      },
 
       sandbox: {
         // WHY "all", not the "off" default: the container IS the enforcement
         // (ADR 0010). Without it a tool is refused by name instead of being absent.
+        //
+        // This line only became true with ADR 0012. Under the previous claude-cli
+        // pin it governed nothing that executed — OpenClaw sandboxes its own six
+        // tools (read, write, edit, apply_patch, exec, process) and the CLI's
+        // natives ran beside the gateway on the host regardless.
         mode: "all",
         scope: "agent", // one container per agent id (default, stated on purpose)
-        backend: "docker",
-        workspaceAccess: "none",
+        backend: "docker", // the only other registered backend is "ssh"
+
+        // MUST BE "rw". The three values are not shades of the same thing:
+        //   none  (default) → tools see a THROWAWAY dir under ~/.openclaw/sandboxes,
+        //                     so MEMORY.md is written and silently lost
+        //   ro              → workspace at /agent, and write/edit/apply_patch are
+        //                     DISABLED outright
+        //   rw              → workspace at /workspace, read-write
+        // The agent's own workspace is bind-mounted in: the sandbox does not cut the
+        // agent off from its own files, it cuts it off from everything else. Durable
+        // memory is the capability this whole ADR exists to restore, so "rw" it is.
+        workspaceAccess: "rw",
+
+        // Left at the default "spawned" on purpose. It force-clamps session
+        // visibility to `tree` for sandboxed callers, which is what keeps
+        // cross-agent messaging off even if tools.sessions.visibility says
+        // otherwise. Cross-agent work is deferred (Q6); do not loosen this without
+        // reading that section first.
+        // sessionToolsVisibility: "spawned",
+
+        docker: {
+          image: "openclaw-sandbox:bookworm-slim", // the default; NOT auto-built
+
+          // "none" is OpenClaw's own default for sandbox containers, stated here
+          // because it is load-bearing rather than incidental: the agent's tool
+          // calls that reach the network (calendar, mail) are made by the GATEWAY,
+          // above the sandbox — the container needs no egress at all. The Pi's
+          // docker daemon is configured with "bridge": "none" to match, so a
+          // container asking for a network fails loudly instead of quietly getting
+          // one.
+          network: "none",
+
+          readOnlyRoot: true,
+          capDrop: ["ALL"],
+          pidsLimit: 256,
+          memory: "512m",
+          // readOnlyRoot needs somewhere writable that is not the workspace.
+          tmpfs: ["/tmp"],
+        },
       },
     },
     // It is `agents.list` (an array of objects each carrying `id`), NOT the
@@ -364,17 +391,51 @@
       "exec", // no shell. Denying write/edit does NOT make exec read-only.
       "process",
       "terminal",
+      // Denied even though ADR 0012 notes the xAI credential would power it for
+      // free. Free is not the test; "what does a successful injection do with
+      // this" is, and the answer for a code runner is the same as for a shell.
       "code_execution",
       "browser",
       "screen",
     ],
+
+    // ⚠️ READ, WRITE, EDIT AND APPLY_PATCH ARE NOT DENIED, ON PURPOSE.
+    //
+    // They are the memory path. Memory is plain Markdown in the agent workspace —
+    // MEMORY.md, memory/YYYY-MM-DD.md — written with an ordinary file-write tool,
+    // so denying the file tools means the agent cannot remember anything.
+    // (`compaction.memoryFlush` does not rescue that: it is a silent agentic turn
+    // that prompts the model to write, needing the very tool that would be absent.)
+    //
+    // What makes that safe is not this list — it is the sandbox above. These four
+    // are OpenClaw's own tools, so they execute INSIDE the container, against a
+    // workspace bind-mounted at /workspace. `write` accepting an absolute path is
+    // harmless when the absolute path is inside a container that holds nothing
+    // else. Under the old claude-cli pin the same tools ran on the host as the
+    // gateway uid, which is why they were unusable there and why ADR 0012 is a
+    // runtime change rather than a policy change.
+    //
+    // So: if sandbox.mode ever goes back to "off", these must be denied again in
+    // the same commit. The two settings are one decision.
+
+    // `web_search` stays stripped by `minimal` for now. ADR 0012 notes the xAI
+    // credential powers it with no separate key and that the least-trusting profile
+    // is exactly what it is for — that is a real argument, and it belongs to
+    // NVB-18, not here. Adding a new content-ingestion path in the same change as a
+    // runtime switch means a regression in either one cannot be attributed to
+    // either one. Widen with `alsoAllow: ["web_search"]` when the injection smoke
+    // test exists to catch what it lets in.
+
     elevated: { enabled: false }, // WHY: exec is denied; this closes the escape hatch
   },
 
   // -------------------------------------------------------------------------
   // TOOL NAMES ARE RUNTIME-DEPENDENT — the trap this config cannot express.
   //
-  // Observed 2026-08-12 with the claude-cli runtime:
+  // This is why a runtime switch is never just a runtime switch: every allow and
+  // deny above is a bet that the name still resolves. Observed 2026-08-12 under the
+  // claude-cli runtime we have now left, and the shape of the warning is the part
+  // that generalises, not the specific tool:
   //
   //   WARN group tools.allow allowlist contains unknown entries (read). These
   //   entries are shipped core tools but unavailable in the current
@@ -408,16 +469,25 @@
   },
 
   // -------------------------------------------------------------------------
-  // Route the anthropic provider through the locally installed Claude CLI, so
-  // `claude -p` authenticates as itself against the host login. This is the
-  // declarative form of `openclaw models auth login --provider anthropic
-  // --method cli`, which refuses to run without an interactive TTY — so this is the
-  // only form a generator can emit. The schema names "claude-cli" as a supported
-  // CLI backend alias. Verified end to end on hardware 2026-08-12.
+  // THE PIN IS THE POINT (ADR 0012).
+  //
+  // `agentRuntime.id` defaults to "auto", and auto PREFERS A REGISTERED HARNESS
+  // when one supports the provider. Registered harness ids are codex, claude-cli,
+  // github-copilot and google-gemini-cli; the built-in runtime is "openclaw". So
+  // leaving this at auto is not a neutral choice — install a CLI that claims the
+  // provider and the runtime silently moves out from under the sandbox.
+  //
+  // xAI has no registered harness today, so auto would resolve to "openclaw"
+  // anyway. Pin it regardless: this config should express which runtime we require,
+  // not which one we happen to get.
+  //
+  // The question to ask of any future runtime change, before any other question:
+  // DOES THE SANDBOX REACH THE TOOLS THAT ACTUALLY EXECUTE? No amount of tool
+  // policy above it substitutes.
   // -------------------------------------------------------------------------
   models: {
     providers: {
-      anthropic: { agentRuntime: { id: "claude-cli" } },
+      xai: { agentRuntime: { id: "openclaw" } },
     },
   },
 
