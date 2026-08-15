@@ -11,6 +11,47 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — deleting the refresh key unregistered the whole provider on the runner (2026-08-15)
+
+`deploy/push-opencode-auth.sh` now blanks the refresh token (`.refresh = ""`)
+instead of deleting the key. Found by another session, which got past the App-token
+failure and straight into the next one.
+
+opencode's OAuth credential schema declares `refresh: Schema.String` — **required**,
+unlike the `Schema.optional` fields beside it — and the loader is
+`Record.filterMap(data, v => Result.fromOption(decode(v), () => undefined))`, which
+*drops* a credential that fails to decode with no error, no warning and no log line.
+So `del(.refresh)` unregistered the `xai` provider entirely on the runner, and
+`getModel` then built its suggestions from the static catalog:
+
+```
+Model not found: xai/grok-4.6. Did you mean: grok-4.6, grok-4.6-fast?
+```
+
+A model-not-found error, naming the model that was requested, two layers from a
+credential shape. The model string was never wrong. Verified against opencode
+v1.18.18, `packages/opencode/src/auth/index.ts`.
+
+An empty string satisfies the schema and is exactly as useless to a runner as an
+absent key — the containment is unchanged.
+
+#### Unflattering: the guard enforced the bug
+
+The original didn't just strip the key, it **asserted the key was gone** and refused
+to publish otherwise. So the check written to protect the credential was pinning the
+broken shape in place, and anyone who fixed the transform would have been stopped by
+the guard with a message insisting they had leaked a token.
+
+The guard now asks the question that survives the change — does the real refresh
+token appear anywhere in the payload — plus a check that the local store has one at
+all, since an empty needle matches every string and would otherwise refuse forever.
+
+That is three failures today from the same family: a grant that appears to grant and
+does not (`--tools=create_issue`), a policy layer that silently replaces another
+(`alsoAllow`), and now a credential silently dropped for failing a schema. All three
+were invisible in config that validated clean, and all three surfaced as an error
+about something else entirely.
+
 ### Fixed — the LAN resolver cannot serve Go, and "DNS blip" hid it for a day (2026-08-15)
 
 Every statically linked Go binary on this Pi was failing to resolve `api.github.com`.

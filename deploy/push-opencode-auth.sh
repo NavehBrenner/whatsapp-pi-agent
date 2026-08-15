@@ -76,14 +76,33 @@ if (( exp <= now + 3600000 )); then
   exit 1
 fi
 
-# Rule 3, and it is the containment: a runner holding no refresh token cannot
-# rotate ours, so the worst case is one CI run returning 401 rather than this box
-# losing its login to a machine we do not control. Stripped across every provider,
-# not just xai, and then asserted — a del() that silently matched nothing would
-# publish the live refresh token to a public repo's secret store.
-runner_auth=$(jq -c 'map_values(del(.refresh))' "$auth")
+# Rule 3, and it is the containment: a runner holding no usable refresh token
+# cannot rotate ours, so the worst case is one CI run returning 401 rather than this
+# box losing its login to a machine we do not control.
+#
+# ⚠️ BLANK THE KEY, DO NOT DELETE IT. opencode's OAuth credential schema declares
+# `refresh: Schema.String` — required, unlike the `Schema.optional` fields beside it
+# — and the loader is `Record.filterMap(data, v => Result.fromOption(decode(v)))`,
+# which DROPS a credential that fails to decode with no error, no warning and no log
+# line. So a deleted key silently unregisters the whole provider on the runner, and
+# the failure surfaces two layers away as
+#
+#     Model not found: xai/grok-4.6. Did you mean: grok-4.6, grok-4.6-fast?
+#
+# because getModel falls back to suggesting from the static catalog. The model string
+# was never wrong. An empty string decodes fine and is exactly as useless to a runner
+# as an absent one. Verified against opencode v1.18.18, auth/index.ts.
+runner_auth=$(jq -c 'map_values(.refresh = "")' "$auth")
+
+# The guard has to change meaning along with the transform: "is the key gone" is now
+# the wrong question, because the key is supposed to be there. Ask the one that
+# matters — does the real token appear anywhere in what we are about to publish.
+real_refresh=$(jq -r '.xai.refresh // ""' "$auth")
+case "$real_refresh" in
+  ""|null) echo "no refresh token in the local store — refusing to publish" >&2; exit 1 ;;
+esac
 case "$runner_auth" in
-  *'"refresh"'*) echo "a refresh token survived the strip — refusing to publish" >&2; exit 1 ;;
+  *"$real_refresh"*) echo "the refresh token survived blanking — refusing to publish" >&2; exit 1 ;;
 esac
 
 # Published as raw JSON, NOT base64: the workflow's restore step writes the

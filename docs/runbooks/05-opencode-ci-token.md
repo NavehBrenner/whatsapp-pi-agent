@@ -199,12 +199,30 @@ refresher, and three things enforce it:
    hours later on another machine. `expires` is in **milliseconds** (13 digits,
    verified on hardware) — the same unit as `date +%s%3N`, and comparing against
    a seconds clock would make the check fail always.
-3. **Strip the refresh token from the published copy**, across every provider,
-   and assert it is gone. A runner holding no refresh token cannot rotate ours.
-   This is the containment: worst case becomes one CI run returning 401, not this
-   box losing its login to a machine we do not control. The assertion matters
-   because a `del()` that silently matched nothing would publish a live refresh
-   token into a public repo's secret store.
+3. **Blank the refresh token in the published copy — do NOT delete the key.**
+   A runner holding no usable refresh token cannot rotate ours, which is the
+   containment: worst case becomes one CI run returning 401, not this box losing
+   its login to a machine we do not control.
+
+   ⚠️ **Deleting the key breaks the runner silently.** opencode's OAuth credential
+   schema declares `refresh: Schema.String` — required, unlike the
+   `Schema.optional` fields beside it — and the loader is
+   `Record.filterMap(data, v => Result.fromOption(decode(v)))`, which *drops* a
+   credential that fails to decode with no error, no warning and no log line. A
+   deleted key therefore unregisters the whole provider on the runner, and the
+   failure surfaces two layers away as
+
+   ```
+   Model not found: xai/grok-4.6. Did you mean: grok-4.6, grok-4.6-fast?
+   ```
+
+   because `getModel` falls back to suggesting from the static catalog. The model
+   string was never wrong. An empty string decodes fine and is exactly as useless
+   to a runner. Verified against opencode v1.18.18, `auth/index.ts`.
+
+   The guard changes meaning with the transform: "is the key gone" is now the wrong
+   question, so it asks whether the real token appears anywhere in the payload, and
+   refuses outright if the local store has no refresh token to compare against.
 4. **4h cadence against a ~6h token.** Every published copy has hours of life, so
    a runner never reaches the skew where opencode would try to refresh at all.
    Rule 4 is what rule 3 falls back on; running both means the race has to be
