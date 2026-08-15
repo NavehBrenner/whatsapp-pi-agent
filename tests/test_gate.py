@@ -762,9 +762,19 @@ SEND_FAILED: object = {
 
 
 def _serve_answering(
-    path: Path, started: threading.Event, seen: list[object], answers: int
+    path: Path,
+    started: threading.Event,
+    seen: list[object],
+    answers: int,
+    members: Sequence[object] = (),
 ) -> None:
-    """A daemon that replies, so one test can drive the whole outbound path."""
+    """A daemon that replies, so one test can drive the whole outbound path.
+
+    `members` is what it reports for `listGroups`. The default of none is a group
+    that has drifted, which is what the connect-time test wants — but a test that
+    expects a group send to succeed has to pass the pinned set, because outbound to
+    a drifted room is refused and outbound to an unknown one is held.
+    """
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(path))
     server.listen(1)
@@ -780,7 +790,10 @@ def _serve_answering(
         request_id = request["id"] if isinstance(request, dict) else None
         method = request.get("method") if isinstance(request, dict) else None
         if method == "listGroups":
-            body: object = {"jsonrpc": "2.0", "id": request_id, "result": []}
+            listed = (
+                [{"id": GROUP_ID, "isMember": True, "members": list(members)}] if members else []
+            )
+            body: object = {"jsonrpc": "2.0", "id": request_id, "result": listed}
         else:
             response = dict(SEND_OK) if isinstance(SEND_OK, dict) else {}
             response["id"] = request_id
@@ -804,7 +817,14 @@ def test_the_sent_timestamp_is_recorded_for_the_registry(world: Config, tmp_path
 
     started = threading.Event()
     seen: list[object] = []
-    server = threading.Thread(target=_serve_answering, args=(sock, started, seen, 2), daemon=True)
+    # The pinned set, so the room is NOT drifted: this test is about the sent-log
+    # registry, and a daemon reporting no groups would have the send refused on
+    # membership instead — which is a different test, below.
+    server = threading.Thread(
+        target=_serve_answering,
+        args=(sock, started, seen, 2, [OWNER_UUID, MOM_UUID, DAD_UUID]),
+        daemon=True,
+    )
     server.start()
     started.wait(timeout=5)
 

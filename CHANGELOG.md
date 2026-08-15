@@ -306,6 +306,20 @@ consumed** until then — the one case where an entry survives a drain cycle. A
 one-to-one is never held: a private chat has no membership to drift, and making it
 wait on `listGroups` would turn a slow daemon into a silent assistant.
 
+#### The stub daemon reported no groups, and nothing had noticed
+
+`_serve_answering` answered `listGroups` with `result: []` — a permanently drifted
+room — and every test that expected a group send passed anyway, because outbound
+never consulted membership. Wiring egress to the pin turned that into a failure, and
+`_serve_answering` now takes the member set, defaulting to none so the connect-time
+drift test keeps the behaviour it actually asserts.
+
+Worth recording how it surfaced: **the full suite passed locally and failed in CI on
+identical code.** The race is whether the `listGroups` response is applied before the
+drain, and it resolved differently on the two machines. A green local run is not
+evidence here, which is the same lesson as the rest of today pointed the other way —
+check the artefact that matters, and for this the artefact is CI.
+
 ### Added — coding work is dispatched to GitHub, and the Pi keeps the token alive (2026-08-15)
 
 The assistant can now be the front end for coding work on the owner's other
