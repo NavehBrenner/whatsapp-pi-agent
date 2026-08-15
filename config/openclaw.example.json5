@@ -596,9 +596,23 @@
       // own IDENTITY.md written into the workspace. Skipping either is the `liron`
       // failure: it will appear to work by reading through to `main`, right up until
       // the day `main` is actually empty.
+      // ⚠️ AN AGENT-LEVEL `tools.alsoAllow` REPLACES THE GLOBAL ONE. It does not
+      // merge. Granting this agent the GitHub tools without repeating the global
+      // names removed `read`, `write`, `edit` and `apply_patch` from it — including
+      // its ability to write its own MEMORY.md — and nothing said so: the config
+      // validated, the room's tools.allow ceiling still listed them, and the
+      // tool-policy log reports removals per layer without reporting that a layer
+      // was overridden. Repeat the global names in every per-agent list.
       // {
       //   id: "code-invariants",
       //   workspace: "~/.openclaw/workspaces/code-invariants",
+      //   tools: {
+      //     alsoAllow: [
+      //       "read", "write", "edit", "apply_patch",   // the global set, repeated
+      //       "github__issue_write", "github__add_issue_comment",
+      //       "github__issue_read", "github__list_issues",
+      //     ],
+      //   },
       // },
 
       // ---------------------------------------------------------------------

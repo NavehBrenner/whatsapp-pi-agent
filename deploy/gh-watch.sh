@@ -14,13 +14,13 @@
 # something actually happened, which is the whole reason this is not an
 # `openclaw cron` job waking the agent on a timer to find nothing.
 #
-# See docs/runbooks/05-opencode-ci-token.md.
+# See docs/runbooks/06-the-project-room.md.
 set -euo pipefail
 
-# From /etc/wpa-gh-watch.env (root-owned, 0600). No secrets in it — the GitHub token
+# From /etc/wpa-project.env (root-owned, 0600). No secrets in it — the GitHub token
 # is read out of the gateway's own config below rather than copied to a second place.
-: "${GH_REPO:?set in /etc/wpa-gh-watch.env}"          # owner/name
-: "${GH_SESSION_KEY:?set in /etc/wpa-gh-watch.env}"   # agent:<id>:signal:group:<id>
+: "${GH_REPO:?set in /etc/wpa-project.env}"          # owner/name
+: "${GH_SESSION_KEY:?set in /etc/wpa-project.env}"   # agent:<id>:signal:group:<id>
 
 state="${STATE_DIRECTORY:-/var/lib/wpa-gh-watch}"
 cursor="$state/cursor"        # ISO8601; the window start for the next poll

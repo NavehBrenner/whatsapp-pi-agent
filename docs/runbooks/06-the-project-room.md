@@ -143,7 +143,38 @@ that eventually drops events off the end — a quiet week silently breaking the 
 busy day. It advances to `now - 5min` each run; the overlap plus the seen-list is
 what makes that safe.
 
-## 4. Verifying without touching the repo
+## 4. The code mirror
+
+`wpa-project-sync.timer` → `/usr/local/bin/wpa-project-sync`, ticking every 60s.
+
+`/workspace/repo` inside the sandbox is a shallow, single-branch mirror of `main`,
+which the agent reads with the `read` tool it already has. **That is the whole point
+of doing it this way**: the alternatives were exec plus a network in the sandbox
+(undoing NVB-14/23/25) or GitHub repo tools (one file per call, a 5000-char window,
+and a wider PAT). A directory appearing in a workspace it already reads grants
+nothing new at all.
+
+- **The agent decides when.** It cannot run the sync, but it can ask: writing any
+  text into `/workspace/repo-sync.request` makes the next tick sync immediately and
+  consumes the file. ADR 0009's shape — an intent, not a command, so there are no
+  arguments to smuggle anything through. The write tool rejects an empty file, so
+  the request needs a byte in it.
+- **`reset --hard` and `clean`, not `pull`.** The workspace is read-write to the
+  agent, so the checkout can have been edited. A mirror that force-heals is easier
+  to reason about at 04:00 than one that wedges on a conflict, and the clone branch
+  self-heals even if `.git` is deleted.
+- **`repo-sync.json` is as much the point as the checkout.** It carries the commit,
+  its subject and the fetch time, and lives outside the checkout so `git clean` does
+  not remove it. A mirror that merely looks current is worse than none: the agent is
+  told to state which commit it is reasoning from.
+- The staleness ceiling with nobody asking is `max_age` in the script (10 min), not
+  the timer interval. The timer's minute is the resolution at which a request is
+  picked up.
+
+git goes through libcurl, which does Happy Eyeballs and falls back to IPv4 on its
+own — this is **not** the Go-resolver trap that needs `GODEBUG=netdns=cgo`.
+
+## 5. Verifying without touching the repo
 
 Rewind the cursor past an existing event and let it replay:
 
@@ -163,7 +194,7 @@ success value and the failure value were identical and a dead credential passed.
 for something whose failure is distinguishable, or check a process's environment
 rather than a model's report.
 
-## 5. When it breaks
+## 6. When it breaks
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -172,9 +203,19 @@ rather than a model's report.
 | A granted tool "is not available" | one of six policy layers stripped it | `journalctl -u wpa-openclaw \| grep tool-policy` — it names the layer |
 | Agent answers in the wrong room | binding uses a `uuid:` prefix on a group id | group ids carry no prefix; check `sessions.json` |
 | Everything replayed after a reboot | cursor lost | `StateDirectory=` owns it; check it exists and is `openclaw`-owned |
+| Agent describes code that has changed | mirror stale or frozen | `repo-sync.json` carries the commit and fetch time; `journalctl -u wpa-project-sync` |
+| Agent says a tool it was granted "is not available" | an agent-level `alsoAllow` **replaced** the global one | list the agent's own `tools.alsoAllow` and check the global names are repeated in it |
 
 ## Operational notes
 
+- **An agent-level `tools.alsoAllow` REPLACES the global one; it does not merge.**
+  Granting the GitHub tools to `code-invariants` therefore removed `read`, `write`,
+  `edit` and `apply_patch` from it — including its ability to maintain its own
+  `MEMORY.md` — and nothing said so. `config validate` passed, the room ceiling still
+  listed those tools, and the only symptom was the agent reporting a shorter tool
+  list than the config implies. An agent's own list must repeat the global names.
+  This is the same class as the `--tools=create_issue` trap: a grant that appears to
+  grant and does not.
 - **Six layers can strip a tool**, and the tool-policy log names which one every
   time: `tools.profile`, global `tools.deny`, agent `alsoAllow`, the room's
   `tools.allow` ceiling, `tools.sandbox.tools.allow`, and a **built-in**

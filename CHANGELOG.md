@@ -11,6 +11,47 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added — the project agent can read the code, without gaining a capability (2026-08-15)
+
+`wpa-project-sync.timer` keeps a shallow mirror of `main` at `/workspace/repo` inside
+the agent's sandbox, which it reads with the `read` tool it already had. New:
+`deploy/sync-project-repo.sh` and three units; `/etc/wpa-project.env` now holds the
+project's coordinates for both this and the watcher, so the repo slug has one home.
+
+**Nothing was granted.** The alternatives were exec plus a network in the sandbox —
+undoing NVB-14/23/25 for a `git fetch` — or GitHub repo tools, which read one file
+per call against a 5000-char window and need a wider PAT. A directory appearing in a
+workspace the agent already reads costs neither.
+
+**The agent still decides when.** It cannot run the sync, but writing any text into
+`/workspace/repo-sync.request` makes the next tick sync immediately and consume the
+file. That is ADR 0009's shape applied to a second problem: the agent expresses an
+intent, the host runs a fixed command with no agent-controlled arguments, so there is
+no argument to smuggle anything through. Verified end to end — the agent wrote the
+file, the next tick logged `reason: "request"`, the file disappeared.
+
+`repo-sync.json` carries the commit, its subject and the fetch time, outside the
+checkout so `git clean` cannot remove it. A mirror that merely looks current is worse
+than none, so the agent is told to state which commit it is reasoning from. It reads
+both correctly: `code-invariants-workspace` and `f1f6bc3f…`, each checked against the
+real file rather than taken on the model's word.
+
+#### Unflattering: granting a tool silently removed four others
+
+An agent-level `tools.alsoAllow` **replaces** the global one rather than merging with
+it. Adding the GitHub tools to `code-invariants` therefore stripped `read`, `write`,
+`edit` and `apply_patch` from that agent — including its ability to maintain its own
+`MEMORY.md` — and it had been that way since the MCP work landed earlier the same
+day. Nothing reported it: `config validate` passed, the room's `tools.allow` ceiling
+still named those tools, and the tool-policy log lists removals per layer without
+saying that a layer was *overridden*.
+
+It surfaced only because the mirror gave the agent something to read, and it answered
+"No `read` tool is available in this session" while listing the four it did have. The
+lesson matches the `--tools=create_issue` one from the same afternoon: the artefact
+worth checking is the tool list the agent actually holds, not the config that implies
+it.
+
 ### Added — a project room: its own agent, GitHub issues, and a watcher that wakes it (2026-08-15)
 
 A Signal group bound to one repository, served by a `code-invariants` agent that can

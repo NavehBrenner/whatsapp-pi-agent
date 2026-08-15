@@ -1,0 +1,10 @@
+[Unit]
+Description=Tell the owner in Signal that the project mirror stopped updating
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/runbooks/06-the-project-room.md
+
+[Service]
+Type=oneshot
+# Root, because the outbox is 0700 wpa-gate. To the OWNER's chat: a stale mirror is
+# exactly the failure the agent cannot notice on its own — the checkout still reads
+# fine, it is merely old, so nothing in the room looks wrong.
+ExecStart=/usr/local/bin/wpa-outbox-notify owner "⚠️ wpa-project-sync failed on the Pi — the code-invariants mirror is frozen. The agent will keep reading it and will not know it is stale. Check: journalctl -u wpa-project-sync -n 50"

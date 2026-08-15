@@ -1,0 +1,16 @@
+[Unit]
+Description=Check whether the project mirror needs refreshing, every minute
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/runbooks/06-the-project-room.md
+
+[Timer]
+OnBootSec=3min
+# The timer ticks every minute; the SCRIPT decides whether to do anything. Most ticks
+# are one stat of the status file and exit. A minute is the resolution at which the
+# agent's `repo-sync.request` gets picked up, which is the number that matters — the
+# staleness ceiling with nobody asking is set by max_age in the script, not here.
+OnUnitActiveSec=1min
+Persistent=true
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

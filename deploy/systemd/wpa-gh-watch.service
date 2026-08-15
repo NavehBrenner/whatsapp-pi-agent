@@ -16,7 +16,10 @@ User=openclaw
 Group=openclaw
 Environment=HOME=/var/lib/openclaw
 
-EnvironmentFile=/etc/wpa-gh-watch.env
+# Shared with wpa-project-sync: the repo slug has one home, because two files naming
+# the same repository is the config drift ADR 0011 lists as an accepted cost and
+# nobody enjoys.
+EnvironmentFile=/etc/wpa-project.env
 
 # systemd creates and owns this, so the cursor survives reboots without a tmpfiles
 # rule. Losing it is not fatal — the script falls back to a 15 minute window — but
