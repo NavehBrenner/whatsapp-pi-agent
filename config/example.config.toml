@@ -67,6 +67,14 @@ socket = "/run/wpa-signal/socket"
 # then message the assistant from the phone you want to allow. `number` is optional
 # and is only a second key — the part a human can check by eye.
 #
+# **AN ACI IS NOT THE ONLY UUID A PERSON HAS.** They also have a PNI, their
+# phone-number identity, and `getUserStatus` returns it — in a field called `uuid`,
+# with no marking — for anyone the account does not know yet. Verified 2026-08-16:
+# the same number returned a different uuid before and after the person joined a
+# group. A PNI here refuses every message in silence, exactly like the number-keyed
+# row above. Take the id from the wire, from `listGroups` members, or from the `aci`
+# column of the daemon's `recipient` table — never from a lookup alone.
+#
 # GROUPS ARE KEYED BY ID, never by name: names are chosen by members, so a
 # name-keyed allowlist can be renamed into. `members` is the PINNED member set: the
 # gate reads the live membership back from the daemon and refuses the whole
@@ -136,34 +144,34 @@ name = "owner"                                     # the pair name: unique every
 # owner's chats, and a private DM is not a reason to widen that.
 #
 # [[signal.conversations]]
-# label   = "aryeh-1to1"
-# id      = "<aryeh uuid>"
-# members = ["<aryeh uuid>"]
-# agent   = "aryeh"
+# label   = "alice-1to1"
+# id      = "<alice uuid>"
+# members = ["<alice uuid>"]
+# agent   = "alice"
 # profile = "family-dm"
 # [[signal.conversations.senders]]
-# uuid = "<aryeh uuid>"
-# name = "aryeh"
+# uuid = "<alice uuid>"
+# name = "alice"
 #
 # [[signal.conversations]]
-# label   = "aviv-1to1"
-# id      = "<aviv uuid>"
-# members = ["<aviv uuid>"]
-# agent   = "aviv"
+# label   = "bob-1to1"
+# id      = "<bob uuid>"
+# members = ["<bob uuid>"]
+# agent   = "bob"
 # profile = "family-dm"
 # [[signal.conversations.senders]]
-# uuid = "<aviv uuid>"
-# name = "aviv"
+# uuid = "<bob uuid>"
+# name = "bob"
 #
 # [[signal.conversations]]
-# label   = "liron-1to1"
-# id      = "<liron uuid>"
-# members = ["<liron uuid>"]
-# agent   = "liron"
+# label   = "carol-1to1"
+# id      = "<carol uuid>"
+# members = ["<carol uuid>"]
+# agent   = "carol"
 # profile = "family-dm"
 # [[signal.conversations.senders]]
-# uuid = "<liron uuid>"
-# name = "liron"
+# uuid = "<carol uuid>"
+# name = "carol"
 
 # A family group. Everyone listed reaches ONE shared agent holding a narrow profile,
 # except the owner, who overrides both to get their own session with more reach.

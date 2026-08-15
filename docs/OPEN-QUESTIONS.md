@@ -1501,8 +1501,25 @@ form or is simply given up.
 
 ## Q7 — Why does the default agent's auth store refill itself?
 
-**Status:** **Mitigated, not understood.** Not blocking. **Blocks:** nothing today;
-**gates NVB-17/18** — see below.
+**Status:** **Reopened 2026-08-16 — not mitigated, not understood.** Not blocking
+today. **Gates NVB-17/18** — see below.
+
+> **2026-08-16.** The mitigation below did not hold, and it failed the exact test this
+> question set for itself. `main` was found holding one profile again; the row's
+> `updated_at` is **2026-08-15 20:06**, while the last agent lacking a profile was
+> given one at **00:30** that day and the next new agent did not exist until **23:59**.
+> So main refilled during a twenty-hour window in which *every* agent already had its
+> own profile. The working hypothesis — that the write is triggered by an agent
+> resolving auth through the default store — is dead as stated: there was nothing to
+> resolve through it.
+>
+> Both explanations offered so far named the last thing changed before a quiet period.
+> Step 1 below ("instrument it rather than infer it") is now the only honest next move,
+> and it should be done before the next attempt to explain the pattern, not after.
+>
+> Also found: `deploy/check-agent-auth.sh` was in the repo but had never been installed
+> to `/opt/wpa/deploy/`, so the invariant went unchecked from 2026-08-15 until it was
+> installed on 2026-08-16. A detector that is not deployed is not a detector.
 
 [ADR 0011](decisions/0011-openclaw-owns-the-channel-the-gate-owns-the-room.md) closes
 OpenClaw's read-through credential inheritance with a structural rule: *"the default
@@ -1520,10 +1537,13 @@ Measured 2026-08-15, full account in the CHANGELOG:
 - **Emptying `main` by hand did not hold.** Cleared with the gateway stopped, it
   refilled itself within ~2 minutes of ordinary use. No login was run, and the calling
   agent's own store was not touched in the same window.
-- **It holds once every other agent has its own profile.** After the last agent was
-  given her own login, `main` stayed empty through idle, `models status`, `models
-  list`, `models auth list`, agent turns, a deliberately failing turn by `main` itself,
-  and a gateway restart.
+- ~~**It holds once every other agent has its own profile.**~~ **Disproved
+  2026-08-16** — see the status note. After the last agent was given its own login,
+  `main` stayed empty through idle, `models status`, `models list`, `models auth list`,
+  agent turns, a deliberately failing turn by `main` itself, and a gateway restart —
+  and then refilled ~20 hours later anyway, with no agent lacking a profile. What the
+  observation actually shows is that the store can stay empty for a long while and
+  still refill; it says nothing about why.
 - **Read-through resolves at gateway startup, not per turn.** Main's contents *at boot*
   decide. A mistake therefore surfaces one restart later, which is the worst possible
   latency for noticing it.
@@ -1563,5 +1583,8 @@ The review should answer, in this order:
    a store the gateway can read for every agent, would not care what `main` holds. That
    is closer to what ADR 0010 originally described.
 
-**If `main` is ever found non-empty while every agent has its own profile, the working
-hypothesis is dead** and this question reopens immediately rather than at NVB-17.
+~~**If `main` is ever found non-empty while every agent has its own profile, the
+working hypothesis is dead** and this question reopens immediately rather than at
+NVB-17.~~ **That happened on 2026-08-16 and the question is reopened.** The condition
+was worth writing down in advance: it is the only reason the disproof was recognised
+rather than explained away as "somebody must have run a login".

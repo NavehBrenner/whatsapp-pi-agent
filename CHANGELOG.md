@@ -11,6 +11,77 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added — a third family DM agent, and placeholder names in the example configs (2026-08-16)
+
+A fourth person now has a 1:1 agent on the Pi. The recipe is the one written down
+after the last one, and it worked without incident: resolve the ACI, add it to
+`channels.signal.allowFrom` and `groupAllowFrom`, add an agent entry and a `direct`
+binding carrying the `uuid:` prefix, scaffold the workspace with an IDENTITY.md,
+restart the gateway. Config validates, gateway came up clean, `NRestarts=0`.
+
+`listContacts` again did not name the sender, despite 60 `dropped: sender` lines in
+the gate journal over the preceding hour. `getUserStatus` against a phone number
+answered immediately and needs no message to have been sent — but see below, because
+what it answered with was wrong.
+
+The group half followed once the owner added them (they are the group's only admin,
+so nobody else can): `deploy/pin-group.py` regenerated the gate's pinned member set to
+four, `--check` reported `family (group, 4 pinned members)`, and the gate restarted
+without the drift refusal. The agent holds its own `xai` profile and answered a
+neutral CLI probe.
+
+### Fixed — `getUserStatus` returns a PNI for a stranger, in a field called `uuid` (2026-08-16)
+
+The example configs now say so, in both places that tell you how to capture an id.
+
+The number resolved to `1cebe820-…`, and that id went into `allowFrom`,
+`groupAllowFrom` and the binding. An hour later, after the person had been added to
+the family group, **the same call on the same number returned `c3a2d5c1-…`**. The
+daemon's `recipient` row settles it: `aci = c3a2d5c1-…`, `pni = PNI:1cebe820-…`. The
+first answer was the phone-number identity, and `getUserStatus` labels both `uuid`.
+
+Nothing would have reported this. A PNI-keyed allowlist matches no envelope, so the
+agent would have been deployed, validated, restarted, and silently deaf — which is
+the same failure as the number-keyed allowlist found on 2026-08-11, wearing a uuid's
+clothes. It surfaced only because the group's member list disagreed with the config,
+and `listGroups` returns ACIs only.
+
+Two usable tells, both now in the example configs: an id that is real but absent from
+`listGroups` membership is suspect, and the `recipient` table stores `pni` with a
+literal `PNI:` prefix while `aci` is bare — the one place the two can be told apart by
+eye. `getUserStatus` is still the right first call; it is a lead, not an answer,
+until the account knows the person.
+
+The example configs now use `alice`/`bob`/`carol` rather than real first names, with
+placeholder uuids as before. Nothing about the shape changed — but a public example
+that names the household is a small, permanent disclosure for no benefit, and the
+names were doing no explanatory work that a placeholder cannot do.
+
+### Fixed — nothing, and that is the finding: `main` refilled itself with every agent holding its own profile (2026-08-16)
+
+The rule recorded on 2026-08-15 — *the default agent stays empty only while every
+other agent has its own profile; an agent with none is the cause* — is **false**, and
+it failed exactly the test it named for itself.
+
+`deploy/check-agent-auth.sh` reported `main` holding one profile. A snapshot taken
+before that day's config change puts the row's `updated_at` at **2026-08-15 20:06**,
+and the last agent to be given a profile of its own was written at **00:30** the same
+day. Twenty hours of every-agent-has-one in between, and the next new agent did not
+exist until 23:59. So the second hypothesis dies the same way the first did: it named
+the last thing changed before a quiet period, not a cause.
+
+What survives is smaller and unglamorous. Read-through resolves at gateway startup;
+a non-empty `main` is a real grant to any agent lacking its own profile at that
+moment; and nobody has identified the writer across two attempts. Treat a non-empty
+`main` as **expected to recur** rather than as a regression, keep the check on a
+schedule rather than running it after logins only, and do not mount a tool credential
+on the assumption that `main` is empty. The ⚠️ on NVB-17/18 stands and is now on
+firmer ground than when it was written.
+
+The script also was not on the box — it shipped in the repo on 2026-08-15 and
+`/opt/wpa/deploy/` never received it, so the invariant went unchecked for a day for
+the dullest possible reason. It is installed now.
+
 ### Removed — the gate's `ack <timestamp>` reply (2026-08-15)
 
 An accepted command is now recorded and answered with nothing. `_ack` and its only
