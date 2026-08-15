@@ -11,6 +11,405 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Removed — the gate's `ack <timestamp>` reply (2026-08-15)
+
+An accepted command is now recorded and answered with nothing. `_ack` and its only
+caller `_recipient_of` are gone, with a test asserting an accepted command sends
+nothing back — the cheapest way for this to return is somebody restoring a helper
+that looks unused.
+
+It was scaffolding for ADR 0008's quoted-reply confirmations: the timestamp was the
+handle a later `YES` would quote, so NVB-16 could match a confirmation to its pending
+action. ADR 0011 replaced that whole mechanism with OpenClaw's reaction approvals,
+which bind a YES to a specific delivered message rather than to text a person
+re-quotes, and it already listed "the ack path" among the things that become
+duplicated work once OpenClaw owns the channel. This finishes that migration rather
+than changing a decision.
+
+What made it visible was the room working: OpenClaw answers the sender itself, so
+every turn carried two messages and the first one said `ack 1786473936544`.
+
+The test needed a new fixture — `_serve` closes the connection as soon as it has
+written, which is exactly what would hide an unwanted reply, so `_serve_capturing`
+stays open and records what the gate sends.
+
+### Fixed — deleting the refresh key unregistered the whole provider on the runner (2026-08-15)
+
+`deploy/push-opencode-auth.sh` now blanks the refresh token (`.refresh = ""`)
+instead of deleting the key. Found by another session, which got past the App-token
+failure and straight into the next one.
+
+opencode's OAuth credential schema declares `refresh: Schema.String` — **required**,
+unlike the `Schema.optional` fields beside it — and the loader is
+`Record.filterMap(data, v => Result.fromOption(decode(v), () => undefined))`, which
+*drops* a credential that fails to decode with no error, no warning and no log line.
+So `del(.refresh)` unregistered the `xai` provider entirely on the runner, and
+`getModel` then built its suggestions from the static catalog:
+
+```
+Model not found: xai/grok-4.6. Did you mean: grok-4.6, grok-4.6-fast?
+```
+
+A model-not-found error, naming the model that was requested, two layers from a
+credential shape. The model string was never wrong. Verified against opencode
+v1.18.18, `packages/opencode/src/auth/index.ts`.
+
+An empty string satisfies the schema and is exactly as useless to a runner as an
+absent key — the containment is unchanged.
+
+#### Unflattering: the guard enforced the bug
+
+The original didn't just strip the key, it **asserted the key was gone** and refused
+to publish otherwise. So the check written to protect the credential was pinning the
+broken shape in place, and anyone who fixed the transform would have been stopped by
+the guard with a message insisting they had leaked a token.
+
+The guard now asks the question that survives the change — does the real refresh
+token appear anywhere in the payload — plus a check that the local store has one at
+all, since an empty needle matches every string and would otherwise refuse forever.
+
+That is three failures today from the same family: a grant that appears to grant and
+does not (`--tools=create_issue`), a policy layer that silently replaces another
+(`alsoAllow`), and now a credential silently dropped for failing a schema. All three
+were invisible in config that validated clean, and all three surfaced as an error
+about something else entirely.
+
+### Fixed — the LAN resolver cannot serve Go, and "DNS blip" hid it for a day (2026-08-15)
+
+Every statically linked Go binary on this Pi was failing to resolve `api.github.com`.
+Measured against the GitHub MCP server: **14 of 15 lookups failed** with
+`dial tcp: lookup api.github.com on 10.10.0.138:53: no such host`, while
+`getent ahosts` succeeded 10 of 10 and `curl` returned HTTP 200 against the same
+name. Pointing the box at a public resolver takes the identical test to 15 of 15.
+
+`deploy/networkmanager/90-wpa-dns.conf` sets `dns=none` and `/etc/resolv.conf` is
+hand-written with public resolvers first, the router last.
+
+**`GODEBUG=netdns=cgo` was never a fix here, and had been sitting in the MCP server's
+env pretending to be one.** It selects a resolver that is not compiled into a
+`CGO_ENABLED=0` build, and `github-mcp-server` is statically linked. The same flag
+*does* genuinely fix dockerd, which is dynamically linked — one box, one symptom, two
+binaries, and only one of them could take that cure. It has been removed rather than
+left implying a mitigation that does not exist. **Check `ldd` before reaching for
+it.**
+
+Two shape details, both found by getting them wrong first: per-connection `ipv4.dns`
+is not enough because NM merges DNS from every active connection, so configuring
+eth0 left wlan0 putting the router back at the top and the retest went straight back
+to 9 of 10 failing; and the fix must be applied with `systemctl reload
+NetworkManager` rather than `nmcli con up`, because SSH to this box arrives over
+wlan0 and reactivating that connection would cut the session doing the work.
+
+#### Unflattering: three sightings before anyone measured it
+
+This surfaced as an agent saying "DNS blip talking to GitHub — retrying", twice, and
+was noted both times as something to watch. A paraphrase that sounds transient is how
+a 93% failure rate hides. The measurement took four minutes once anyone made one, and
+the same lesson has now appeared three times today: check the artefact, not the
+report about the artefact.
+
+### Added — the project agent can inspect CI itself (2026-08-15)
+
+`actions_get`, `actions_list` and `get_job_logs` are granted read-only, so the agent
+pulls a failing job's log and reports the actual error instead of relaying that
+something went red. Verified against the real opencode failure: asked what run
+31894403463 did, it independently produced `Failed to parse JSON` and
+`undefined is not an object (evaluating 'p.rest')`, and flagged its guess at the
+cause as a guess.
+
+`actions_run_trigger` is the fourth tool in that toolset and is deliberately
+withheld: re-running a workflow is a write, and nothing about diagnosing a failure
+needs it. The Issues-scoped PAT reads all three on a public repo — checked before
+granting, so no credential was widened.
+
+### Added — subagents, for both the owner and the project agent (2026-08-15)
+
+`sessions_spawn` and `subagents` are granted to `owner` and `code-invariants`. A
+subagent inherits the parent's own tools and **not** its MCP tools: a child gets
+`read`, `write`, `edit`, `apply_patch` — plus `web_search`, `image_generate` and
+`video_generate` where the parent has them — and is stripped of `github__*` as
+non-inheritable and of the spawn tools as a recursion guard. So a subagent can read
+and map the repo mirror or run a wide search; it cannot post to GitHub as the owner.
+`agents.defaults.subagents.maxConcurrent` (8) bounds the fan-out.
+
+**This corrects the entry below.** That one records subagents spawning and dying with
+"No callable tools remain", concluded to be fail-closed platform behaviour. It was
+neither: the child's allowlist is derived from the parent's **effective** allowlist,
+and the parent's had no file tools in it because of the `alsoAllow`-replaces-global
+fault. The same one-line fix that restored the parent's `read` restored subagents.
+
+Two things worth carrying forward from that. A platform limitation was inferred from
+a symptom that was local misconfiguration, and the inference was confident enough to
+revert the feature — the experiment was only re-run because the input to it had
+demonstrably changed. And the inherited set follows the **session**, not the agent: a
+child spawned from a `--agent` CLI probe reports a narrower list than one spawned in
+the room or the DM, which is the third time today a CLI-session probe has answered a
+different question from the one being asked.
+
+### Added — the project agent can read the code, without gaining a capability (2026-08-15)
+
+`wpa-project-sync.timer` keeps a shallow mirror of `main` at `/workspace/repo` inside
+the agent's sandbox, which it reads with the `read` tool it already had. New:
+`deploy/sync-project-repo.sh` and three units; `/etc/wpa-project.env` now holds the
+project's coordinates for both this and the watcher, so the repo slug has one home.
+
+**Nothing was granted.** The alternatives were exec plus a network in the sandbox —
+undoing NVB-14/23/25 for a `git fetch` — or GitHub repo tools, which read one file
+per call against a 5000-char window and need a wider PAT. A directory appearing in a
+workspace the agent already reads costs neither.
+
+**The agent still decides when.** It cannot run the sync, but writing any text into
+`/workspace/repo-sync.request` makes the next tick sync immediately and consume the
+file. That is ADR 0009's shape applied to a second problem: the agent expresses an
+intent, the host runs a fixed command with no agent-controlled arguments, so there is
+no argument to smuggle anything through. Verified end to end — the agent wrote the
+file, the next tick logged `reason: "request"`, the file disappeared.
+
+`repo-sync.json` carries the commit, its subject and the fetch time, outside the
+checkout so `git clean` cannot remove it. A mirror that merely looks current is worse
+than none, so the agent is told to state which commit it is reasoning from. It reads
+both correctly: `code-invariants-workspace` and `f1f6bc3f…`, each checked against the
+real file rather than taken on the model's word.
+
+#### Unflattering: granting a tool silently removed four others
+
+An agent-level `tools.alsoAllow` **replaces** the global one rather than merging with
+it. Adding the GitHub tools to `code-invariants` therefore stripped `read`, `write`,
+`edit` and `apply_patch` from that agent — including its ability to maintain its own
+`MEMORY.md` — and it had been that way since the MCP work landed earlier the same
+day. Nothing reported it: `config validate` passed, the room's `tools.allow` ceiling
+still named those tools, and the tool-policy log lists removals per layer without
+saying that a layer was *overridden*.
+
+It surfaced only because the mirror gave the agent something to read, and it answered
+"No `read` tool is available in this session" while listing the four it did have. The
+lesson matches the `--tools=create_issue` one from the same afternoon: the artefact
+worth checking is the tool list the agent actually holds, not the config that implies
+it.
+
+### Added — a project room: its own agent, GitHub issues, and a watcher that wakes it (2026-08-15)
+
+A Signal group bound to one repository, served by a `code-invariants` agent that can
+file and comment on that repo's issues and is woken when the repo moves. New:
+[runbook 06](docs/runbooks/06-the-project-room.md), `deploy/gh-watch.sh`,
+`deploy/outbox-notify.sh`, three units, and the config templates.
+
+**It is a separate agent because `load_config` refuses one agent in two
+conversations, and that refusal earns its keep here.** The room receives issue bodies
+and PR titles from a *public* repo — text a stranger wrote, arriving at an agent with
+durable memory. A shared session would carry a poisoned issue into the private chat;
+a shared workspace would keep it in the same `MEMORY.md`. The cost, no shared context
+with the DM, is the intended trade.
+
+The agent's write reach is one repo's issues, through a stdio MCP server narrowed
+three times: `toolFilter.include`, the server's own `--tools`, and a fine-grained PAT
+with `Issues: read/write` and no contents. The PAT is the floor, and the only one
+that holds if the other two are wrong.
+
+#### `create_issue` does not exist, and nothing says so
+
+GitHub's own `list-scopes` advertises it, `--tools=create_issue` is accepted without
+complaint, and nothing registers. The real tool is `issue_write`. Only the **tool
+count** in `mcp probe` exposed it — the same silent-non-grant failure ADR 0011
+records for OpenClaw tool lists, appearing in the vendor's server this time. It also
+costs ADR 0010's narrow verb: `issue_write` can close and relabel, and there is no
+create-only tool, so containment falls back to the PAT's scope.
+
+Worth adding to the deploy checklist: `mcp probe` returns tools and no diagnostics
+against a **dead credential**, because listing tools does not authenticate.
+
+#### Six layers can strip a tool, and one of them is invisible
+
+Granting a tool to this agent meant passing `tools.profile`, global `tools.deny`,
+the agent's `alsoAllow`, the room's `tools.allow` ceiling, `tools.sandbox.tools.allow`
+— and a **built-in `sandbox tools.deny` that is not in our config at all**. The
+tool-policy log names the layer every time, which is the only reason this took
+minutes rather than an evening; it should be the first thing read when a granted tool
+"is not available".
+
+That invisible layer is why the agent has no `cron`: upstream denies scheduling to
+sandboxed agents. Granting it would mean emptying an unenumerable default to unmask
+one entry — the NVB-23 shape, and declined on those grounds.
+
+#### Unflattering: two verification failures, both mine
+
+**A probe whose success value equalled its failure value.** Asked for a count of open
+issues, got `0`, called it working. The repo genuinely had zero, so a dead credential
+passed the check. The 401 only surfaced when the agent was asked in the room and
+answered at length. The fix that worked was hashing `/proc/<pid>/environ` against the
+token file — an objective check with a model nowhere in it.
+
+**A wake mechanism assumed rather than tested.** The watcher was designed around
+`openclaw system event --mode now`, which enqueues an event and returns `ok` without
+running a turn, because the heartbeat that consumes the queue is suppressed by a
+comments-only `HEARTBEAT.md`. `--expect-final` also returns `ok`. The working
+primitive is `openclaw agent --session-key … --deliver`. Compounding it, the gateway
+logs no `delivered reply` line for a CLI-initiated turn, so the log that looked like
+evidence of failure was evidence of nothing.
+
+#### A rotated token needs a restart, not a reload
+
+`openclaw mcp reload` disposes cached runtimes but does not re-read a changed env.
+The MCP child is spawned per turn from the gateway's *in-memory* config, so after a
+token change the file and the config agree while a live child holds the old value and
+returns 401. The symptom points at the credential; the cause is the process holding
+it.
+
+#### Things that will bite the next person
+
+- **Subagents spawn and inherit nothing.** The child gets only the spawn-related
+  tools, which a subagent-specific deny then strips, so it dies with "No callable
+  tools remain". Fail-closed, so no escalation risk — and no use either. Left denied.
+- **The MCP server is gateway-global, not agent-bound.** Only `code-invariants` is
+  granted the tools, but that is tool policy rather than an absent credential, which
+  is the distinction ADR 0010 exists to draw. Per-agent MCP servers are not supported
+  on `2026.7.1-2`.
+- **The watcher's cursor advances on wall-clock, not on events.** Anchoring to the
+  newest event freezes the window on a quiet repo; with `per_page=50` and no
+  pagination that drops events off the end later. A quiet week would have silently
+  broken the first busy day.
+
+### Fixed — pinned membership guarded the wrong direction (2026-08-15)
+
+`drain` now takes the drifted-room set and drops outbound addressed to a drifted
+group, with a `membership` refusal counter alongside the others.
+
+The mechanism itself was never broken: `_drifted` handles the cases that matter —
+a matching set refuses nothing, a member carrying both a uuid and a number counts
+once, `isMember: false` is drift rather than absence, a one-to-one has nothing to
+drift — and `Membership.closed()` starts by refusing every group so the window
+before the daemon answers fails closed. Six tests, all passing.
+
+**It was wired to ingress only.** `decide` got `membership.refusing`; `drain` never
+did. Under the pre-OpenClaw design that was coherent — refuse the command, no reply
+is generated, nothing for a new member to read. It stopped being coherent twice
+over. ADR 0011 moved inbound to OpenClaw, so the gate refusing in its own ledger
+does not stop the agent answering; and an entry written with **no inbound command
+behind it** — a notification, a scheduled report — has nothing to refuse on the way
+in at all. ADR 0011 states the purpose plainly: a newly added member "reads every
+reply it puts in the room". That is a claim about egress, and egress was the
+unguarded half.
+
+#### Unflattering: the first version of the fix would have destroyed messages
+
+Checking `recipient.id in refusing` and consuming the entry is the obvious patch and
+it is wrong, because `Membership.closed()` starts with **every** group refused. In
+the window between the gate connecting and the daemon answering `listGroups`, every
+group-addressed entry would have been unlinked and counted as a refusal — and
+delivery is at-most-once by design, so the file is the only copy. A notification
+written before a restart would have been destroyed rather than delayed.
+
+Ingress and egress cannot share a failure posture here. A refused *command* is
+retried by the person who sent it; a refused *send* is gone. So `Membership` grew a
+`known` flag, set on the first answer, and a group entry is **held rather than
+consumed** until then — the one case where an entry survives a drain cycle. A
+one-to-one is never held: a private chat has no membership to drift, and making it
+wait on `listGroups` would turn a slow daemon into a silent assistant.
+
+#### The stub daemon reported no groups, and nothing had noticed
+
+`_serve_answering` answered `listGroups` with `result: []` — a permanently drifted
+room — and every test that expected a group send passed anyway, because outbound
+never consulted membership. Wiring egress to the pin turned that into a failure, and
+`_serve_answering` now takes the member set, defaulting to none so the connect-time
+drift test keeps the behaviour it actually asserts.
+
+Worth recording how it surfaced: **the full suite passed locally and failed in CI on
+identical code.** The race is whether the `listGroups` response is applied before the
+drain, and it resolved differently on the two machines. A green local run is not
+evidence here, which is the same lesson as the rest of today pointed the other way —
+check the artefact that matters, and for this the artefact is CI.
+
+### Added — coding work is dispatched to GitHub, and the Pi keeps the token alive (2026-08-15)
+
+The assistant can now be the front end for coding work on the owner's other
+repos without becoming a coding agent itself. `/oc` in a GitHub issue comment
+runs opencode as grok inside an Actions runner, which plans, branches and opens a
+PR; the owner approves the plan in Signal and merges on GitHub. New:
+[runbook 05](docs/runbooks/05-opencode-ci-token.md), `deploy/push-opencode-auth.sh`,
+`deploy/oc-auth-notify.sh` and three units.
+
+**The design question was answered by the box, not by preference.** The obvious
+route — hand the agent a GitHub PAT — is dead on arrival here: `tools.deny`
+carries `exec`, `process`, `terminal` and `code_execution`, and the sandbox runs
+`network: "none"` with `readOnlyRoot` and `capDrop: ALL`. There is no way to
+spend a credential from inside that, which is exactly what NVB-14/23/25 were for.
+So the Pi keeps the control surface and GitHub gets the execution environment,
+and the only long-lived credential the arrangement needs is the xAI one. Per-repo
+code access is the runner's own `GITHUB_TOKEN`, scoped by GitHub and dead when
+the run ends — there is no PAT for it to leak.
+
+#### The credential is a subscription token, and that is the whole cost
+
+An API key was the easy answer and was declined: the subscription is already
+paid for, and ADR 0011 records that Q4's constraint rules out *pasting* a
+subscription token into a third-party tool rather than using one at all. What
+the subscription costs is that **its refresh token rotates on use** — verified
+2026-08-15 by backdating `.xai.expires` and diffing the store, where `access`,
+`expires` *and* `refresh` all changed. Rotation means whichever machine refreshes
+invalidates every other copy, so an ephemeral runner that refreshes once kills
+the login on the Pi.
+
+The Pi is therefore the sole refresher, held by four rules that each fail quietly
+on their own: force a refresh every run (opencode refreshes only near expiry and
+has no "refresh now", so the script backdates the expiry and makes one throwaway
+call); **prove the refresh took** before publishing, since a silent failure would
+otherwise put a nearly-dead token in the secret and 401 CI hours later on another
+machine; strip the refresh token from the published copy, so a runner *cannot*
+rotate ours; and run at 4h against a ~6h token, so a runner never reaches the skew
+where it would try. The third is the containment and the fourth is its fallback —
+the worst case becomes one CI run returning 401 rather than a dead login.
+
+Two details that decide whether the checks work at all. `expires` is in
+**milliseconds** (13 digits, verified on hardware), so a validation written
+against a seconds clock would fail always — and a check that always fails is a
+check somebody deletes. And the strip is **asserted**, not assumed: a `del()`
+that silently matched nothing would publish a live refresh token into a public
+repo's secret store.
+
+The published value is **raw JSON, not base64**. Publisher and workflow have to
+agree, and briefly they did not — two boxes were publishing in different formats,
+which fails intermittently rather than outright. One publisher now: the Pi, which
+is the box that is always up.
+
+#### Unflattering: the first design put the write credential in the runner
+
+The initial sketch had the runner write its refreshed token back to the repo
+secret, which needs a PAT with `Secrets: write` sitting in a runner that executes
+an agent driven by public issue text. That is a credential able to rewrite the
+repo's secrets, handed to the least trusted process in the system, to solve a
+problem the always-on box already solves by pushing. The direction was wrong, not
+the mechanism.
+
+The same instinct nearly repeated with a self-hosted runner: it fixes rotation
+completely and is the right answer for private repos, but GitHub's own guidance
+is not to point one at a public repo, and most of these repos are public.
+
+#### Unflattering: a guessed hardening list, caught before it shipped
+
+`ProtectSystem=strict` was written first and would have made the whole hierarchy
+read-only, including the home directory opencode writes to. It is `full` with a
+`ponytail:` note rather than `strict` with a guessed `ReadWritePaths=` list,
+because a guessed allowlist fails at 04:00 on a timer rather than in front of
+someone. The failure path was then fired on purpose before being trusted — the
+Signal DM arrived, `wpa-gate` logged `sent agent=owner profile=owner-full`, and
+the outbox drained.
+
+#### Things that will bite the next person
+
+- **Two hand-maintained lists.** `OC_REPOS` in `/etc/wpa-oc.env` and the PAT's
+  repository list on GitHub. Adding a repo to one only shows up as a `gh` 404,
+  which reads like a typo'd name rather than a permission never granted.
+- **opencode picks its own default model, and it has picked a *video* model.**
+  The run fails with "not available on this endpoint", which reads like an auth
+  fault. `OC_MODEL` is not optional.
+- **`XAI_API_KEY` must not be set in the workflow.** Precedence is env → config →
+  auth store, so it would silently override the restored OAuth and the run would
+  succeed against the wrong credential.
+- **The plan/build split is a shell expression on the comment body**, so if
+  opencode renames its primary agents it fails open to `build` — a plan request
+  would write code.
+
 ### Fixed — inbound images never reached the agent (2026-08-15)
 
 Reported as "the agent doesn't see photos I send it". **Two independent causes, either one

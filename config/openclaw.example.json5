@@ -584,6 +584,44 @@
         workspace: "~/.openclaw/workspaces/family",
       },
 
+      // A project room — one repo, one room, one agent. Same person as `owner` and
+      // deliberately NOT the same agent: the gate refuses one agent in two
+      // conversations, and here that refusal is the containment rather than a
+      // formality. This room receives issue bodies and PR titles from PUBLIC repos
+      // via a notifier, which is attacker-influenceable text arriving at an agent
+      // with durable memory. A shared session would carry a poisoned issue into the
+      // private chat; a shared workspace would persist it in the same MEMORY.md.
+      //
+      // Needs its OWN `openclaw models auth --agent code-invariants login`, and its
+      // own IDENTITY.md written into the workspace. Skipping either is the `liron`
+      // failure: it will appear to work by reading through to `main`, right up until
+      // the day `main` is actually empty.
+      // ⚠️ AN AGENT-LEVEL `tools.alsoAllow` REPLACES THE GLOBAL ONE. It does not
+      // merge. Granting this agent the GitHub tools without repeating the global
+      // names removed `read`, `write`, `edit` and `apply_patch` from it — including
+      // its ability to write its own MEMORY.md — and nothing said so: the config
+      // validated, the room's tools.allow ceiling still listed them, and the
+      // tool-policy log reports removals per layer without reporting that a layer
+      // was overridden. Repeat the global names in every per-agent list.
+      // {
+      //   id: "code-invariants",
+      //   workspace: "~/.openclaw/workspaces/code-invariants",
+      //   tools: {
+      //     alsoAllow: [
+      //       "read", "write", "edit", "apply_patch",   // the global set, repeated
+      //       "github__issue_write", "github__add_issue_comment",
+      //       "github__issue_read", "github__list_issues",
+      //       "sessions_spawn", "subagents",
+      //     ],
+      //   },
+      //   // Subagents inherit the parent's EFFECTIVE tool list, so the repetition
+      //   // above is what makes them useful: a child gets read/write/edit/apply_patch
+      //   // and can map the repo mirror. It does NOT inherit github__* (MCP tools are
+      //   // non-inheritable) or the spawn tools (recursion guard), so it cannot post
+      //   // to GitHub as the owner. `subagents` must also be removed from the global
+      //   // tools.deny and added to tools.sandbox.tools.allow.
+      // },
+
       // ---------------------------------------------------------------------
       // One agent per family member's 1:1 chat. THREE AGENTS, NOT ONE SHARED ONE,
       // and the reason is memory rather than tools: `session.dmScope` already gives
@@ -705,6 +743,16 @@
       },
       comment: "family group — shared session, narrow tools",
     },
+    // The project room. A GROUP id, so NO `uuid:` prefix — getting that wrong routes
+    // the room to `main` in silence, which is the failure this file warns about above.
+    // {
+    //   agentId: "code-invariants",
+    //   match: {
+    //     channel: "signal",
+    //     peer: { kind: "group", id: "<code-invariants base64 groupId>" },
+    //   },
+    //   comment: "code-invariants project room — owner only",
+    // },
     // The three 1:1 chats. Note the `uuid:` prefix on every one — a bare uuid here
     // matches nothing, says nothing, and routes the DM to `main`.
     {

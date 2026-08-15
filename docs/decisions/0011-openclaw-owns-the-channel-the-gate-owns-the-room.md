@@ -92,6 +92,26 @@ one. The tool list is what stands in for the container today, which is why the b
 now grants no native tools whatsoever. **Until `sandbox.mode` is real, "credentials are
 per agent" is a statement about tidiness, not containment.**
 
+> **Amended 2026-08-15 — the file-read half no longer holds, and that was the point of
+> NVB-14/23/25.** `sandbox.mode` is real now: rootless Docker, `network: "none"`,
+> `readOnlyRoot`, `capDrop: ALL`, workspace-only bind. Re-run as a pair, because a
+> refusal and a broken tool look identical: asked for the line count of
+> `/var/lib/openclaw/.openclaw/openclaw.json` the agent answered `FAILED`; asked for
+> `IDENTITY.md` in its own workspace it answered `28`, which `wc -l` confirms. The
+> gateway's own log states the boundary — *"Path escapes sandbox root (container root
+> /workspace)"*.
+>
+> So "the agent reads arbitrary absolute paths as the gateway uid" describes the
+> pre-container deployment and no longer describes this one. That matters beyond
+> tidiness: it is what makes a credential in `openclaw.json` — the GitHub PAT in
+> `mcp.servers` — acceptable rather than merely convenient, since the file is now
+> outside what any agent tool can reach.
+>
+> The **read-through** half is untouched and still true: an agent with no profile of
+> its own resolves `main`'s, and `main` still holds one (Q7). Verified again on
+> 2026-08-15 when `code-invariants` was deployed and resolved
+> `effective=profiles:…/agents/main/…` until given its own login.
+
 Two mechanics that make this harder to hold than it looks: `--disallowedTools` does not
 override `--tools` (the allowlist wins, so a capability must be removed from the
 allowlist rather than added to the deny list), and **tool policy binds at session

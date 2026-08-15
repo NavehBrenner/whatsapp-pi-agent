@@ -1,0 +1,19 @@
+[Unit]
+Description=Republish the opencode xAI token every 4h
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/runbooks/05-opencode-ci-token.md
+
+[Timer]
+OnBootSec=5min
+# 4h against a ~6h token is the load-bearing number, not a polling preference.
+# It leaves every published copy with hours of life, so a runner never reaches
+# the near-expiry skew where opencode would refresh — and a refresh in a runner
+# rotates the token out from under this box. Raising this past ~5h reintroduces
+# that race.
+OnUnitActiveSec=4h
+# The Pi reboots. A missed cycle runs at next boot rather than leaving an
+# expired secret on GitHub for up to four hours.
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

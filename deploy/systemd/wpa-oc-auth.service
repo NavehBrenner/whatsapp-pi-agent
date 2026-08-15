@@ -1,0 +1,40 @@
+[Unit]
+Description=Refresh the opencode xAI token and republish it to GitHub repo secrets
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/runbooks/05-opencode-ci-token.md
+Wants=network-online.target
+After=network-online.target
+OnFailure=wpa-oc-auth-failed.service
+
+[Service]
+Type=oneshot
+# The login user, deliberately NOT openclaw. The gateway uid owns every agent's
+# auth store in its own home, so a rotating subscription token and a GitHub PAT
+# placed there would be within reach of anything that ever gets a file tool
+# outside the sandbox (ADR 0011). Nothing about this job needs uid 991.
+# ponytail: the login user rather than a dedicated uid — upgrade to
+# wpa-oc:wpa-oc if anything else ever needs this credential.
+User=navehbrenner
+Group=navehbrenner
+
+# Read as root before privileges are dropped, so the PAT never has to be
+# readable by navehbrenner. Same pattern as /etc/wpa-signal.env.
+EnvironmentFile=/etc/wpa-oc.env
+
+# The Pi has no global IPv6, only link-local, and Go's resolver prefers AAAA
+# without falling back. `gh` is a Go binary, so without this it dies with
+# "network is unreachable" against an address that was never reachable — which
+# looks like a broken uplink and is not one. Same fix as the dockerd drop-in.
+Environment=GODEBUG=netdns=cgo
+
+ExecStart=/usr/local/bin/wpa-oc-auth
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+# ponytail: `full`, not `strict`. strict makes the whole hierarchy read-only and
+# opencode writes more than auth.json — a cache and a state dir at least, and
+# the list is not documented. Tighten to strict + ReadWritePaths once a real run
+# has shown which paths it actually touches.
+ProtectSystem=full

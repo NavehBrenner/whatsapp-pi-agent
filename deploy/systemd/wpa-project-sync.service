@@ -1,0 +1,30 @@
+[Unit]
+Description=Mirror the project repo into the agent's workspace
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/runbooks/06-the-project-room.md
+Wants=network-online.target
+After=network-online.target
+OnFailure=wpa-project-sync-failed.service
+
+[Service]
+Type=oneshot
+
+# The gateway user, so the checkout lands owned by the uid whose workspace bind the
+# sandbox mounts. Files owned by anyone else would be visible and unwritable, which
+# is a confusing half-state rather than a clean read-only one.
+User=openclaw
+Group=openclaw
+Environment=HOME=/var/lib/openclaw
+
+EnvironmentFile=/etc/wpa-project.env
+
+ExecStart=/usr/local/bin/wpa-project-sync
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+# A shallow clone of an 81 KB repo takes seconds. This bounds the case where the
+# network hangs rather than fails, so the timer is not pinned by one stuck fetch.
+TimeoutStartSec=300

@@ -422,6 +422,66 @@ def test_a_label_outside_the_send_list_is_refused(
     assert not path.exists(), "a refused entry is consumed, not retried forever"
 
 
+def test_a_drifted_group_drops_outbound(world: Config, tmp_path: Path) -> None:
+    """The egress half of the pin, and the half a notification depends on.
+
+    `decide` already refuses commands from a drifted room, but that only silences
+    *replies*. An entry with no inbound command behind it — a PR notice, a scheduled
+    report — has nothing to refuse on the way in, and would otherwise land in a room
+    whose membership changed. Pinned membership exists because a member added since
+    the pin reads every reply put in the room, which is a claim about egress."""
+    path = _entry(tmp_path, "owner", "001.json", {"to": "family", "text": "PR is up"})
+
+    refused: dict[str, int] = {}
+    assert drain(tmp_path, world, refused, frozenset({GROUP_ID})) == []
+    assert refused == {"membership": 1}
+    assert not path.exists(), "a refused entry is consumed, not retried forever"
+
+
+def test_outbound_to_a_group_is_held_until_membership_is_known(
+    world: Config, tmp_path: Path
+) -> None:
+    """The startup window, which is the one case an entry survives a cycle.
+
+    Membership starts refusing every group, so before the daemon answers there is no
+    way to tell a drifted room from an unasked one. Consuming here would destroy a
+    notification written before a restart — delivery is at-most-once, so the file is
+    the only copy — and refusing an outbound is not recoverable the way refusing a
+    command is."""
+    path = _entry(tmp_path, "owner", "001.json", {"to": "family", "text": "PR is up"})
+
+    refused: dict[str, int] = {}
+    unknown = frozenset({GROUP_ID})  # what Membership.closed() starts with
+    assert drain(tmp_path, world, refused, unknown, known=False) == []
+    assert refused == {}, "held is not refused — nothing to count and nothing to log"
+    assert path.exists(), "the entry must survive to be sent once membership is known"
+
+    # And once the daemon has answered with the pinned set, it goes.
+    ready = drain(tmp_path, world, refused, frozenset(), known=True)
+    assert [item.text for item in ready] == ["PR is up"]
+    assert not path.exists()
+
+
+def test_a_one_to_one_is_not_held_by_an_unanswered_daemon(
+    world: Config, tmp_path: Path
+) -> None:
+    """Holding is for groups. A private chat has no membership to drift, so making it
+    wait on `listGroups` would turn a slow daemon into a silent assistant."""
+    _entry(tmp_path, "owner", "001.json", {"to": "self", "text": "still here"})
+
+    ready = drain(tmp_path, world, {}, frozenset({GROUP_ID}), known=False)
+    assert [item.recipient for item in ready] == [Recipient(id=OWNER_UUID, group=False)]
+
+
+def test_drift_in_one_room_does_not_silence_another(world: Config, tmp_path: Path) -> None:
+    """Drift is a property of one room. A drifted group must not take the owner's
+    own chat down with it — that would turn a membership change into an outage."""
+    _entry(tmp_path, "owner", "001.json", {"to": "self", "text": "still here"})
+
+    ready = drain(tmp_path, world, {}, frozenset({GROUP_ID}))
+    assert [item.recipient for item in ready] == [Recipient(id=OWNER_UUID, group=False)]
+
+
 def test_resolution_is_pure_and_never_invents_a_recipient(world: Config) -> None:
     owner = world.agents["owner"]
     family = world.agents["family"]
@@ -572,6 +632,41 @@ def _serve(path: Path, batches: list[bytes], started: threading.Event) -> None:
     server.close()
 
 
+def _serve_capturing(
+    path: Path, batches: list[bytes], started: threading.Event, seen: list[object]
+) -> None:
+    """Like `_serve`, but stays open long enough to record what the gate sends back.
+
+    `_serve` shuts down and closes as soon as it has written, which is precisely what
+    would hide an unwanted reply — the thing the caller is trying to assert about.
+    """
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(path))
+    server.listen(len(batches))
+    started.set()
+    for batch in batches:
+        conn, _ = server.accept()
+        conn.sendall(batch)
+        conn.settimeout(1.0)
+        buffered = b""
+        try:
+            while True:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                buffered += chunk
+        except OSError:
+            pass  # the timeout is the expected end, not an error
+        for raw in buffered.splitlines():
+            if raw.strip():
+                try:
+                    seen.append(json.loads(raw))
+                except json.JSONDecodeError:
+                    pass
+        conn.close()
+    server.close()
+
+
 def test_it_reconnects_when_the_daemon_goes_away(world: Config, tmp_path: Path) -> None:
     """signal-cli has Restart=on-failure, so the socket disappears under a live
     gate. A gate that exits on the first EOF is a control channel that works until
@@ -594,6 +689,34 @@ def test_it_reconnects_when_the_daemon_goes_away(world: Config, tmp_path: Path) 
     ]
     assert len(written_lines) == 2, "the second connection's command must arrive too"
     assert written_lines[0]["principal"] == "owner"
+
+
+def test_an_accepted_command_sends_nothing_back(world: Config, tmp_path: Path) -> None:
+    """The gate records a command and stays silent.
+
+    It used to reply `ack <timestamp>` so a later quoted reply could be matched to a
+    pending action (ADR 0008, NVB-16). ADR 0011 replaced quoted-reply confirmations
+    with reaction approvals, which bind a YES to a specific delivered message, so the
+    handle has nothing left to hold — and OpenClaw answers the sender itself, making
+    the ack a second message per turn that said nothing. This asserts it is gone,
+    because the cheapest way for it to come back is somebody restoring a helper that
+    looks unused."""
+    line = (FIXTURES / "message.json").read_text(encoding="utf-8").replace("\n", "") + "\n"
+    sock = tmp_path / "socket"
+    commands = tmp_path / "commands.jsonl"
+    started = threading.Event()
+    seen: list[object] = []
+    server = threading.Thread(target=_serve_capturing, args=(sock, [line.encode()], started, seen))
+    server.daemon = True
+    server.start()
+    started.wait(timeout=5)
+
+    run(dataclasses.replace(world, socket=sock), commands, outbox=tmp_path / "out", cycles=1)
+    server.join(timeout=5)
+
+    assert commands.read_text(encoding="utf-8").strip(), "the command itself still lands"
+    sends = [r for r in seen if isinstance(r, dict) and r.get("method") == "send"]
+    assert sends == [], f"an accepted command must send nothing back, got {sends}"
 
 
 # Both captured off the daemon on hardware, 2026-08-11, and redacted. A failure
@@ -639,9 +762,19 @@ SEND_FAILED: object = {
 
 
 def _serve_answering(
-    path: Path, started: threading.Event, seen: list[object], answers: int
+    path: Path,
+    started: threading.Event,
+    seen: list[object],
+    answers: int,
+    members: Sequence[object] = (),
 ) -> None:
-    """A daemon that replies, so one test can drive the whole outbound path."""
+    """A daemon that replies, so one test can drive the whole outbound path.
+
+    `members` is what it reports for `listGroups`. The default of none is a group
+    that has drifted, which is what the connect-time test wants — but a test that
+    expects a group send to succeed has to pass the pinned set, because outbound to
+    a drifted room is refused and outbound to an unknown one is held.
+    """
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(path))
     server.listen(1)
@@ -657,7 +790,10 @@ def _serve_answering(
         request_id = request["id"] if isinstance(request, dict) else None
         method = request.get("method") if isinstance(request, dict) else None
         if method == "listGroups":
-            body: object = {"jsonrpc": "2.0", "id": request_id, "result": []}
+            listed = (
+                [{"id": GROUP_ID, "isMember": True, "members": list(members)}] if members else []
+            )
+            body: object = {"jsonrpc": "2.0", "id": request_id, "result": listed}
         else:
             response = dict(SEND_OK) if isinstance(SEND_OK, dict) else {}
             response["id"] = request_id
@@ -681,7 +817,14 @@ def test_the_sent_timestamp_is_recorded_for_the_registry(world: Config, tmp_path
 
     started = threading.Event()
     seen: list[object] = []
-    server = threading.Thread(target=_serve_answering, args=(sock, started, seen, 2), daemon=True)
+    # The pinned set, so the room is NOT drifted: this test is about the sent-log
+    # registry, and a daemon reporting no groups would have the send refused on
+    # membership instead — which is a different test, below.
+    server = threading.Thread(
+        target=_serve_answering,
+        args=(sock, started, seen, 2, [OWNER_UUID, MOM_UUID, DAD_UUID]),
+        daemon=True,
+    )
     server.start()
     started.wait(timeout=5)
 
