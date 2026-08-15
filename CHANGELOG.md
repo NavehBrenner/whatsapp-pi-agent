@@ -11,6 +11,28 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Removed — the gate's `ack <timestamp>` reply (2026-08-15)
+
+An accepted command is now recorded and answered with nothing. `_ack` and its only
+caller `_recipient_of` are gone, with a test asserting an accepted command sends
+nothing back — the cheapest way for this to return is somebody restoring a helper
+that looks unused.
+
+It was scaffolding for ADR 0008's quoted-reply confirmations: the timestamp was the
+handle a later `YES` would quote, so NVB-16 could match a confirmation to its pending
+action. ADR 0011 replaced that whole mechanism with OpenClaw's reaction approvals,
+which bind a YES to a specific delivered message rather than to text a person
+re-quotes, and it already listed "the ack path" among the things that become
+duplicated work once OpenClaw owns the channel. This finishes that migration rather
+than changing a decision.
+
+What made it visible was the room working: OpenClaw answers the sender itself, so
+every turn carried two messages and the first one said `ack 1786473936544`.
+
+The test needed a new fixture — `_serve` closes the connection as soon as it has
+written, which is exactly what would hide an unwanted reply, so `_serve_capturing`
+stays open and records what the gate sends.
+
 ### Fixed — deleting the refresh key unregistered the whole provider on the runner (2026-08-15)
 
 `deploy/push-opencode-auth.sh` now blanks the refresh token (`.refresh = ""`)

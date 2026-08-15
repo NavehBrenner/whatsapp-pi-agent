@@ -632,6 +632,41 @@ def _serve(path: Path, batches: list[bytes], started: threading.Event) -> None:
     server.close()
 
 
+def _serve_capturing(
+    path: Path, batches: list[bytes], started: threading.Event, seen: list[object]
+) -> None:
+    """Like `_serve`, but stays open long enough to record what the gate sends back.
+
+    `_serve` shuts down and closes as soon as it has written, which is precisely what
+    would hide an unwanted reply — the thing the caller is trying to assert about.
+    """
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(path))
+    server.listen(len(batches))
+    started.set()
+    for batch in batches:
+        conn, _ = server.accept()
+        conn.sendall(batch)
+        conn.settimeout(1.0)
+        buffered = b""
+        try:
+            while True:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                buffered += chunk
+        except OSError:
+            pass  # the timeout is the expected end, not an error
+        for raw in buffered.splitlines():
+            if raw.strip():
+                try:
+                    seen.append(json.loads(raw))
+                except json.JSONDecodeError:
+                    pass
+        conn.close()
+    server.close()
+
+
 def test_it_reconnects_when_the_daemon_goes_away(world: Config, tmp_path: Path) -> None:
     """signal-cli has Restart=on-failure, so the socket disappears under a live
     gate. A gate that exits on the first EOF is a control channel that works until
@@ -654,6 +689,34 @@ def test_it_reconnects_when_the_daemon_goes_away(world: Config, tmp_path: Path) 
     ]
     assert len(written_lines) == 2, "the second connection's command must arrive too"
     assert written_lines[0]["principal"] == "owner"
+
+
+def test_an_accepted_command_sends_nothing_back(world: Config, tmp_path: Path) -> None:
+    """The gate records a command and stays silent.
+
+    It used to reply `ack <timestamp>` so a later quoted reply could be matched to a
+    pending action (ADR 0008, NVB-16). ADR 0011 replaced quoted-reply confirmations
+    with reaction approvals, which bind a YES to a specific delivered message, so the
+    handle has nothing left to hold — and OpenClaw answers the sender itself, making
+    the ack a second message per turn that said nothing. This asserts it is gone,
+    because the cheapest way for it to come back is somebody restoring a helper that
+    looks unused."""
+    line = (FIXTURES / "message.json").read_text(encoding="utf-8").replace("\n", "") + "\n"
+    sock = tmp_path / "socket"
+    commands = tmp_path / "commands.jsonl"
+    started = threading.Event()
+    seen: list[object] = []
+    server = threading.Thread(target=_serve_capturing, args=(sock, [line.encode()], started, seen))
+    server.daemon = True
+    server.start()
+    started.wait(timeout=5)
+
+    run(dataclasses.replace(world, socket=sock), commands, outbox=tmp_path / "out", cycles=1)
+    server.join(timeout=5)
+
+    assert commands.read_text(encoding="utf-8").strip(), "the command itself still lands"
+    sends = [r for r in seen if isinstance(r, dict) and r.get("method") == "send"]
+    assert sends == [], f"an accepted command must send nothing back, got {sends}"
 
 
 # Both captured off the daemon on hardware, 2026-08-11, and redacted. A failure

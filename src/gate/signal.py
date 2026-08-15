@@ -915,32 +915,6 @@ def _send(conn: socket.socket, request_id: str, recipient: Recipient, message: s
     conn.sendall((json.dumps(request) + "\n").encode())
 
 
-def _ack(conn: socket.socket, recipient: Recipient, command: Command) -> Outbound:
-    """Tell the conversation the command was accepted, and which one.
-
-    The timestamp is the handle: a later reply quoting this ack is how NVB-16 will
-    match a confirmation to its pending action. Which is why the ack is registered
-    for response capture like any other send — the message a person quotes when they
-    answer YES is usually this one.
-
-    It goes to the conversation, not to the sender, so that in a group the message a
-    confirmation quotes exists in the room where the confirmation will be typed.
-
-    ponytail: still the placeholder `ack <timestamp>` from NVB-10. It becomes real
-    text when a runner exists to have an opinion about what it says (NVB-15).
-    """
-    request_id = f"ack-{command.timestamp}"
-    message = f"ack {command.timestamp}"
-    _send(conn, request_id, recipient, message)
-    return Outbound(
-        entry=request_id,
-        agent=command.agent,
-        profile=command.profile,
-        recipient=recipient,
-        text=message,
-    )
-
-
 def _await(awaiting: dict[str, Outbound], request_id: str, outbound: Outbound) -> None:
     """Remember a request until its response arrives, oldest evicted first.
 
@@ -1235,22 +1209,13 @@ def _handle(
         f"agent={verdict.agent} profile={verdict.profile} "
         f"len={len(verdict.body)} reply_to={verdict.reply_to}"
     )
-    # Reply to the conversation it came from, taken off the envelope rather than out
-    # of config: the message got here, so this address is known good.
-    recipient = _recipient_of(notification)
-    if recipient is not None:
-        _await(awaiting, f"ack-{verdict.timestamp}", _ack(conn, recipient, verdict))
+    # No acknowledgement is sent. The gate used to reply `ack <timestamp>` so that a
+    # later quoted reply could be matched to a pending action (ADR 0008, NVB-16), but
+    # ADR 0011 replaced quoted-reply confirmations with OpenClaw's reaction approvals,
+    # which bind a YES to a specific delivered message rather than to text a person
+    # re-quotes. The handle has nothing left to hold, and OpenClaw answers the sender
+    # itself — so the ack was two messages per turn where the second said nothing.
     return _is_group_update(notification, config)
-
-
-def _recipient_of(notification: object) -> Recipient | None:
-    """The conversation an envelope arrived in, as somewhere to send a reply."""
-    envelope = _field(notification, "params", "envelope")
-    group_id = _field(envelope, "dataMessage", "groupInfo", "groupId")
-    if isinstance(group_id, str):
-        return Recipient(id=group_id, group=True)
-    source = _field(envelope, "source")
-    return Recipient(id=source, group=False) if isinstance(source, str) else None
 
 
 def _is_group_update(notification: object, config: Config) -> bool:
