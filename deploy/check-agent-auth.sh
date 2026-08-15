@@ -5,15 +5,17 @@
 #   2. every other configured agent has one of its own
 #
 # Rule 2 is not decoration. Auth profiles resolve read-through: an agent with no
-# profile of its own falls back to the default agent's store. On 2026-08-15 the
-# default agent was emptied by hand and REFILLED ITSELF within two minutes while one
-# agent was depending on that fallback; with every agent holding its own profile it
-# has stayed empty across restarts. So rule 2 is the thing that keeps rule 1 true,
-# and checking rule 1 alone would report success right up until it mattered.
+# profile of its own falls back to the default agent's store, so rule 2 is what
+# bounds the damage when rule 1 is violated — which it will be.
 #
-# The writer was never identified — see the CHANGELOG entry for 2026-08-15. This
-# script therefore detects the state rather than preventing it, which is the honest
-# shape for a fault whose cause is unknown.
+# It was believed until 2026-08-16 that rule 2 also KEPT rule 1 true. It does not.
+# `main` refilled itself during a twenty-hour window in which every agent held its
+# own profile. Both rules are worth asserting; neither is a fix, and a green run is
+# a statement about this moment only. Run it on a schedule, not after logins.
+#
+# The writer has never been identified across two attempts — see Q7. This script
+# therefore detects the state rather than preventing it, which is the honest shape
+# for a fault whose cause is unknown.
 #
 # Run as root on the Pi:  sudo deploy/check-agent-auth.sh
 # Exits non-zero on any violation, so it can gate a deploy.

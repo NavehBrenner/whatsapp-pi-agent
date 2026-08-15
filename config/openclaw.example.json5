@@ -92,6 +92,15 @@
       //        -> [{recipient, number, uuid, isRegistered}]
       //    It is a lookup against Signal's servers, so it tells Signal the assistant
       //    asked about that number.
+      //    ⚠️ **THAT `uuid` IS NOT ALWAYS AN ACI.** For someone the account does not
+      //    know yet it returns their **PNI** — the phone-number identity — in the same
+      //    field, with nothing to distinguish it. Verified 2026-08-16: a number
+      //    resolved to one uuid, and after that person joined a group the SAME CALL on
+      //    the SAME NUMBER returned a different one. The first was the PNI.
+      //    A PNI-keyed allowlist matches nothing on the wire and refuses in silence —
+      //    the same failure as keying on a phone number, wearing a uuid's clothes.
+      //    So step 1 is a lead, not an answer. Confirm before writing it down: the
+      //    `aci` column in step 2, or membership in `listGroups`, which is ACIs only.
       // 2. AFTER they message — the daemon's own recipient store, which by then holds
       //    them. `aci` plus `profile_given_name`, and no message body is touched:
       //      SELECT aci, number, profile_given_name FROM recipient;
@@ -100,15 +109,18 @@
       //    for the same reason, and this file IS the account. Cross-check against
       //    `identity` / `session`, which only ever hold real correspondents; the
       //    `recipient` table also carries PNI-only rows that never sent anything.
-      //    Delete the snapshot afterwards.
+      //    The row holds BOTH ids — `aci` bare, `pni` with a literal `PNI:` prefix —
+      //    which makes this the one place the two can be told apart by eye:
+      //      SELECT aci, pni, number, profile_given_name FROM recipient WHERE number = …;
+      //    Only the `aci` column goes in config. Delete the snapshot afterwards.
       //
       // The envelope tap in .local/pi.md answers it too and is the worst of the
       // three — it writes plaintext bodies to disk to learn one uuid.
       allowFrom: [
         "uuid:00000000-0000-0000-0000-000000000000", // owner
-        "uuid:11111111-1111-1111-1111-111111111111", // aryeh
-        "uuid:22222222-2222-2222-2222-222222222222", // aviv
-        "uuid:33333333-3333-3333-3333-333333333333", // liron
+        "uuid:11111111-1111-1111-1111-111111111111", // alice
+        "uuid:22222222-2222-2222-2222-222222222222", // bob
+        "uuid:33333333-3333-3333-3333-333333333333", // carol
       ],
 
       groupPolicy: "allowlist", // schema default; stated on purpose
@@ -126,12 +138,12 @@
       // consistency" admits them to EVERY allowlisted group, because this list is
       // channel-wide.
       //
-      // The `liron` entry appears in both lists on purpose: she is a member of the
-      // room AND has her own 1:1 agent. Those two facts are independent, and the
+      // The `carol` entry appears in both lists on purpose: they are a member of the
+      // room AND have their own 1:1 agent. Those two facts are independent, and the
       // second was added months after the first.
       groupAllowFrom: [
         "uuid:00000000-0000-0000-0000-000000000000", // owner
-        "uuid:33333333-3333-3333-3333-333333333333", // liron — also a DM principal
+        "uuid:33333333-3333-3333-3333-333333333333", // carol — also a DM principal
       ],
 
       // --- per-room grants (ADR 0008's pair, the half config can express) ----
@@ -593,7 +605,7 @@
       // private chat; a shared workspace would persist it in the same MEMORY.md.
       //
       // Needs its OWN `openclaw models auth --agent code-invariants login`, and its
-      // own IDENTITY.md written into the workspace. Skipping either is the `liron`
+      // own IDENTITY.md written into the workspace. Skipping either is the `carol`
       // failure: it will appear to work by reading through to `main`, right up until
       // the day `main` is actually empty.
       // ⚠️ AN AGENT-LEVEL `tools.alsoAllow` REPLACES THE GLOBAL ONE. It does not
@@ -641,7 +653,7 @@
       // fails at the first turn rather than falling back to somebody else's.
       //
       // ⚠️ THAT SENTENCE WAS FALSE ON THE PI FOR A DAY, and a NEW AGENT WORKING is how
-      // it surfaced. `liron` was deployed 2026-08-15 with no login of her own and
+      // it surfaced. `carol` was deployed 2026-08-15 with no login of their own and
       // answered on the first turn, because `main`'s store held an xai profile and
       // read-through found it:
       //
@@ -650,13 +662,26 @@
       // ⚠️ AND EMPTYING `main` IS NOT ENOUGH ON ITS OWN. Cleared by hand, it REFILLED
       // ITSELF within two minutes of ordinary use — no login was run, and the calling
       // agent's own store was untouched. What made the second attempt stick was giving
-      // the one agent that lacked a profile her own; since then `main` has stayed empty
-      // through idle, CLI reads, agent turns, a failing turn and a restart.
+      // the one agent that lacked a profile one of its own; since then `main` has stayed
+      // empty through idle, CLI reads, agent turns, a failing turn and a restart.
       //
       // So the rule that is actually actionable is the second one, not the first:
       //
       //     the default agent stays empty only while EVERY OTHER AGENT HAS ITS OWN
       //     PROFILE. An agent with none is not untidy, it is the cause.
+      //
+      // ⚠️ THAT RULE IS ALSO FALSE, and it was disproved the way it said it would be.
+      // On 2026-08-16 `main` was found holding one profile again, written at
+      // 2026-08-15 20:06 — twenty hours AFTER the last agent lacking one was given
+      // its own (00:30), and hours BEFORE the next new agent existed. Every agent
+      // held its own profile across that whole window. So an agent without a profile
+      // is not the cause either; it was only the last thing changed before main
+      // happened to stay empty for a day.
+      //
+      // Nothing about read-through is understood well enough to state a rule. What
+      // is left is the check: run `deploy/check-agent-auth.sh` on a schedule, treat
+      // a non-empty main as expected-to-recur rather than as a regression, and do
+      // not mount a tool credential on the assumption that main is empty.
       //
       // Read-through is resolved at GATEWAY STARTUP, not per turn — main's contents at
       // boot are what decide, and repopulating it mid-run grants nothing until the next
@@ -673,29 +698,31 @@
       // UI metadata; the agent that has one without the other answers "I don't have a
       // name yet".
       // ---------------------------------------------------------------------
-      // ⚠️ `aryeh` and `aviv` ARE TEMPLATES AND ARE NOT ON THE PI. They have no ACI
-      // yet, and an entry here is harmless only while no binding and no `allowFrom`
-      // entry names them — an agent nothing routes to is dead weight, whereas a
-      // binding on a placeholder uuid is a live rule matching a real person's id
-      // somewhere in the world. Deploy them when their ACI is captured, both halves in
-      // the same edit.
+      // ⚠️ NAMES HERE ARE PLACEHOLDERS, AND SO ARE THE UUIDs. An entry is harmless only
+      // while no binding and no `allowFrom` entry names it — an agent nothing routes to
+      // is dead weight, whereas a binding on a placeholder uuid is a live rule matching
+      // a real person's id somewhere in the world. Deploy one when its ACI is captured,
+      // and do all four halves in the same edit: `allowFrom`, the agent entry, the
+      // binding, and an IDENTITY.md in the workspace. `groupAllowFrom` is a FIFTH and
+      // separate decision — it is channel-wide, so adding someone there admits them to
+      // every allowlisted group, not just the one you had in mind.
       //
-      // The live config carries `liron` only, and omits `workspace` because OpenClaw
+      // The live config carries two of these, and omits `workspace` because OpenClaw
       // derives `~/.openclaw/workspace-<id>` — which is what the box actually uses.
       // The explicit paths here are the documented shape, not the deployed one.
       {
-        id: "aryeh",
-        workspace: "~/.openclaw/workspaces/aryeh",
+        id: "alice",
+        workspace: "~/.openclaw/workspaces/alice",
         identity: { name: "Pi" },
       },
       {
-        id: "aviv",
-        workspace: "~/.openclaw/workspaces/aviv",
+        id: "bob",
+        workspace: "~/.openclaw/workspaces/bob",
         identity: { name: "Pi" },
       },
       {
-        id: "liron",
-        workspace: "~/.openclaw/workspaces/liron",
+        id: "carol",
+        workspace: "~/.openclaw/workspaces/carol",
         identity: { name: "Pi" },
       },
       {
@@ -756,28 +783,28 @@
     // The three 1:1 chats. Note the `uuid:` prefix on every one — a bare uuid here
     // matches nothing, says nothing, and routes the DM to `main`.
     {
-      agentId: "aryeh",
+      agentId: "alice",
       match: {
         channel: "signal",
         peer: { kind: "direct", id: "uuid:11111111-1111-1111-1111-111111111111" },
       },
-      comment: "aryeh-1to1",
+      comment: "alice-1to1",
     },
     {
-      agentId: "aviv",
+      agentId: "bob",
       match: {
         channel: "signal",
         peer: { kind: "direct", id: "uuid:22222222-2222-2222-2222-222222222222" },
       },
-      comment: "aviv-1to1",
+      comment: "bob-1to1",
     },
     {
-      agentId: "liron",
+      agentId: "carol",
       match: {
         channel: "signal",
         peer: { kind: "direct", id: "uuid:33333333-3333-3333-3333-333333333333" },
       },
-      comment: "liron-1to1",
+      comment: "carol-1to1",
     },
   ],
 
