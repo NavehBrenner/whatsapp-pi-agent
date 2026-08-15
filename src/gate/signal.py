@@ -723,7 +723,14 @@ def resolve(to: str, binding: Binding, config: Config) -> Recipient | None:
     return conversation.recipient if conversation is not None else None
 
 
-def drain(outbox: Path, config: Config, refused: dict[str, int]) -> list[Outbound]:
+def drain(
+    outbox: Path,
+    config: Config,
+    refused: dict[str, int],
+    refusing: frozenset[str] = frozenset(),
+    *,
+    known: bool = True,
+) -> list[Outbound]:
     """Take what the agents wrote, resolve it, and return what may be sent.
 
     **Delivery is at-most-once: the file is unlinked before the send, not after.**
@@ -733,6 +740,22 @@ def drain(outbox: Path, config: Config, refused: dict[str, int]) -> list[Outboun
     Refused entries are consumed too. Leaving them would turn one malformed file
     into a permanent retry loop, and the agent is told nothing either way — what
     it may carry back is NVB-15's decision, when there is an agent to receive it.
+
+    `refusing` is the drifted-room set, and it belongs here as much as it does in
+    `decide`. Refusing a drifted room's *commands* only suppresses replies, and a
+    reply is not the only thing that reaches a room: an entry written without any
+    inbound command — a notification, a scheduled report — has nothing to refuse
+    on the way in, and a member added since the pin would read it. Pinned
+    membership exists because a new member reads every reply put in the room
+    (ADR 0011), which is a statement about egress.
+
+    `known` is why that check is not simply `refusing`. Membership starts refusing
+    every group, so before the daemon has answered once there is no way to tell a
+    drifted room from an unasked one. Ingress may treat them alike — a refused
+    command is retried by whoever sent it. Egress may not: the entry is unlinked
+    before the send, so a group entry written during that window would be destroyed
+    rather than delayed. It is therefore **held, not consumed** — the one case where
+    an entry survives a cycle.
     """
     ready: list[Outbound] = []
     for agent, binding in config.agents.items():
@@ -750,14 +773,27 @@ def drain(outbox: Path, config: Config, refused: dict[str, int]) -> list[Outboun
 
         for path in entries[:DRAIN_PER_CYCLE]:
             parsed = _read_entry(path)
-            path.unlink(missing_ok=True)
             if isinstance(parsed, str):
+                path.unlink(missing_ok=True)
                 _refuse(parsed, refused)
                 continue
             to, text = parsed
             recipient = resolve(to, binding, config)
             if recipient is None:
+                path.unlink(missing_ok=True)
                 _refuse("not in list", refused)
+                continue
+            # Held rather than consumed, and the only entry that survives a cycle:
+            # until the daemon has answered, an unasked room and a drifted one are
+            # the same value, and destroying a notification is not a safe way to be
+            # careful.
+            if recipient.group and not known:
+                continue
+            path.unlink(missing_ok=True)
+            # `refusing` holds group ids only — a group id is base64 of 32 bytes
+            # and an ACI is a UUID, so a one-to-one can never collide into it.
+            if recipient.id in refusing:
+                _refuse("membership", refused)
                 continue
             ready.append(
                 Outbound(
@@ -988,6 +1024,13 @@ class Membership:
     refusing: frozenset[str]
     announced: frozenset[str] = frozenset()
     requests: int = 0
+    # Whether the daemon has ever answered. `refusing` alone cannot say: it starts
+    # holding every group, so "drifted" and "not asked yet" are the same value.
+    # Ingress does not care — both mean refuse, and a refused command is retried by
+    # the person who sent it. Egress does: an outbound entry is unlinked before it is
+    # sent, so treating the startup window as drift would destroy a notification
+    # instead of delaying it. See `drain`.
+    known: bool = False
 
     @classmethod
     def closed(cls, config: Config) -> Membership:
@@ -1023,6 +1066,7 @@ def _apply_members(
     week (ADR 0008).
     """
     membership.refusing = _drifted(response, config)
+    membership.known = True
     for identifier in sorted(membership.refusing - membership.announced):
         label = next(
             (
@@ -1121,7 +1165,9 @@ def run(
                     # By the clock rather than only on an idle `select`, so a busy
                     # receive stream cannot starve the outbox indefinitely.
                     due = now + POLL_SECONDS
-                    for outbound in drain(outbox, config, refused):
+                    for outbound in drain(
+                        outbox, config, refused, membership.refusing, known=membership.known
+                    ):
                         request_id = f"send-{outbound.entry}"
                         _send(conn, request_id, outbound.recipient, outbound.text)
                         _await(awaiting, request_id, outbound)

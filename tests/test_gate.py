@@ -422,6 +422,66 @@ def test_a_label_outside_the_send_list_is_refused(
     assert not path.exists(), "a refused entry is consumed, not retried forever"
 
 
+def test_a_drifted_group_drops_outbound(world: Config, tmp_path: Path) -> None:
+    """The egress half of the pin, and the half a notification depends on.
+
+    `decide` already refuses commands from a drifted room, but that only silences
+    *replies*. An entry with no inbound command behind it — a PR notice, a scheduled
+    report — has nothing to refuse on the way in, and would otherwise land in a room
+    whose membership changed. Pinned membership exists because a member added since
+    the pin reads every reply put in the room, which is a claim about egress."""
+    path = _entry(tmp_path, "owner", "001.json", {"to": "family", "text": "PR is up"})
+
+    refused: dict[str, int] = {}
+    assert drain(tmp_path, world, refused, frozenset({GROUP_ID})) == []
+    assert refused == {"membership": 1}
+    assert not path.exists(), "a refused entry is consumed, not retried forever"
+
+
+def test_outbound_to_a_group_is_held_until_membership_is_known(
+    world: Config, tmp_path: Path
+) -> None:
+    """The startup window, which is the one case an entry survives a cycle.
+
+    Membership starts refusing every group, so before the daemon answers there is no
+    way to tell a drifted room from an unasked one. Consuming here would destroy a
+    notification written before a restart — delivery is at-most-once, so the file is
+    the only copy — and refusing an outbound is not recoverable the way refusing a
+    command is."""
+    path = _entry(tmp_path, "owner", "001.json", {"to": "family", "text": "PR is up"})
+
+    refused: dict[str, int] = {}
+    unknown = frozenset({GROUP_ID})  # what Membership.closed() starts with
+    assert drain(tmp_path, world, refused, unknown, known=False) == []
+    assert refused == {}, "held is not refused — nothing to count and nothing to log"
+    assert path.exists(), "the entry must survive to be sent once membership is known"
+
+    # And once the daemon has answered with the pinned set, it goes.
+    ready = drain(tmp_path, world, refused, frozenset(), known=True)
+    assert [item.text for item in ready] == ["PR is up"]
+    assert not path.exists()
+
+
+def test_a_one_to_one_is_not_held_by_an_unanswered_daemon(
+    world: Config, tmp_path: Path
+) -> None:
+    """Holding is for groups. A private chat has no membership to drift, so making it
+    wait on `listGroups` would turn a slow daemon into a silent assistant."""
+    _entry(tmp_path, "owner", "001.json", {"to": "self", "text": "still here"})
+
+    ready = drain(tmp_path, world, {}, frozenset({GROUP_ID}), known=False)
+    assert [item.recipient for item in ready] == [Recipient(id=OWNER_UUID, group=False)]
+
+
+def test_drift_in_one_room_does_not_silence_another(world: Config, tmp_path: Path) -> None:
+    """Drift is a property of one room. A drifted group must not take the owner's
+    own chat down with it — that would turn a membership change into an outage."""
+    _entry(tmp_path, "owner", "001.json", {"to": "self", "text": "still here"})
+
+    ready = drain(tmp_path, world, {}, frozenset({GROUP_ID}))
+    assert [item.recipient for item in ready] == [Recipient(id=OWNER_UUID, group=False)]
+
+
 def test_resolution_is_pure_and_never_invents_a_recipient(world: Config) -> None:
     owner = world.agents["owner"]
     family = world.agents["family"]
