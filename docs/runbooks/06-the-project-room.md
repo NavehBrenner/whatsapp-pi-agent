@@ -121,6 +121,21 @@ It reads the token out of `mcp.servers.github.env` rather than keeping a second
 copy, filters events authored by the token owner (so the agent is never woken about
 its own `/oc` comments), and dedupes against a `seen` list.
 
+Three things it watches: new issue comments, new or updated issues and PRs, and
+**failed workflow runs**. The last is not author-filtered — a failure matters whoever
+caused it, and the ones caused by the agent's own PRs are exactly the ones it must
+act on. The `actions/runs` endpoint takes no `since`, so that window is applied
+client-side, and the dedupe id carries the conclusion so a re-run that fails again is
+a new event.
+
+The Issues-scoped PAT reads `actions/runs` on a public repo without extra
+permissions — verified, HTTP 200 — so no widening was needed for this.
+
+**The agent cannot read an Actions log**; it has no workflow tool. Its `MEMORY.md`
+tells it to route the failure instead: comment `/oc` with the run URL and let
+opencode, which runs inside GitHub with an App token, read the log it cannot. That
+division is the point — the agent routes, the runner reads.
+
 ### `openclaw system event` does not wake anything here
 
 It is the obvious-looking call. It enqueues an event and returns `ok` **without

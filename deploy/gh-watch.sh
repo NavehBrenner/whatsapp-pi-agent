@@ -93,6 +93,21 @@ done < <(jq -r '.[] | [.number,
                        .state, .user.login, .updated_at,
                        (.title // "" | gsub("[\n\t]"; " "))] | @tsv' <<<"$issues")
 
+# Failed CI runs. Not filtered by actor, unlike the two above: a run that fails is
+# worth reporting whoever caused it, and the ones caused by the agent's own PRs are
+# precisely the ones it needs to act on.
+#
+# No `since` parameter on this endpoint, so the window is applied client-side. The
+# dedupe id carries the conclusion, so a re-run that fails again is a new event while
+# a run merely being re-read is not.
+runs=$(gh_api "$api/repos/$GH_REPO/actions/runs?per_page=20")
+while IFS=$'\t' read -r id name concl branch updated url; do
+  [ -n "${id:-}" ] || continue
+  [[ "$updated" > "$window" ]] || continue
+  note "run:$id:$concl" "CI '$name' $concl on $branch — $url"
+done < <(jq -r '.workflow_runs[]? | select(.conclusion == "failure" or .conclusion == "timed_out")
+                | [.id, .name, .conclusion, .head_branch, .updated_at, .html_url] | @tsv' <<<"$runs")
+
 # The cursor advances to NOW minus the overlap, not to the newest event seen. Those
 # differ when nothing happened: anchoring on the newest event freezes the window, so
 # a quiet week means every poll re-fetches a week of history. With per_page=50 and no
