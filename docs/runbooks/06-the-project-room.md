@@ -1,0 +1,196 @@
+# Runbook 06 — the project room
+
+A Signal group bound to one repository, served by its own agent, which can file and
+comment on that repo's issues and is woken when the repo moves.
+
+It exists so the owner can start coding work from his phone: describe the task, the
+agent opens an issue and asks the runner for a plan, the plan comes back into the
+room, he approves, a PR appears. [Runbook 05](05-opencode-ci-token.md) covers the
+runner half; this covers the room.
+
+## 0. Why it is a separate agent
+
+`load_config` refuses one agent in two conversations ("an agent session may not span
+conversations"), so the owner's DM agent cannot also serve this room. That refusal is
+doing real work here rather than being a formality: this room receives issue bodies
+and PR titles from a **public** repo, which is text a stranger wrote arriving at an
+agent with durable memory. A shared session would carry a poisoned issue into the
+private chat; a shared workspace would keep it in the same `MEMORY.md`.
+
+The cost is that the project room does not remember the DM's context, and that is
+the intended trade rather than a limitation to work around.
+
+| | |
+|---|---|
+| Signal group | `mKfSyvnnWHQHR1Au6FjN8CEAM/02Y2iBPkGnsUgalKo=`, two members: the owner and the assistant |
+| Gate conversation | `code-invariants`, agent `code-invariants`, profile `project` (`send_to` = `["self"]`) |
+| OpenClaw agent | `code-invariants`, workspace `~/.openclaw/workspace-code-invariants` |
+| Session key | `agent:code-invariants:signal:group:mKfSyvnn…` |
+
+`members` is two entries because **the assistant is a member of its own group**.
+Leave its ACI out and the room refuses everything forever, which reads exactly like
+a bug — `deploy/pin-group.py` prints the correct block.
+
+## 1. Deploying the agent
+
+Four things, and skipping the last is the `liron` failure from #24:
+
+```bash
+# 1. gate: conversation + profile in config.toml, then
+sudo -u wpa-gate PYTHONPATH=/opt/wpa/src python3 -m gate.signal --check /opt/wpa/config/config.toml
+
+# 2. openclaw: agents.list entry, a binding (GROUP ids carry NO `uuid:` prefix), and
+#    the room's tools.allow ceiling
+sudo -u openclaw HOME=/var/lib/openclaw openclaw config validate
+
+# 3. the workspace, with an IDENTITY.md — an agent without one answers
+#    "I don't have a name yet"
+sudo -u openclaw install -d -m 0700 /var/lib/openclaw/.openclaw/workspace-code-invariants
+
+# 4. ITS OWN auth profile. Without this it reads through to `main` and appears to
+#    work right up until `main` is actually empty.
+sudo -u openclaw HOME=/var/lib/openclaw openclaw models auth --agent code-invariants login
+```
+
+`--agent` is an option on the **parent** command: `openclaw models auth --agent X
+login`, never `… login --agent X`.
+
+Verify the fourth with `openclaw models --agent code-invariants status` and read the
+`effective=` path. If it names `agents/main/...`, the login did not take.
+
+## 2. The GitHub MCP server
+
+`/usr/local/bin/github-mcp-server` (v1.9.0, arm64, checksum-verified), spawned over
+**stdio** by the gateway. Stdio deliberately: there is no loopback port, so nothing
+to firewall — NVB-27's lesson applied before it could bite.
+
+Three narrowings, weakest to strongest:
+
+| Layer | Where |
+|---|---|
+| `toolFilter.include` | `mcp.servers.github` in `openclaw.json` |
+| `--tools=…` | the server's own argv |
+| **the PAT** | fine-grained, `Issues: read/write`, one repo, no contents |
+
+The PAT is the floor and the only one that holds if the other two are misconfigured.
+
+```bash
+sudo -u openclaw HOME=/var/lib/openclaw openclaw mcp probe github --json
+# expect: 4 tools, diagnostics: []
+```
+
+### `create_issue` does not exist
+
+`list-scopes` advertises it, `--tools=create_issue` is accepted without complaint,
+and **nothing registers**. The real tool is `issue_write`. Only the tool *count* in
+`mcp probe` exposed it — the same silent-non-grant failure ADR 0011 records for
+OpenClaw tool lists, appearing here in GitHub's own server.
+
+It also costs the narrow verb ADR 0010 asks for: `issue_write` is a consolidated
+write that can close and relabel, and there is no create-only tool. The containment
+falls back to the PAT's scope.
+
+**Put the tool count in the checklist, not just `config validate`.** `mcp probe`
+returns tools and no diagnostics against a *dead* credential, because listing tools
+does not authenticate.
+
+### A rotated token needs a gateway restart
+
+`openclaw mcp reload` disposes cached runtimes but does **not** re-read a changed
+env. The MCP child is spawned per turn from the gateway's in-memory config, so after
+editing the token you get 401s from a child holding the old one — while the file and
+the config both hold the new one. Diagnosed by hashing:
+
+```bash
+sudo sh /path/to/check-mcp-token.sh    # file / config / live process, hashes only
+```
+
+Restart `wpa-openclaw` after any credential change.
+
+## 3. The watcher
+
+`wpa-gh-watch.timer` → `/usr/local/bin/wpa-gh-watch`, every 60s.
+
+GitHub cannot push (the Pi is not reachable) and the agent cannot poll (no
+scheduling tool, no sandbox network), so this box looks on its behalf. Idle ticks
+cost one authenticated HTTPS call and **no model tokens**; a turn is spent only when
+something happened. That is the whole reason it is not an `openclaw cron` job waking
+the agent on a timer to find nothing.
+
+It reads the token out of `mcp.servers.github.env` rather than keeping a second
+copy, filters events authored by the token owner (so the agent is never woken about
+its own `/oc` comments), and dedupes against a `seen` list.
+
+### `openclaw system event` does not wake anything here
+
+It is the obvious-looking call. It enqueues an event and returns `ok` **without
+running a turn**, because the heartbeat that consumes the queue is suppressed by a
+comments-only `HEARTBEAT.md`. `--expect-final` still returns `ok`. The working
+primitive is:
+
+```bash
+openclaw agent --session-key "<key>" --deliver --timeout 120 --message "…"
+```
+
+`--deliver` alone suffices. And note the gateway logs **no** `delivered reply` line
+for a CLI-initiated turn, so that log proves nothing either way — the room does.
+
+### The cursor advances on wall-clock, not on events
+
+Anchoring it to the newest event seen freezes the window on a quiet repo, so every
+poll re-fetches a widening slice of history. With `per_page=50` and no pagination
+that eventually drops events off the end — a quiet week silently breaking the first
+busy day. It advances to `now - 5min` each run; the overlap plus the seen-list is
+what makes that safe.
+
+## 4. Verifying without touching the repo
+
+Rewind the cursor past an existing event and let it replay:
+
+```bash
+sudo sh -c 'echo 2026-08-14T18:00:00Z > /var/lib/wpa-gh-watch/cursor
+            : > /var/lib/wpa-gh-watch/seen
+            chown openclaw:openclaw /var/lib/wpa-gh-watch/{cursor,seen}'
+sudo systemctl start wpa-gh-watch.service
+sudo journalctl -u wpa-gh-watch -n 15 --no-pager     # expect a "waking …" line
+```
+
+The script rewrites a correct cursor on the way out, so this is self-cleaning.
+
+**Probe design matters here.** An earlier check asked the agent for a count of open
+issues, got `0`, and was taken as success — but the repo genuinely had zero, so the
+success value and the failure value were identical and a dead credential passed. Ask
+for something whose failure is distinguishable, or check a process's environment
+rather than a model's report.
+
+## 5. When it breaks
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Room silent on new PRs/plans | watcher failing; a Signal DM should have said so | `journalctl -u wpa-gh-watch -n 50` |
+| Agent reports 401 from GitHub | child spawned before a token change | restart `wpa-openclaw`, then hash file/config/process |
+| A granted tool "is not available" | one of six policy layers stripped it | `journalctl -u wpa-openclaw \| grep tool-policy` — it names the layer |
+| Agent answers in the wrong room | binding uses a `uuid:` prefix on a group id | group ids carry no prefix; check `sessions.json` |
+| Everything replayed after a reboot | cursor lost | `StateDirectory=` owns it; check it exists and is `openclaw`-owned |
+
+## Operational notes
+
+- **Six layers can strip a tool**, and the tool-policy log names which one every
+  time: `tools.profile`, global `tools.deny`, agent `alsoAllow`, the room's
+  `tools.allow` ceiling, `tools.sandbox.tools.allow`, and a **built-in**
+  `sandbox tools.deny` that is not in our config at all. That last one is why the
+  agent has no `cron`: upstream denies scheduling to sandboxed agents, and clearing
+  the list would mean emptying an unenumerable default to unmask one entry.
+- **Subagents spawn but inherit nothing.** The child receives only the spawn-related
+  tools, which a subagent-specific deny then removes, so it dies with "No callable
+  tools remain". Fail-closed, and currently not useful — left denied.
+- **The MCP server is gateway-global, not agent-bound.** Only `code-invariants` is
+  granted the tools, but that is tool *policy*, not an absent credential — the
+  distinction ADR 0010 exists to make. If policy ever fails open the blast radius is
+  issues and comments on one repo, which is why the PAT's scope matters more than it
+  looks. Per-agent MCP servers are not supported on `2026.7.1-2`.
+- **No registry rows were added** for these grants. `src/agent/registry.py` is
+  checked against `[[agent.profiles]].tools`, and nothing lists them: enforcement is
+  OpenClaw's `alsoAllow` plus the room ceiling. Adding rows nothing references would
+  be dead entries in a list whose whole value is that it refuses unknown names. The
+  two-config drift this leaves is the cost ADR 0011 already accepts.

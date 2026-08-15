@@ -1,0 +1,38 @@
+[Unit]
+Description=Notice activity on the project repo and wake the agent that owns its room
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/runbooks/05-opencode-ci-token.md
+Wants=network-online.target
+After=network-online.target wpa-openclaw.service
+OnFailure=wpa-gh-watch-failed.service
+
+[Service]
+Type=oneshot
+
+# The gateway user, unlike wpa-oc-auth which deliberately avoids it. Two reasons
+# specific to this job: it reads the GitHub token out of the gateway's own config
+# rather than keeping a second copy, and it calls `openclaw system event`, which
+# talks to the gateway as its owner. Nothing here needs a credential of its own.
+User=openclaw
+Group=openclaw
+Environment=HOME=/var/lib/openclaw
+
+EnvironmentFile=/etc/wpa-gh-watch.env
+
+# systemd creates and owns this, so the cursor survives reboots without a tmpfiles
+# rule. Losing it is not fatal — the script falls back to a 15 minute window — but
+# it would replay whatever happened in that window.
+StateDirectory=wpa-gh-watch
+StateDirectoryMode=0700
+
+ExecStart=/usr/local/bin/wpa-gh-watch
+# A wake runs a real agent turn, so this unit can outlive its own timer interval.
+# Bounded so a hung turn fails and reports rather than pinning the watcher: the
+# script also passes --timeout 120 to the agent, and this is the outer backstop.
+TimeoutStartSec=180
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes

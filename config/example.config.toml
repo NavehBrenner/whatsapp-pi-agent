@@ -97,6 +97,35 @@ uuid = "00000000-0000-0000-0000-000000000000"
 name = "owner"                                     # the pair name: unique everywhere
 # number = "+447700900000"
 
+# A project room: one repo, one room, one agent. The owner is the only member, so
+# nothing here is about keeping people apart — it is about keeping *contexts* apart.
+#
+# Why it cannot be the `owner` agent, however much it would be convenient: an agent
+# named in two conversations is a refusal at load ("an agent session may not span
+# conversations"). That refusal is doing real work here rather than being a formality.
+# This room ingests text the owner did not write — issue bodies and PR titles from
+# public repos, arriving through a notifier — which is attacker-influenceable content
+# entering an agent with durable memory. A shared session would carry a poisoned issue
+# straight into the private chat, and a shared workspace would persist it in the same
+# MEMORY.md. Separate agent, separate workspace, separate memory is the containment,
+# and the cost is that the project room does not remember the DM's context.
+#
+# `send_to` on its profile is ["self"] — the room it serves and nowhere else. Combined
+# with the pinned `members` set, that is what makes this room safe to write into
+# unprompted: a member added since the pin drifts the room, and a drifted room drops
+# outbound as well as inbound (see `drain`).
+#
+# [[signal.conversations]]
+# label   = "code-invariants"
+# id      = "<group id>"                        # deploy/pin-group.py prints both lines
+# members = ["<assistant uuid>", "<owner uuid>"]  # TWO: the assistant is a member too
+# agent   = "code-invariants"
+# profile = "project"
+# purpose = "the code-invariants repo: plans, PRs, CI"
+# [[signal.conversations.senders]]
+# uuid = "<owner uuid>"
+# name = "owner-code-invariants"                # the pair name: unique everywhere
+
 # One 1:1 per family member. Three conversations, three agents, three profiles' worth
 # of the same bundle — a DM is a conversation whose id is the other party's ACI and
 # whose member set is exactly that person, so these have the same shape as owner-1to1
@@ -199,6 +228,23 @@ name  = "owner-full"
 tools = ["whatsapp.read", "calendar.personal.rw", "calendar.family.rw",
          "email.personal.draft", "notes.rw"]
 # send_to = ["self", "family"]
+
+# The owner in a project room. Same tools as `owner-full` — it is the owner, alone, in
+# a room of his own — but a profile is a bundle of tools AND a send list, and the send
+# list is the reason this cannot simply reuse `owner-full`: that one may address
+# `family`, and an agent driven by public issue text must not be able to speak into the
+# family room. ["self"] is the default and is left implicit.
+#
+# `whatsapp.read` is deliberately NOT here, and it is the one grant this profile was
+# asked to carry. The question the repo puts to every grant — what does a successful
+# injection do with this — has an unusually concrete answer in a room fed by public
+# issue text: it reads the owner's WhatsApp and writes what it finds somewhere. The
+# disclosure would be bounded to the owner, since he is the only member, but a code
+# room has no use for it, and a grant that buys nothing is all cost.
+# [[agent.profiles]]
+# name  = "project"
+# tools = ["calendar.personal.rw", "calendar.family.rw",
+#          "email.personal.draft", "notes.rw"]
 
 # A family member in their own chat. Shared by all three of them as a NAME, not as a
 # session — each names it from their own conversation, and a profile is a bundle, not

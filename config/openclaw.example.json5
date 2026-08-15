@@ -584,6 +584,23 @@
         workspace: "~/.openclaw/workspaces/family",
       },
 
+      // A project room — one repo, one room, one agent. Same person as `owner` and
+      // deliberately NOT the same agent: the gate refuses one agent in two
+      // conversations, and here that refusal is the containment rather than a
+      // formality. This room receives issue bodies and PR titles from PUBLIC repos
+      // via a notifier, which is attacker-influenceable text arriving at an agent
+      // with durable memory. A shared session would carry a poisoned issue into the
+      // private chat; a shared workspace would persist it in the same MEMORY.md.
+      //
+      // Needs its OWN `openclaw models auth --agent code-invariants login`, and its
+      // own IDENTITY.md written into the workspace. Skipping either is the `liron`
+      // failure: it will appear to work by reading through to `main`, right up until
+      // the day `main` is actually empty.
+      // {
+      //   id: "code-invariants",
+      //   workspace: "~/.openclaw/workspaces/code-invariants",
+      // },
+
       // ---------------------------------------------------------------------
       // One agent per family member's 1:1 chat. THREE AGENTS, NOT ONE SHARED ONE,
       // and the reason is memory rather than tools: `session.dmScope` already gives
@@ -705,6 +722,16 @@
       },
       comment: "family group — shared session, narrow tools",
     },
+    // The project room. A GROUP id, so NO `uuid:` prefix — getting that wrong routes
+    // the room to `main` in silence, which is the failure this file warns about above.
+    // {
+    //   agentId: "code-invariants",
+    //   match: {
+    //     channel: "signal",
+    //     peer: { kind: "group", id: "<code-invariants base64 groupId>" },
+    //   },
+    //   comment: "code-invariants project room — owner only",
+    // },
     // The three 1:1 chats. Note the `uuid:` prefix on every one — a bare uuid here
     // matches nothing, says nothing, and routes the DM to `main`.
     {

@@ -1,0 +1,10 @@
+[Unit]
+Description=Tell the owner in Signal that the repo watcher failed
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/runbooks/05-opencode-ci-token.md
+
+[Service]
+Type=oneshot
+# Root, because the outbox is 0700 wpa-gate. Goes to the OWNER's chat rather than
+# the project room: the thing that just broke is what makes that room speak, so
+# announcing it there would be a message the failure itself can swallow.
+ExecStart=/usr/local/bin/wpa-outbox-notify owner "⚠️ wpa-gh-watch failed on the Pi — the project room will not hear about new plans, PRs or merges until it is fixed. Check: journalctl -u wpa-gh-watch -n 50"

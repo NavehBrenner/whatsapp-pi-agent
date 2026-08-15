@@ -1,0 +1,18 @@
+[Unit]
+Description=Poll the project repo for new activity every minute
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/runbooks/05-opencode-ci-token.md
+
+[Timer]
+OnBootSec=2min
+# One minute. The idle cost is a single authenticated HTTPS call and no model
+# tokens, and 120 requests an hour sits far under the 5000/hr authenticated limit.
+# What this interval buys is that a plan comment reaches the room while whoever
+# asked for it is still paying attention.
+OnUnitActiveSec=1min
+# A missed window is replayed rather than skipped: the cursor is persisted and
+# deliberately trails the newest event seen.
+Persistent=true
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
