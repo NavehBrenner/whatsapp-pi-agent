@@ -11,6 +11,30 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added — subagents, for both the owner and the project agent (2026-08-15)
+
+`sessions_spawn` and `subagents` are granted to `owner` and `code-invariants`. A
+subagent inherits the parent's own tools and **not** its MCP tools: a child gets
+`read`, `write`, `edit`, `apply_patch` — plus `web_search`, `image_generate` and
+`video_generate` where the parent has them — and is stripped of `github__*` as
+non-inheritable and of the spawn tools as a recursion guard. So a subagent can read
+and map the repo mirror or run a wide search; it cannot post to GitHub as the owner.
+`agents.defaults.subagents.maxConcurrent` (8) bounds the fan-out.
+
+**This corrects the entry below.** That one records subagents spawning and dying with
+"No callable tools remain", concluded to be fail-closed platform behaviour. It was
+neither: the child's allowlist is derived from the parent's **effective** allowlist,
+and the parent's had no file tools in it because of the `alsoAllow`-replaces-global
+fault. The same one-line fix that restored the parent's `read` restored subagents.
+
+Two things worth carrying forward from that. A platform limitation was inferred from
+a symptom that was local misconfiguration, and the inference was confident enough to
+revert the feature — the experiment was only re-run because the input to it had
+demonstrably changed. And the inherited set follows the **session**, not the agent: a
+child spawned from a `--agent` CLI probe reports a narrower list than one spawned in
+the room or the DM, which is the third time today a CLI-session probe has answered a
+different question from the one being asked.
+
 ### Added — the project agent can read the code, without gaining a capability (2026-08-15)
 
 `wpa-project-sync.timer` keeps a shallow mirror of `main` at `/workspace/repo` inside

@@ -611,8 +611,15 @@
       //       "read", "write", "edit", "apply_patch",   // the global set, repeated
       //       "github__issue_write", "github__add_issue_comment",
       //       "github__issue_read", "github__list_issues",
+      //       "sessions_spawn", "subagents",
       //     ],
       //   },
+      //   // Subagents inherit the parent's EFFECTIVE tool list, so the repetition
+      //   // above is what makes them useful: a child gets read/write/edit/apply_patch
+      //   // and can map the repo mirror. It does NOT inherit github__* (MCP tools are
+      //   // non-inheritable) or the spawn tools (recursion guard), so it cannot post
+      //   // to GitHub as the owner. `subagents` must also be removed from the global
+      //   // tools.deny and added to tools.sandbox.tools.allow.
       // },
 
       // ---------------------------------------------------------------------

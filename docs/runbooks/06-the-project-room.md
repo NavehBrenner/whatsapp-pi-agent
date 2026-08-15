@@ -222,9 +222,23 @@ rather than a model's report.
   `sandbox tools.deny` that is not in our config at all. That last one is why the
   agent has no `cron`: upstream denies scheduling to sandboxed agents, and clearing
   the list would mean emptying an unenumerable default to unmask one entry.
-- **Subagents spawn but inherit nothing.** The child receives only the spawn-related
-  tools, which a subagent-specific deny then removes, so it dies with "No callable
-  tools remain". Fail-closed, and currently not useful — left denied.
+- **Subagents inherit the parent's own tools, but not its MCP tools.** A child gets
+  the file tools (`read`, `write`, `edit`, `apply_patch`, plus `web_search` where the
+  parent has it) and is stripped of `github__*` as non-inheritable and of
+  `sessions_spawn`/`subagents` as a recursion guard. So a subagent can read and map
+  the mirror; it cannot post to GitHub as you, which is the right split.
+
+  An earlier pass concluded they inherit *nothing* and die with "No callable tools
+  remain". That was true at the time and true for the wrong reason: the child's list
+  is derived from the parent's **effective** allowlist, and the parent's was empty of
+  file tools because of the `alsoAllow`-replaces-global fault above. Fixing that
+  fixed subagents as a side effect. Worth remembering as a shape: a platform
+  limitation inferred from a symptom that was really local misconfiguration.
+
+  The inherited set follows the *session*, not the agent — a subagent spawned from a
+  `--agent` CLI probe gets a narrower list than one spawned in the room or DM,
+  because those sessions have different effective policy. Check in the session you
+  actually use.
 - **The MCP server is gateway-global, not agent-bound.** Only `code-invariants` is
   granted the tools, but that is tool *policy*, not an absent credential — the
   distinction ADR 0010 exists to make. If policy ever fails open the blast radius is
