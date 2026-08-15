@@ -131,10 +131,12 @@ a new event.
 The Issues-scoped PAT reads `actions/runs` on a public repo without extra
 permissions — verified, HTTP 200 — so no widening was needed for this.
 
-**The agent cannot read an Actions log**; it has no workflow tool. Its `MEMORY.md`
-tells it to route the failure instead: comment `/oc` with the run URL and let
-opencode, which runs inside GitHub with an App token, read the log it cannot. That
-division is the point — the agent routes, the runner reads.
+The agent can then investigate it: `actions_get`, `actions_list` and `get_job_logs`
+are granted read-only, so it pulls the failing job's log and reports the actual error
+rather than guessing. `actions_run_trigger` — the fourth tool in that toolset — is
+deliberately withheld: re-running a workflow is a write and the agent has no reason
+to hold it. The Issues-scoped PAT reads all three on a public repo, verified before
+they were granted.
 
 ### `openclaw system event` does not wake anything here
 
@@ -208,6 +210,43 @@ issues, got `0`, and was taken as success — but the repo genuinely had zero, s
 success value and the failure value were identical and a dead credential passed. Ask
 for something whose failure is distinguishable, or check a process's environment
 rather than a model's report.
+
+## 5a. DNS, and why every Go binary here struggled
+
+The LAN router at `10.10.0.138` answers glibc's queries and does **not** answer the
+Go resolver's. Measured against the GitHub MCP server on 2026-08-15:
+
+```
+router only        14 of 15 lookups failed   dial tcp: lookup api.github.com
+                                             on 10.10.0.138:53: no such host
+getent / curl      10 of 10 fine, HTTP 200
+public resolver    15 of 15 fine
+```
+
+So this was never a blip. It reached a human three times as an agent saying "DNS
+blip, retrying", which is exactly how a systematic failure hides — the paraphrase
+sounded transient and nobody measured it until it was in the way.
+
+**`GODEBUG=netdns=cgo` does not fix this class of binary.** It selects a resolver
+that is not compiled into a `CGO_ENABLED=0` build, and `github-mcp-server` is
+statically linked (`ldd` → "not a dynamic executable"). It was set on that MCP server
+for a day and did nothing. It *did* genuinely fix dockerd, which is dynamically
+linked — same symptom, same box, and only one of the two could take that cure. Check
+the linkage before reaching for it.
+
+The fix is `deploy/networkmanager/90-wpa-dns.conf` (`dns=none`) plus a hand-written
+`/etc/resolv.conf` putting public resolvers first. Two things about the shape:
+
+- **`dns=none`, not per-connection `ipv4.dns`.** NM merges DNS from every active
+  connection, so setting it on eth0 alone left wlan0 injecting the router at the top
+  of the list — observed, and the retest went straight back to 9 of 10 failing.
+- **Reload, do not reactivate.** `systemctl reload NetworkManager` leaves links up.
+  SSH to this box arrives over wlan0, so `nmcli con up preconfigured` would cut the
+  session performing the fix.
+
+The router stays as the last nameserver: it cannot serve the Go resolver, but it is
+the only thing that knows LAN names, and a resolver only falls through to it on
+timeout rather than NXDOMAIN.
 
 ## 6. When it breaks
 

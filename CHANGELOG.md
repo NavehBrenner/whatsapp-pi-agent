@@ -11,6 +11,54 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — the LAN resolver cannot serve Go, and "DNS blip" hid it for a day (2026-08-15)
+
+Every statically linked Go binary on this Pi was failing to resolve `api.github.com`.
+Measured against the GitHub MCP server: **14 of 15 lookups failed** with
+`dial tcp: lookup api.github.com on 10.10.0.138:53: no such host`, while
+`getent ahosts` succeeded 10 of 10 and `curl` returned HTTP 200 against the same
+name. Pointing the box at a public resolver takes the identical test to 15 of 15.
+
+`deploy/networkmanager/90-wpa-dns.conf` sets `dns=none` and `/etc/resolv.conf` is
+hand-written with public resolvers first, the router last.
+
+**`GODEBUG=netdns=cgo` was never a fix here, and had been sitting in the MCP server's
+env pretending to be one.** It selects a resolver that is not compiled into a
+`CGO_ENABLED=0` build, and `github-mcp-server` is statically linked. The same flag
+*does* genuinely fix dockerd, which is dynamically linked — one box, one symptom, two
+binaries, and only one of them could take that cure. It has been removed rather than
+left implying a mitigation that does not exist. **Check `ldd` before reaching for
+it.**
+
+Two shape details, both found by getting them wrong first: per-connection `ipv4.dns`
+is not enough because NM merges DNS from every active connection, so configuring
+eth0 left wlan0 putting the router back at the top and the retest went straight back
+to 9 of 10 failing; and the fix must be applied with `systemctl reload
+NetworkManager` rather than `nmcli con up`, because SSH to this box arrives over
+wlan0 and reactivating that connection would cut the session doing the work.
+
+#### Unflattering: three sightings before anyone measured it
+
+This surfaced as an agent saying "DNS blip talking to GitHub — retrying", twice, and
+was noted both times as something to watch. A paraphrase that sounds transient is how
+a 93% failure rate hides. The measurement took four minutes once anyone made one, and
+the same lesson has now appeared three times today: check the artefact, not the
+report about the artefact.
+
+### Added — the project agent can inspect CI itself (2026-08-15)
+
+`actions_get`, `actions_list` and `get_job_logs` are granted read-only, so the agent
+pulls a failing job's log and reports the actual error instead of relaying that
+something went red. Verified against the real opencode failure: asked what run
+31894403463 did, it independently produced `Failed to parse JSON` and
+`undefined is not an object (evaluating 'p.rest')`, and flagged its guess at the
+cause as a guess.
+
+`actions_run_trigger` is the fourth tool in that toolset and is deliberately
+withheld: re-running a workflow is a write, and nothing about diagnosing a failure
+needs it. The Issues-scoped PAT reads all three on a public repo — checked before
+granting, so no credential was widened.
+
 ### Added — subagents, for both the owner and the project agent (2026-08-15)
 
 `sessions_spawn` and `subagents` are granted to `owner` and `code-invariants`. A
