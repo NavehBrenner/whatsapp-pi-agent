@@ -104,7 +104,19 @@ mounting was rejected — UNC paths didn't work with Cowork. `core.autocrlf` is
 `input` and `.gitattributes` pins `eol=lf`, so shell scripts survive the round
 trip to the Pi.
 
-Deploy to the Pi with `git pull` or `rsync -a --delete` over SSH.
+**Deploy with `deploy/install-reader.sh`, never by rsyncing into `/opt/wpa` by hand.**
+Stage into a home directory and let the installer sync from there:
+
+```bash
+rsync -a --delete --exclude .git --exclude .venv ./ pi:~/whatsapp-pi-agent/
+ssh pi 'sudo ~/whatsapp-pi-agent/deploy/install-reader.sh'
+```
+
+The installer's own rsync carries `--exclude config/config.toml` and restores the
+file's `root:wpa-config 0640` ownership. A hand-rolled `rsync -a --delete` into
+`/opt/wpa` has neither, and **`config/config.toml` is gitignored, so `/opt/wpa` holds
+the only copy** — deleting it is not recoverable from the repo. This is not
+hypothetical; see the 2026-08-17 entry in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Invariants — changing these means reopening an ADR
 

@@ -11,6 +11,48 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — `/opt/wpa` was emptied by a hand-written deploy, and nothing reported it (2026-08-17)
+
+An `rsync -a --delete` from a staging directory whose own transfer had not finished
+deleted the contents of every subdirectory of `/opt/wpa`, including `src/` and
+`config/`. The recovery is written up in
+[runbook 04](docs/runbooks/04-agent-deploy.md#optwpa-is-not-a-scratch-directory); what
+is worth recording here is the shape of it.
+
+**It did not look like an outage.** `wpa-gate` had its code and config in memory from a
+restart the previous day and carried on serving. `systemctl is-active` said `active`,
+`NRestarts=0`, no unit failed, the journal was clean. The damage would have surfaced at
+the next unplanned reboot. Service state is not evidence about the tree it was loaded
+from; `find /opt/wpa -type f | wc -l` is.
+
+**The only copy of `config/config.toml` was in the directory that got wiped.** It is
+gitignored — correctly, it names real people and real group ids — so the repo could not
+restore it. It came back only because unrelated OpenClaw work the night before had left
+a copy in `~/openclaw-snapshots/`. That is luck, and it is now
+`wpa-config-backup.path`: a copy per change into `/var/backups/wpa-config`, keeping 20.
+On change and not on a timer, because the file had been edited the day before it was
+lost and weekly retention would have restored a version that predated the edit.
+
+**`deploy/install-reader.sh` already did this correctly.** Its rsync carries
+`--exclude config/config.toml` and it re-applies `root:wpa-config 0640` afterwards. The
+loss came entirely from bypassing it with an ad-hoc command. `AGENTS.md` said "deploy
+with `git pull` or `rsync -a --delete`", which invited exactly that; it now names the
+installer and says why.
+
+Three smaller findings, each of which cost a round trip:
+
+- **rsync leaves in-progress directories at mode `700` and fixes permissions only at
+  the end.** So a staging tree at `700` with link count `2` is a transfer that died
+  partway, and syncing onward from it propagates the emptiness. Both directories looked
+  plausible in `ls`.
+- **`pin-group.py` prints the block, it does not write it.** Restoring a config whose
+  pinned membership is one person short does not error — the gate drops that
+  conversation as membership drift and the room just goes quiet.
+- **The reader is the canary, not the gate.** Restoring the config as
+  `root:wpa-gate 0640` let the gate start cleanly and broke `wpa-reader`, which is in
+  `wpa-config` and re-reads the file every 30s. A long-running process holding a file
+  in memory cannot tell you whether that file is still readable.
+
 ### Added — the project agent can read a pull request, not just `main` (2026-08-17)
 
 The room could be told a PR existed and could read `main`; it could not read the PR.
