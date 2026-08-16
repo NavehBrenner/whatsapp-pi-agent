@@ -11,6 +11,69 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — Q7 answered: the token refresh writes the credential into `main`, by design (2026-08-16, NVB-32)
+
+Two rounds of this question ended by naming the last thing that changed before a quiet
+period, and both were wrong. This one reads the code instead, and the mechanism turns
+out to be ordinary, documented behaviour doing exactly what it was written to do.
+
+Traced in the shipped `dist` of `2026.7.1-2` (`0790d9f`):
+
+1. `resolveAgentDir(agentDir)` is `agentDir ?? resolveDefaultAgentDir({})`. **Undefined
+   means `main`** — every write below inherits that default.
+2. `resolvePersistedAuthProfileOwnerAgentDir` picks the store a credential update is
+   persisted to, and returns `void 0` — main — for an agent's **own** profile whenever
+   `shouldUseMainOwnerForLocalOAuthCredential` agrees.
+3. That function agrees when both credentials are OAuth, the identities are adoptable,
+   and **`main.expires >= local.expires`**.
+
+So once `main` holds a copy of the same identity — here `xai:navegerc@gmail.com`, shared
+by every agent because the profile id is the *account*, not the agent — every agent's
+token refresh lands in `main` rather than in its own store. Main's copy is then always
+the freshest, the expiry comparison stays true, and **the condition re-arms itself on
+every refresh.** Nothing in the path asks whether anyone is inheriting.
+
+Every recorded observation falls out of that one mechanism:
+
+| observed | why |
+|---|---|
+| main's row at 20:06, `owner`'s frozen at 13:58 | the 13:58 token came due ~19:58 and the refresh went to main, so owner's own row never moved |
+| refilled with every agent holding its own profile | the mechanism never consults whether anyone lacks one — which is why the 2026-08-15 hypothesis died |
+| emptying main "held" for twenty hours | with main empty the check fails on its first line (`main?.type !== "oauth"`), so refreshes stay local. Emptying **is** the lever |
+| bisection never caught the writer | it fires on token expiry, not on anything a person was doing at the time |
+
+**A frozen per-agent row beside a moving `main` row is the signature.** Watch the rows,
+not the file — a WAL checkpoint touches the sqlite file without touching the row, which
+is how `owner` appeared to have been written at 19:30 when its row said 13:58. That
+mistake was made and caught inside this same investigation.
+
+Ruled out empirically en route: `mergeOAuthFileIntoStore` reads
+`$STATE_DIR/credentials/oauth.json`, and no such file exists on the Pi. The earlier
+round was right that there is no flat file to re-import from — the source was never a
+file.
+
+**Still open, and much smaller: the re-seed.** This explains why main stays full, not
+how the first copy arrives while main is empty. Prime suspect is
+`maybeSyncPersistedExternalCliAuthProfiles` (15-minute TTL), reached with an undefined
+agent dir from `loadAuthProfileStoreForRuntime`'s inheritance load — a *read* of main's
+store that is allowed to write to it, because that call site passes neither
+`readOnly: true` nor `syncExternalCli: false` while three neighbouring call sites do.
+
+An instrumented copy of `dist/sqlite-B1ze-fre.js` was prepared to catch the write
+live, and was not needed for this half. It is staged rather than installed; the live
+`dist` is untouched.
+
+### Added — the isolation check finally runs on a schedule (2026-08-16, NVB-32)
+
+`deploy/check-agent-auth.sh` shipped on 2026-08-15, reached the box on 2026-08-16, and
+until now ran only when someone remembered. Given the mechanism above fires on token
+expiry, "run it after a login" was never going to catch it.
+
+`wpa-agent-auth.{service,timer}` plus `wpa-agent-auth-failed.service`, following the
+`wpa-oc-auth` pattern: boot + hourly, Signal message to the owner on violation.
+`OnBootSec=2min` is load-bearing rather than tidy — read-through resolves at **gateway
+startup**, so what `main` holds at boot decides the whole uptime.
+
 ### Added — a third family DM agent, and placeholder names in the example configs (2026-08-16)
 
 A fourth person now has a 1:1 agent on the Pi. The recipe is the one written down

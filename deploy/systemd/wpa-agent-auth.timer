@@ -1,0 +1,19 @@
+[Unit]
+Description=Check the credential-isolation invariant at boot and hourly
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/runbooks/04-agent-deploy.md
+
+[Timer]
+# OnBootSec is the load-bearing one, not tidiness. Auth read-through resolves at
+# GATEWAY STARTUP, so what `main` holds at boot decides the whole uptime — a
+# violation introduced now surfaces one restart later, which is the worst
+# possible latency for noticing it. Check right after the gateway comes up.
+OnBootSec=2min
+# Hourly for the rest. The refill is a consequence of token refresh (NVB-32), so
+# it can appear at any hour without anyone touching the box; "run it after a
+# login" was the old habit and it is exactly what missed this for a day.
+OnUnitActiveSec=1h
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

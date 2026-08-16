@@ -89,6 +89,50 @@ Anthropic auth follows [Q4](../OPEN-QUESTIONS.md): sanctioned subscription auth 
 Agent SDK. **Do not paste subscription OAuth tokens into third-party tools** — prohibited
 by Anthropic policy as of Feb 2026.
 
+## The credential-isolation check (NVB-32)
+
+ADR 0011 rests its credential isolation on two rules: the **default agent holds
+nothing**, and **every other agent has a profile of its own**. Neither is enforced by
+anything — `deploy/check-agent-auth.sh` asserts them from outside the gateway process.
+
+It runs on a timer, not after logins. That distinction cost a day: the script shipped
+2026-08-15, was never installed to the box, and the invariant went unchecked until
+2026-08-16. **A detector that is not deployed is not a detector**, and one that only
+runs when a human remembers is barely one either — the refill is a consequence of token
+refresh, so it appears at hours when nobody has touched the box.
+
+| Path | Source | Owner |
+|---|---|---|
+| `/usr/local/bin/wpa-agent-auth` | `deploy/check-agent-auth.sh` | `root 0755` |
+| `/etc/systemd/system/wpa-agent-auth.service` | `deploy/systemd/` | root |
+| `/etc/systemd/system/wpa-agent-auth.timer` | `deploy/systemd/` | root |
+| `/etc/systemd/system/wpa-agent-auth-failed.service` | `deploy/systemd/` | root |
+
+```bash
+sudo install -m 0755 deploy/check-agent-auth.sh /usr/local/bin/wpa-agent-auth
+sudo install -m 0644 deploy/systemd/wpa-agent-auth.service \
+                     deploy/systemd/wpa-agent-auth.timer \
+                     deploy/systemd/wpa-agent-auth-failed.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now wpa-agent-auth.timer
+systemctl list-timers wpa-agent-auth.timer
+```
+
+`OnBootSec=2min` is load-bearing rather than tidy. Auth read-through resolves **at
+gateway startup**, so what `main` holds at boot decides the entire uptime; a violation
+introduced now otherwise surfaces one restart later.
+
+A violation sends the owner a Signal message through the outbox, the same path as
+`wpa-oc-auth-failed`. Verify that half deliberately — a silent alarm is the failure
+mode this whole section exists to avoid:
+
+```bash
+sudo OPENCLAW_AGENTS_DIR=/tmp/fixture-with-nonempty-main systemctl start wpa-agent-auth
+```
+
+**Adding an agent is the operation that breaks rule 2**, so re-run the check after any
+`openclaw models auth --agent <id> login` rather than waiting for the timer.
+
 ## Reader
 
 Deploy from WSL, then install on the Pi:

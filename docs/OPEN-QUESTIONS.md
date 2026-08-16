@@ -1501,8 +1501,61 @@ form or is simply given up.
 
 ## Q7 — Why does the default agent's auth store refill itself?
 
-**Status:** **Reopened 2026-08-16 — not mitigated, not understood.** Not blocking
-today. **Gates NVB-17/18** — see below.
+**Status:** **Answered 2026-08-16 (NVB-32) — the writer is named.** Not blocking today.
+**Gates NVB-17/18** until the invariant is restored and the fix or a mitigation is in
+place.
+
+> ### The writer, at last: it is the token refresh, and it is by design
+>
+> Traced in the shipped `dist` of `2026.7.1-2` (`0790d9f`). Three functions, one
+> conclusion.
+>
+> 1. `sqlite.ts` → `resolveAgentDir(agentDir)` is `agentDir ?? resolveDefaultAgentDir({})`.
+>    **An undefined agent dir means `main`.** Every write below inherits that default.
+> 2. `store.ts` → `resolvePersistedAuthProfileOwnerAgentDir` decides which store a
+>    credential update is persisted to. For an agent that holds the profile *itself* it
+>    returns `void 0` — main — whenever `shouldUseMainOwnerForLocalOAuthCredential` says
+>    so.
+> 3. `store.ts` → `shouldUseMainOwnerForLocalOAuthCredential(local, main)` returns true
+>    when both are OAuth, the identities are adoptable, and **`main.expires >= local.expires`**.
+>
+> Put together: once `main` holds a copy of the same identity — here
+> `xai:navegerc@gmail.com`, which every agent shares because the profile id is the
+> account, not the agent — then every agent's **token refresh is written into `main`
+> instead of into that agent's own store**. Main's copy is therefore always the
+> freshest, `main.expires >= local.expires` stays true, and the condition re-arms itself
+> on every refresh. **It is self-sustaining, and nothing about it requires an agent to
+> lack a profile.**
+>
+> The observations all fall out of it rather than needing separate stories:
+>
+> | observed | explained by |
+> |---|---|
+> | main's row 20:06, `owner`'s frozen at 13:58 | the 13:58 token came due ~19:58; the refresh went to main, so owner's own row never moved |
+> | refill with every agent holding its own profile | the mechanism never consults whether anyone is inheriting |
+> | "emptying main held for a while" | with main empty, `main?.type !== "oauth"` → the check returns false at the first line, so refreshes stay local. Emptying **is** the lever — it just has to survive the re-seed |
+> | the writer was never caught by bisection | it fires on token expiry, not on any action anyone was performing |
+>
+> **A frozen per-agent row next to a moving `main` row is the signature.** Watch the
+> rows, not the file: a WAL checkpoint touches the sqlite file without touching the row,
+> which is how `owner` looked like it had been written at 19:30 when its row said 13:58.
+>
+> Ruled out empirically while tracing: the `mergeOAuthFileIntoStore` path (`store.ts`
+> load) reads `$STATE_DIR/credentials/oauth.json`, and **no such file exists on the Pi**.
+> The earlier round was right that there is no flat file to re-import from; the source
+> was never a file.
+>
+> **This is an upstream bug, not a misconfiguration.** ADR 0011's boundary — *"an agent
+> cannot inherit what does not exist upstream"* — is reopened by ordinary token refresh,
+> and the refresh writes a credential *upward* into a store the operator deliberately
+> emptied. Worth filing on the same reasoning as
+> [openclaw/openclaw#123815](https://github.com/openclaw/openclaw/issues/123815).
+>
+> Still open: the **re-seed**. This mechanism explains why main stays full, not how the
+> first copy gets there when main is empty. The candidates are the bootstrap/external-CLI
+> sync paths (`maybeSyncPersistedExternalCliAuthProfiles`, 15-minute TTL, itself reached
+> with `agentDir = void 0` from `loadAuthProfileStoreForRuntime`). That is the remaining
+> question, and it is a much smaller one.
 
 > **2026-08-16.** The mitigation below did not hold, and it failed the exact test this
 > question set for itself. `main` was found holding one profile again; the row's
@@ -1553,16 +1606,22 @@ Measured 2026-08-15, full account in the CHANGELOG:
 
 ### What is not established
 
-**Which code path writes the profile into the default agent's store.** Bisection
-cleared the obvious candidates; `resolveDefaultAgentDir` appears on several auth paths
-in `dist` but the one that fired was not pinned down. The working hypothesis — that the
-write is triggered by an agent resolving auth *through* the default store — fits every
-observation and is unproven.
+~~**Which code path writes the profile into the default agent's store.**~~ **Answered
+2026-08-16 — see the status note.** It is `resolvePersistedAuthProfileOwnerAgentDir`
+returning the default dir for an agent's *own* OAuth credential, so token refresh is
+persisted upward into `main`. Read that note before anything below, which predates it.
 
-Because the cause is unknown, `deploy/check-agent-auth.sh` **detects rather than
-prevents**, and asserts both halves of the invariant: the default agent holds nothing,
-*and* every other agent has its own profile. The second is what keeps the first true,
-so checking only the first would pass right up until it mattered.
+**What remains unestablished is the re-seed**: how the first copy reaches `main` while
+`main` is empty, since the refresh mechanism above cannot fire until a copy is already
+there. Prime suspect is `maybeSyncPersistedExternalCliAuthProfiles` (15-minute TTL),
+reached with an undefined agent dir from `loadAuthProfileStoreForRuntime`'s inheritance
+load — a *read* of main's store that is permitted to write to it unless the caller
+passes `readOnly: true` or `syncExternalCli: false`, which that call site does not.
+
+`deploy/check-agent-auth.sh` still **detects rather than prevents**, because naming the
+mechanism does not give us a lever to disable it — but it now runs on
+`wpa-agent-auth.timer` (boot + hourly) instead of when someone remembers, which is the
+difference between a detector and a document.
 
 ### Why this needs a proper review before NVB-17/18
 
@@ -1573,7 +1632,10 @@ credentials** — a calendar, a mailbox — and at that point "absent, not refus
 
 The review should answer, in this order:
 
-1. What writes the default agent's store? Instrument it rather than infer it.
+1. ~~What writes the default agent's store? Instrument it rather than infer it.~~
+   **Answered 2026-08-16** by reading the shipped `dist` rather than instrumenting it —
+   the trace is in the status note. The instrument was prepared and not needed; it stays
+   staged for the re-seed question, which correlation will not settle either.
 2. Is there an upstream fix or a supported way to disable read-through? If not, is this
    worth filing, on the same reasoning as
    [openclaw/openclaw#123815](https://github.com/openclaw/openclaw/issues/123815) — a

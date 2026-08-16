@@ -13,9 +13,20 @@
 # own profile. Both rules are worth asserting; neither is a fix, and a green run is
 # a statement about this moment only. Run it on a schedule, not after logins.
 #
-# The writer has never been identified across two attempts — see Q7. This script
-# therefore detects the state rather than preventing it, which is the honest shape
-# for a fault whose cause is unknown.
+# The writer was identified on 2026-08-16 (NVB-32, Q7): an agent's own OAuth token
+# refresh is persisted into the DEFAULT agent's store whenever main already holds an
+# equivalent identity with a later-or-equal expiry. It is self-sustaining — main's
+# copy is always the freshest, so the condition stays true — and it needs nobody to
+# be inheriting. Emptying main is the lever, because the check that redirects the
+# write fails immediately when main holds nothing.
+#
+# Knowing the mechanism still gives no switch to turn it off, so this script keeps
+# detecting rather than preventing. What changed is that it now runs on
+# wpa-agent-auth.timer (boot + hourly) instead of when someone remembers.
+#
+# The signature to look for by hand: a moving `main` row beside FROZEN per-agent
+# rows. Read updated_at from the row, never the file mtime — a WAL checkpoint moves
+# the file without moving the row, and that cost a wrong conclusion once already.
 #
 # Run as root on the Pi:  sudo deploy/check-agent-auth.sh
 # Exits non-zero on any violation, so it can gate a deploy.
