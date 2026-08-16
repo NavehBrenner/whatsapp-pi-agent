@@ -11,6 +11,54 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added — the project agent can read a pull request, not just `main` (2026-08-17)
+
+The room could be told a PR existed and could read `main`; it could not read the PR.
+`wpa-project-sync` now also fetches `refs/pull/*/head` and lays out one detached
+worktree per **open** PR at `/workspace/pr-<N>/`, with `git diff origin/main...pr/<N>`
+written beside it and each head sha recorded in `repo-sync.json`.
+
+**The PAT did not change.** Pull refs need no credential on a public repo, so this is
+still `Issues: read/write`, no contents — which is what won it over the GitHub MCP's
+PR tools, where the same feature costs `Pull requests: read` + `Contents: read`, a
+token rotation, a gateway restart, and returns a truncated diff through a 5000-char
+window anyway.
+
+The diff file is not a convenience. The agent has no `exec`, so it cannot run
+`git diff`; a checkout alone would leave it comparing two trees by eye.
+
+Cleanup is driven by `GET /pulls?state=open`, not by git. `main` is protected as
+linear history so PRs land squashed, which means **a merged PR's head is never an
+ancestor of `main`** and `git branch --merged` reports that nothing has ever merged —
+the obvious implementation of "delete the worktrees of merged branches" would have
+deleted nothing, forever. The open set also catches a PR closed without merging.
+
+### Fixed — a push to a PR branch woke nobody, because `updated_at` does not move for one (2026-08-17)
+
+`wpa-gh-watch` polls `issues?state=all&since=`, which keys on `updated_at`. That moves
+for comments, labels, title edits and state changes — but not for a plain push to a
+PR's head branch. So "opencode pushed a fix to the open PR", the single update the
+room exists to react to, was invisible to the watcher. Nothing in the logs said so:
+the poll ran, found nothing, and was correct about what it had asked for.
+
+The trigger is now the head sha, read out of `repo-sync.json` before and after the
+sync. Exact, free (the pull refs are fetched anyway), and it covers a newly-opened PR
+and a re-pushed one with the same event. The watcher therefore runs the sync inline on
+every tick rather than only on PR events — the worktree has to exist before the agent
+is told about it, and the comparison needs the fetch to have happened.
+
+A failing sync appends a stale-mirror warning to the wake instead of aborting it:
+comments and CI failures still have to get through, and an agent told its checkout may
+be stale is better off than one not woken at all. `flock` serialises the watcher's
+inline run against the timer's, which otherwise race on `index.lock` and turn into an
+`OnFailure` DM about nothing. `wpa-gh-watch.service` moves to `TimeoutStartSec=300`
+to stay above 90s of sync plus the agent's `--timeout 120`.
+
+Checked while doing this and worth recording as a *non*-finding: the author filter at
+`gh-watch.sh:89` drops events whose author is the token owner (`NavehBrenner`), and
+the opencode runner authors its PRs as `nvb-opencode[bot]`, so runner PRs are not
+being filtered. The concern was that the two shared an account; they do not.
+
 ### Added — a third family DM agent, and placeholder names in the example configs (2026-08-16)
 
 A fourth person now has a 1:1 agent on the Pi. The recipe is the one written down

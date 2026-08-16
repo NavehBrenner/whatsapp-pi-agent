@@ -162,7 +162,9 @@ what makes that safe.
 
 ## 4. The code mirror
 
-`wpa-project-sync.timer` → `/usr/local/bin/wpa-project-sync`, ticking every 60s.
+`wpa-project-sync.timer` → `/usr/local/bin/wpa-project-sync`, ticking every 60s —
+and `wpa-gh-watch` also runs it inline on every tick with `WPA_SYNC_FORCE=1`, which
+is where it actually earns its keep (see §4a).
 
 `/workspace/repo` inside the sandbox is a shallow, single-branch mirror of `main`,
 which the agent reads with the `read` tool it already has. **That is the whole point
@@ -190,6 +192,65 @@ nothing new at all.
 
 git goes through libcurl, which does Happy Eyeballs and falls back to IPv4 on its
 own — this is **not** the Go-resolver trap that needs `GODEBUG=netdns=cgo`.
+
+## 4a. Pull requests: a checkout each, and the diff beside it
+
+The mirror also fetches `refs/pull/*/head` and lays out one checkout per **open** PR:
+
+| Path in the sandbox | What |
+|---|---|
+| `/workspace/pr-<N>/` | a linked worktree of the PR's head, detached |
+| `/workspace/pr-<N>.diff` | `git diff origin/main...pr/<N>` |
+| `/workspace/repo-sync.json` → `.prs[]` | `{number, head}` for every open PR |
+
+- **The pull refs need no credential.** The repo is public, so this cost the PAT
+  nothing — still `Issues: read/write`, no contents. That is the whole reason this
+  shape won over the GitHub MCP's PR tools, which would have needed
+  `Pull requests: read` + `Contents: read`, a rotation, a gateway restart, and would
+  still return a truncated diff through a 5000-char window.
+- **The diff file exists because the agent has no `exec`.** It cannot run `git diff`,
+  so a checkout on its own would leave it comparing two trees by eye. Three-dot, not
+  two: they agree today because `main` requires branches to be up to date, but the
+  merge-base form stays correct if that rule is relaxed.
+- **What is open comes from the API, never from git.** `main` is protected as linear
+  history, so PRs land **squashed** — a merged PR's head is never an ancestor of
+  `main`, and `git branch --merged` / `merge-base --is-ancestor` report that nothing
+  has ever merged. `GET /pulls?state=open` is also the only signal that catches a PR
+  closed *without* merging, and it self-corrects after a failed tick.
+- **Cleanup is "delete everything not in the open set",** checkout and diff in one
+  pass so neither outlives the other, then `git worktree prune`. The self-heal path
+  (`rm -rf repo`) wipes the `pr-*` dirs too: they are linked worktrees of that store,
+  and left behind they would hold a `.git` file pointing at nothing while the agent
+  read a frozen tree as current.
+- ~280 KB per PR against a 604 KB object store, so this is not a disk question.
+
+### The trigger is the head sha, because `updated_at` is not one
+
+`wpa-gh-watch` reads `repo-sync.json` before and after the sync and reports any PR
+whose head moved — which covers a PR that was just opened and one that just gained
+commits, with the same event.
+
+It has to work this way. The `issues?state=all&since=` poll in §3 keys on
+`updated_at`, which moves for comments, labels, title edits and state changes — but
+**not for a plain push to the head branch**. "opencode pushed a fix", the update this
+room exists to react to, is invisible to that endpoint. The head sha is exact, costs
+nothing extra since the pull refs are fetched anyway, and its dedupe id carries the
+sha so a re-push is a new event while a re-read is not.
+
+Two consequences worth keeping straight:
+
+- **The sync runs on every watcher tick, not only when a PR event was seen.** A
+  worktree the agent is told about must already exist, and the sha comparison needs
+  the fetch to have happened.
+- **A failed sync does not swallow the wake.** It is bounded at 90s and, on failure,
+  appends a stale-mirror warning to the message instead of aborting — comments and CI
+  failures still have to get through, and an agent told its checkout may be stale is
+  far better off than one not woken at all. `wpa-gh-watch.service` therefore carries
+  `TimeoutStartSec=300`, which must stay above 90s + the agent's `--timeout 120`.
+
+`flock` on `$GH_WORKSPACE/.git.lock` serialises the two paths. Without it the timer
+and the watcher fetch into the same `.git` and race on `index.lock`, and under
+`set -e` a lost race becomes an `OnFailure` DM about nothing.
 
 ## 5. Verifying without touching the repo
 
@@ -258,6 +319,9 @@ timeout rather than NXDOMAIN.
 | Agent answers in the wrong room | binding uses a `uuid:` prefix on a group id | group ids carry no prefix; check `sessions.json` |
 | Everything replayed after a reboot | cursor lost | `StateDirectory=` owns it; check it exists and is `openclaw`-owned |
 | Agent describes code that has changed | mirror stale or frozen | `repo-sync.json` carries the commit and fetch time; `journalctl -u wpa-project-sync` |
+| Room silent when opencode pushes to a PR | head-sha comparison broken, not `updated_at` | is `.prs[]` in `repo-sync.json` moving? if not, the sync is failing inside `wpa-gh-watch` |
+| `/workspace/pr-<N>/` missing for an open PR | sync failed, or the PR is not in `?state=open` | `journalctl -u wpa-gh-watch` — the wake message says so when the sync failed |
+| `another sync holds the lock` in the journal | a fetch took >45s and both paths collided | transient; if it repeats, the network is the problem, not the lock |
 | Agent says a tool it was granted "is not available" | an agent-level `alsoAllow` **replaced** the global one | list the agent's own `tools.alsoAllow` and check the global names are repeated in it |
 
 ## Operational notes

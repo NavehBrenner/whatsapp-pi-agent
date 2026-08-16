@@ -29,9 +29,10 @@ StateDirectoryMode=0700
 
 ExecStart=/usr/local/bin/wpa-gh-watch
 # A wake runs a real agent turn, so this unit can outlive its own timer interval.
-# Bounded so a hung turn fails and reports rather than pinning the watcher: the
-# script also passes --timeout 120 to the agent, and this is the outer backstop.
-TimeoutStartSec=180
+# Bounded so a hung turn fails and reports rather than pinning the watcher. The
+# script's own bounds are 90s for the inline mirror sync plus --timeout 120 for the
+# agent; this is the outer backstop and must stay above their sum.
+TimeoutStartSec=300
 
 NoNewPrivileges=yes
 PrivateTmp=yes
