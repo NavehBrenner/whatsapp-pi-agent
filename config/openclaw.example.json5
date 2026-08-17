@@ -623,6 +623,7 @@
       //       "read", "write", "edit", "apply_patch",   // the global set, repeated
       //       "github__issue_write", "github__add_issue_comment",
       //       "github__issue_read", "github__list_issues",
+      //       "github__pull_request_review_write",      // formal reviews; see below
       //       "sessions_spawn", "subagents",
       //     ],
       //   },

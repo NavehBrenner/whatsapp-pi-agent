@@ -11,6 +11,45 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added — the project agent can leave a formal PR review (2026-08-17)
+
+`github__pull_request_review_write` granted to `code-invariants`, so it can submit a
+review with `REQUEST_CHANGES` rather than a plain comment that cannot mark the merge
+box. Four layers updated — the server's `--tools` argv, `mcp.servers.github.
+toolFilter.include`, the agent's `tools.alsoAllow` and the room's `tools.allow`
+ceiling — and the tool count moved 7 → 8.
+
+**The PAT already had `Pull requests: write`.** Verified before changing anything, by
+posting a review to a closed PR and reading the status: `403` would have meant the
+permission was missing, and a `200` came back instead. The pending review it created
+was deleted immediately; a pending review is only ever visible to its author.
+
+**`create_pull_request_review` is a phantom name.** `list-scopes` advertises it,
+`--tools=` accepts it, and nothing registers — the same silent non-grant as
+`create_issue`, which is now two instances and therefore a rule: on this server a
+grant is verified by tool count, never by the absence of an error. Runbook 06 carries
+a credential-free `tools/list` recipe for checking a name before touching live config.
+The narrow verb ADR 0010 asks for does not exist here either: the real tool bundles
+create, submit, delete-pending and thread resolution.
+
+**REQUEST_CHANGES is not yet verified, and the smoke test is why.** GitHub rejects
+`REQUEST_CHANGES` and `APPROVE` on your own PRs, and the agent's PAT is the owner's
+identity — so the test PR, opened by the owner, could never have exercised it. The
+agent fell back to `COMMENT` and said so, which is the failure reporting itself
+correctly rather than a gap in the grant. The runner's PRs are authored by
+`nvb-opencode[bot]` and take the full set, so the next real one settles it. Recorded
+because a probe whose identity is wrong looks exactly like a working feature.
+
+What the agent found in the planted test file is worth keeping as a baseline: both
+deliberate bugs (`startsWith` matching `"src/gen"` against `"src/generated"`, an empty
+pattern matching everything) plus two nobody planted — no path normalisation, and a
+module wired to nothing.
+
+Widening tool policy did **not** need the session store cleared. The documented trap
+is that policy binds at session creation and *tightening* leaves existing sessions
+alone; after a gateway restart the room session had the new tool without further
+intervention.
+
 ### Fixed — `/opt/wpa` was emptied by a hand-written deploy, and nothing reported it (2026-08-17)
 
 An `rsync -a --delete` from a staging directory whose own transfer had not finished
