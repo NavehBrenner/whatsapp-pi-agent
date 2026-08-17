@@ -11,6 +11,45 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Changed — the default agent cannot be kept empty, so the check now asserts something else (2026-08-17, NVB-32)
+
+`main` was emptied with the gateway stopped and verified empty. It refilled **36 seconds
+after the restart**: gateway ready 16:32:51, `main`'s row written 16:33:17, `family`'s
+own row written in the same second, `locks/oauth-refresh/` touched at 16:33:17.458. One
+token refresh, two writes.
+
+The second write is `mirrorRefreshedCredentialIntoMainStore`, called with
+`agentDir: void 0` immediately after a successful refresh is saved to the owning agent's
+own store. It is unconditional — it does not care whether `main` held anything before.
+Together with the 08-16 finding below that is the whole lifecycle: **the mirror seeds
+`main`, and the owner-resolution keeps it fed.**
+
+**It is intended, and the code says so.** The refresh lock's comment: *"prevents the
+`refresh_token_reused` storm when N agents share one OAuth profile (see issue #26322)
+… peers can adopt the resulting fresh credentials instead of racing against a
+single-use refresh token."* `main` is the rendezvous. Emptying it removes the shared
+copy until the next refresh restores it.
+
+**So the upstream issue drafted yesterday was withdrawn unfiled.** It would have
+reported intended behaviour as a bug. The correction that matters is not about this
+codebase: **profile ids are keyed on the account**, so two agents authenticating as the
+same account are not separable by this store, and no amount of tidying `main` changes
+that.
+
+**ADR 0011's rule — "the default agent holds no credentials" — is not a state this
+system can be in.** Today it costs nothing: `main` holds only `xai:navegerc@gmail.com`,
+which every agent uses anyway. It bites at NVB-17/18, where `owner`'s calendar token
+would be mirrored into `main` on its first refresh and inherited by every agent lacking
+it at the next gateway start.
+
+`deploy/check-agent-auth.sh` therefore asserts a different thing: *for every profile id
+in the default agent's store, every other agent holds that id itself* — the exact
+condition under which nothing is inherited, and one that can actually hold. The old
+rule 1 would have alarmed on every run forever, which is how a monitor becomes
+furniture. `deploy/check-agent-auth.test.sh` covers both directions on a fixture; it is
+a shell script beside the thing it tests rather than a pytest, because it needs the
+`sqlite3` CLI, which CI does not have.
+
 ### Added — the project agent can leave a formal PR review (2026-08-17)
 
 `github__pull_request_review_write` granted to `code-invariants`, so it can submit a
@@ -200,16 +239,12 @@ Ruled out empirically en route: `mergeOAuthFileIntoStore` reads
 round was right that there is no flat file to re-import from — the source was never a
 file.
 
-**Still open, and much smaller: the re-seed.** This explains why main stays full, not
-how the first copy arrives while main is empty. Prime suspect is
-`maybeSyncPersistedExternalCliAuthProfiles` (15-minute TTL), reached with an undefined
-agent dir from `loadAuthProfileStoreForRuntime`'s inheritance load — a *read* of main's
-store that is allowed to write to it, because that call site passes neither
-`readOnly: true` nor `syncExternalCli: false` while three neighbouring call sites do.
+**The re-seed is answered too — see the 2026-08-17 entry above.** The suspect named
+during this round (`maybeSyncPersistedExternalCliAuthProfiles`) was wrong.
 
 An instrumented copy of `dist/sqlite-B1ze-fre.js` was prepared to catch the write
-live, and was not needed for this half. It is staged rather than installed; the live
-`dist` is untouched.
+live, and was never needed — reading the code answered both halves. It was staged and
+not installed; the live `dist` is untouched.
 
 ### Added — the isolation check finally runs on a schedule (2026-08-16, NVB-32)
 

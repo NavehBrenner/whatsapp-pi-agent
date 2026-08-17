@@ -1501,9 +1501,75 @@ form or is simply given up.
 
 ## Q7 — Why does the default agent's auth store refill itself?
 
-**Status:** **Answered 2026-08-16 (NVB-32) — the writer is named.** Not blocking today.
-**Gates NVB-17/18** until the invariant is restored and the fix or a mitigation is in
-place.
+**Status:** **Closed 2026-08-17 (NVB-32) — answered in full, and the answer is that the
+invariant is unobtainable.** `main` cannot be kept empty; OpenClaw mirrors refreshed
+OAuth credentials into it deliberately. **Still gates NVB-17/18**, but the thing to
+build has changed: not a restored invariant, a separate account or a mounted credential.
+
+> ### 2026-08-17 — the re-seed, caught in the act, and ADR 0011's rule is not achievable
+>
+> `main` was emptied with the gateway stopped, verified empty by
+> `check-agent-auth.sh`, and **refilled 36 seconds after the restart** — gateway ready
+> at 16:32:51, `main`'s row written at 16:33:17, `family`'s own row written in the same
+> second, `locks/oauth-refresh/` touched at 16:33:17.458. One token refresh, two writes.
+>
+> The second write has a name:
+>
+> ```js
+> // oauth.ts, after a successful refresh has been saved to the owner's own store
+> if (ownerAgentDir) {
+>   if (resolveAuthStorePath(void 0) !== authPath)
+>     await mirrorRefreshedCredentialIntoMainStore({ profileId, refreshed });
+> }
+>
+> async function mirrorRefreshedCredentialIntoMainStore(params) {
+>   await updateAuthProfileStoreWithLock({ agentDir: void 0, /* ← main */ updater: … });
+> }
+> ```
+>
+> So the complete lifecycle is two mechanisms, not one:
+>
+> 1. **The seed** — any agent's successful token refresh is *mirrored* into `main`,
+>    unconditionally, whether or not `main` held anything before.
+> 2. **The sustain** — once `main` holds it, `resolvePersistedAuthProfileOwnerAgentDir`
+>    sends the *primary* write there too (the 2026-08-16 finding below).
+>
+> **It is deliberate, and the code says why.** From the refresh lock's own comment:
+>
+> > *This lock is the serialization point that prevents the `refresh_token_reused` storm
+> > when N agents share one OAuth profile (see issue #26322): every agent that attempts
+> > a refresh acquires this same file lock, so only one HTTP refresh is in-flight at a
+> > time and **peers can adopt the resulting fresh credentials** instead of racing
+> > against a single-use refresh token.*
+>
+> `main` **is** the rendezvous peers adopt from. Emptying it does not restore a boundary;
+> it removes the shared copy until the next refresh puts it back seconds later.
+>
+> **There is therefore no upstream bug to file.** The 2026-08-16 note below calls this
+> an upstream bug; that was wrong, and it is wrong in the direction that matters — we
+> would have filed a report against intended behaviour. What is true instead is a design
+> constraint we had not read: **profile ids are keyed on the account, so two agents
+> authenticating as the same account cannot be separated by this store at all.**
+>
+> **What this costs ADR 0011.** *"The default agent holds no credentials"* is not a state
+> this system can be in. Today that is harmless — `main` holds only
+> `xai:navegerc@gmail.com`, which every agent authenticates as anyway, so nothing crosses
+> a boundary that was not already open. **NVB-17/18 is where it bites:** give `owner` a
+> calendar token and its first refresh mirrors that profile into `main`, from where every
+> agent lacking it inherits it at the next gateway start. That is a real leak, and it
+> arrives without anyone doing anything wrong.
+>
+> **What replaces the invariant.** The assertion worth making is not "main is empty" but
+> *"for every profile id in `main`, every other agent holds that id itself"* — the exact
+> condition under which nothing is inherited. `deploy/check-agent-auth.sh` was rewritten
+> to assert that instead, with `deploy/check-agent-auth.test.sh` covering both
+> directions on a fixture. The old rule 1 would have gone red on every run forever,
+> which is how a monitor becomes furniture.
+>
+> For NVB-17/18 the real options are a **separate account per agent** (different profile
+> id, so nothing to share) or a **credential mounted into the sandbox** rather than
+> resolved from a store the gateway reads for everyone — question 3 below, now the only
+> live one.
 
 > ### The writer, at last: it is the token refresh, and it is by design
 >
@@ -1533,7 +1599,7 @@ place.
 > |---|---|
 > | main's row 20:06, `owner`'s frozen at 13:58 | the 13:58 token came due ~19:58; the refresh went to main, so owner's own row never moved |
 > | refill with every agent holding its own profile | the mechanism never consults whether anyone is inheriting |
-> | "emptying main held for a while" | with main empty, `main?.type !== "oauth"` → the check returns false at the first line, so refreshes stay local. Emptying **is** the lever — it just has to survive the re-seed |
+> | "emptying main held for a while" | with main empty, `main?.type !== "oauth"` → the check returns false at the first line, so refreshes stay local. ~~Emptying **is** the lever~~ — **corrected 2026-08-17:** the mirror re-seeds main on the next refresh regardless, so emptying buys seconds, not a boundary |
 > | the writer was never caught by bisection | it fires on token expiry, not on any action anyone was performing |
 >
 > **A frozen per-agent row next to a moving `main` row is the signature.** Watch the
@@ -1545,17 +1611,14 @@ place.
 > The earlier round was right that there is no flat file to re-import from; the source
 > was never a file.
 >
-> **This is an upstream bug, not a misconfiguration.** ADR 0011's boundary — *"an agent
-> cannot inherit what does not exist upstream"* — is reopened by ordinary token refresh,
-> and the refresh writes a credential *upward* into a store the operator deliberately
-> emptied. Worth filing on the same reasoning as
-> [openclaw/openclaw#123815](https://github.com/openclaw/openclaw/issues/123815).
+> ~~**This is an upstream bug, not a misconfiguration.**~~ **Withdrawn 2026-08-17.** The
+> behaviour is intended — see the note above. Nothing was filed.
 >
-> Still open: the **re-seed**. This mechanism explains why main stays full, not how the
-> first copy gets there when main is empty. The candidates are the bootstrap/external-CLI
-> sync paths (`maybeSyncPersistedExternalCliAuthProfiles`, 15-minute TTL, itself reached
-> with `agentDir = void 0` from `loadAuthProfileStoreForRuntime`). That is the remaining
-> question, and it is a much smaller one.
+> ~~Still open: the **re-seed**.~~ **Answered 2026-08-17**, and the suspect named here was
+> wrong: `maybeSyncPersistedExternalCliAuthProfiles` only handles codex, claude-cli and
+> minimax (`EXTERNAL_CLI_SYNC_PROVIDERS`), so it can never touch an `xai:` profile. The
+> re-seed is `mirrorRefreshedCredentialIntoMainStore`, called explicitly with
+> `agentDir: void 0` after every successful refresh.
 
 > **2026-08-16.** The mitigation below did not hold, and it failed the exact test this
 > question set for itself. `main` was found holding one profile again; the row's
@@ -1577,8 +1640,9 @@ place.
 [ADR 0011](decisions/0011-openclaw-owns-the-channel-the-gate-owns-the-room.md) closes
 OpenClaw's read-through credential inheritance with a structural rule: *"the default
 agent holds no credentials… an agent cannot inherit what does not exist upstream."*
-That rule is currently satisfied on the Pi, and we cannot fully explain why it ever
-stopped being satisfied, or why it now holds.
+**That rule cannot be satisfied on the Pi** (2026-08-17): the default agent's store is
+where OpenClaw deliberately mirrors refreshed credentials, so it refills within seconds
+of any restart that leaves it empty. The ADR needs amending, not enforcing.
 
 ### What is established
 
@@ -1611,17 +1675,14 @@ Measured 2026-08-15, full account in the CHANGELOG:
 returning the default dir for an agent's *own* OAuth credential, so token refresh is
 persisted upward into `main`. Read that note before anything below, which predates it.
 
-**What remains unestablished is the re-seed**: how the first copy reaches `main` while
-`main` is empty, since the refresh mechanism above cannot fire until a copy is already
-there. Prime suspect is `maybeSyncPersistedExternalCliAuthProfiles` (15-minute TTL),
-reached with an undefined agent dir from `loadAuthProfileStoreForRuntime`'s inheritance
-load — a *read* of main's store that is permitted to write to it unless the caller
-passes `readOnly: true` or `syncExternalCli: false`, which that call site does not.
+~~**What remains unestablished is the re-seed**~~ **Answered 2026-08-17 — nothing about
+this question remains open.** The re-seed is `mirrorRefreshedCredentialIntoMainStore`,
+and the whole behaviour is intended. See the status note.
 
-`deploy/check-agent-auth.sh` still **detects rather than prevents**, because naming the
-mechanism does not give us a lever to disable it — but it now runs on
-`wpa-agent-auth.timer` (boot + hourly) instead of when someone remembers, which is the
-difference between a detector and a document.
+`deploy/check-agent-auth.sh` **detects rather than prevents**, and now asserts the
+condition that can actually be true — every agent holds each of main's profile ids
+itself — rather than the one that cannot. It runs on `wpa-agent-auth.timer` (boot +
+hourly), which is the difference between a detector and a document.
 
 ### Why this needs a proper review before NVB-17/18
 
@@ -1636,10 +1697,10 @@ The review should answer, in this order:
    **Answered 2026-08-16** by reading the shipped `dist` rather than instrumenting it —
    the trace is in the status note. The instrument was prepared and not needed; it stays
    staged for the re-seed question, which correlation will not settle either.
-2. Is there an upstream fix or a supported way to disable read-through? If not, is this
-   worth filing, on the same reasoning as
-   [openclaw/openclaw#123815](https://github.com/openclaw/openclaw/issues/123815) — a
-   documented isolation boundary that ordinary operation silently reopens?
+2. ~~Is there an upstream fix or a supported way to disable read-through? Is this worth
+   filing?~~ **Answered 2026-08-17: no, and no.** The mirroring is deliberate (upstream
+   #26322 — refresh-token reuse when N agents share one profile), so there is nothing to
+   file and nothing to switch off.
 3. Does the tool-credential design need to stop depending on this invariant altogether?
    A per-agent credential that is mounted into the container, rather than resolved from
    a store the gateway can read for every agent, would not care what `main` holds. That

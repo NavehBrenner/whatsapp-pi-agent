@@ -1,32 +1,39 @@
 #!/usr/bin/env bash
-# Assert the credential-isolation invariant ADR 0011 depends on.
+# Assert what is left of the credential-isolation invariant ADR 0011 depends on.
+#
+# The original pair of rules was:
 #
 #   1. the DEFAULT agent's auth store is empty
 #   2. every other configured agent has one of its own
 #
-# Rule 2 is not decoration. Auth profiles resolve read-through: an agent with no
-# profile of its own falls back to the default agent's store, so rule 2 is what
-# bounds the damage when rule 1 is violated — which it will be.
+# **Rule 1 is dead.** It was closed on 2026-08-17 (NVB-32, Q7) by reading the code
+# and then watching it happen: `main` refilled 36 seconds after a restart that had
+# left it empty. OpenClaw mirrors every refreshed OAuth credential into the default
+# agent's store on purpose — `mirrorRefreshedCredentialIntoMainStore`, called with
+# `agentDir: void 0`, straight after a successful refresh. The refresh lock's own
+# comment says why: N agents sharing one OAuth profile must not race on a
+# single-use refresh token, so `main` is the rendezvous peers adopt from.
 #
-# It was believed until 2026-08-16 that rule 2 also KEPT rule 1 true. It does not.
-# `main` refilled itself during a twenty-hour window in which every agent held its
-# own profile. Both rules are worth asserting; neither is a fix, and a green run is
-# a statement about this moment only. Run it on a schedule, not after logins.
+# So an empty `main` is not a state this system has. Asserting it produced a red
+# light on every run, which is worse than no light at all.
 #
-# The writer was identified on 2026-08-16 (NVB-32, Q7): an agent's own OAuth token
-# refresh is persisted into the DEFAULT agent's store whenever main already holds an
-# equivalent identity with a later-or-equal expiry. It is self-sustaining — main's
-# copy is always the freshest, so the condition stays true — and it needs nobody to
-# be inheriting. Emptying main is the lever, because the check that redirects the
-# write fails immediately when main holds nothing.
+# What is worth asserting is the thing that actually leaks:
 #
-# Knowing the mechanism still gives no switch to turn it off, so this script keeps
-# detecting rather than preventing. What changed is that it now runs on
-# wpa-agent-auth.timer (boot + hourly) instead of when someone remembers.
+#   for every profile id in the default agent's store, every other agent holds
+#   that same profile id itself
 #
-# The signature to look for by hand: a moving `main` row beside FROZEN per-agent
-# rows. Read updated_at from the row, never the file mtime — a WAL checkpoint moves
-# the file without moving the row, and that cost a wrong conclusion once already.
+# because an agent that lacks it resolves read-through to main's copy. Today main
+# holds only the shared xai account, which every agent authenticates as anyway, so
+# nothing crosses a boundary. The moment one agent gets a credential the others
+# should not have — NVB-17's calendar, NVB-18's mailbox — its first token refresh
+# mirrors it into main and everyone else inherits it. That is the alarm.
+#
+# The signature by hand: a moving `main` row beside FROZEN per-agent rows. Read
+# updated_at from the row, never the file mtime — a WAL checkpoint moves the file
+# without moving the row, and that cost a wrong conclusion once already.
+#
+# Runs on wpa-agent-auth.timer (boot + hourly). OnBootSec is load-bearing:
+# read-through resolves at gateway startup.
 #
 # Run as root on the Pi:  sudo deploy/check-agent-auth.sh
 # Exits non-zero on any violation, so it can gate a deploy.
@@ -53,35 +60,53 @@ c = json.load(open(sys.argv[1]))
 print("\n".join(a["id"] for a in c.get("agents", {}).get("list", [])))
 ' "$CONFIG")
 
-rows() {
+# Profile ids held by an agent, one per line. An agent that has never run has no
+# store file at all, which is simply no ids.
+ids() {
 	local db="$AGENTS_DIR/$1/agent/openclaw-agent.sqlite"
-	# An agent that has never run has no store file at all. For the default agent
-	# that is the ideal state; for anyone else it is the failure this catches.
-	[ -e "$db" ] || { echo "-"; return; }
-	sqlite3 "file:$db?mode=ro" "SELECT count(*) FROM auth_profile_store;" 2>/dev/null || echo "?"
+	[ -e "$db" ] || return 0
+	sqlite3 "file:$db?mode=ro" \
+		"SELECT key FROM auth_profile_store, json_each(json_extract(store_json, '\$.profiles'));" \
+		2>/dev/null || true
 }
 
+main_ids=$(ids "$default_agent")
+
 fail=0
-printf '%-12s %-8s %s\n' AGENT PROFILES VERDICT
+printf '%-16s %-9s %s\n' AGENT PROFILES VERDICT
+
+# The default agent first, for context. Never a violation on its own.
+n=$(printf '%s' "$main_ids" | grep -c . || true)
+printf '%-16s %-9s %s\n' "$default_agent" "$n" \
+	"(default — mirrored credentials land here by design, NVB-32)"
+
 while read -r id; do
 	[ -n "$id" ] || continue
-	n=$(rows "$id")
-	if [ "$id" = "$default_agent" ]; then
-		if [ "$n" = "0" ] || [ "$n" = "-" ]; then
-			verdict="ok (default agent holds nothing)"
-		else
-			verdict="VIOLATION: default agent holds $n profile(s) — every agent without its own inherits them"
-			fail=1
-		fi
+	[ "$id" != "$default_agent" ] || continue
+
+	agent_ids=$(ids "$id")
+	n=$(printf '%s' "$agent_ids" | grep -c . || true)
+
+	# Anything main holds that this agent does not, it inherits.
+	inherited=""
+	while read -r pid; do
+		[ -n "$pid" ] || continue
+		printf '%s\n' "$agent_ids" | grep -qxF "$pid" || inherited="$inherited $pid"
+	done <<-EOF
+		$main_ids
+	EOF
+
+	if [ -n "$inherited" ]; then
+		verdict="VIOLATION: inherits from '$default_agent':$inherited"
+		fail=1
+	elif [ "$n" = "0" ]; then
+		# main holds nothing either, so nothing is inherited — but an agent with no
+		# credential at all cannot answer, which is its own problem.
+		verdict="warn: no profile of its own (nothing to inherit either)"
 	else
-		if [ "$n" = "0" ] || [ "$n" = "-" ]; then
-			verdict="VIOLATION: no profile of its own, so it resolves through '$default_agent'"
-			fail=1
-		else
-			verdict="ok"
-		fi
+		verdict="ok"
 	fi
-	printf '%-12s %-8s %s\n' "$id" "$n" "$verdict"
+	printf '%-16s %-9s %s\n' "$id" "$n" "$verdict"
 done <<<"$all_agents"
 
 if [ "$fail" -ne 0 ]; then
@@ -89,16 +114,21 @@ if [ "$fail" -ne 0 ]; then
 
 	Credential isolation is not holding.
 
-	  - default agent non-empty: there is no supported way to disable read-through,
-	    so emptying it is the only lever. Stop the gateway first; a live sqlite is
-	    not a safe target. Then re-run this and watch it for a few minutes.
-	  - an agent with no profile: give it one, and check where it landed —
-	      openclaw models auth --agent <id> login --provider xai --method oauth
-	      openclaw models --agent <id> status | grep effective=
-	    Note the flag order: --agent belongs to 'models auth', before 'login'.
+	An agent is resolving read-through to '$default_agent' for a profile it does not
+	hold itself. Emptying the default agent does NOT fix this — it refills on the
+	next token refresh, by design (NVB-32). Give the agent its own profile instead:
+
+	    openclaw models auth --agent <id> login --provider <p> --method oauth
+	    openclaw models --agent <id> status | grep effective=
+
+	Note the flag order: --agent belongs to 'models auth', before 'login'.
+
+	If the inherited profile is one this agent must never have, it needs a separate
+	account — profile ids are keyed on the account, not the agent, so two agents on
+	one account cannot be separated by this store at all.
 	EOF
 	exit 1
 fi
 
 echo
-echo "OK — '$default_agent' holds nothing and every other agent has its own profile."
+echo "OK — every agent holds each of '$default_agent's profile ids itself, so nothing inherits."

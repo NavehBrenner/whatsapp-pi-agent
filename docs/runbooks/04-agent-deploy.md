@@ -91,15 +91,25 @@ by Anthropic policy as of Feb 2026.
 
 ## The credential-isolation check (NVB-32)
 
-ADR 0011 rests its credential isolation on two rules: the **default agent holds
-nothing**, and **every other agent has a profile of its own**. Neither is enforced by
-anything — `deploy/check-agent-auth.sh` asserts them from outside the gateway process.
+ADR 0011 rested its credential isolation on the **default agent holding nothing**.
+**That rule is not achievable** (2026-08-17, NVB-32): OpenClaw mirrors every refreshed
+OAuth credential into the default agent's store on purpose, so `main` refills within
+seconds of any restart that leaves it empty — measured at 36 seconds. Do not go looking
+for the leak when you see `main` non-empty; that is the designed state.
+
+`deploy/check-agent-auth.sh` asserts what can be true instead:
+
+> for every profile id in the default agent's store, every other agent holds that same
+> profile id itself
+
+which is exactly the condition under which nothing is inherited. An agent missing one of
+main's ids resolves read-through to main's copy, and the script names the id.
 
 It runs on a timer, not after logins. That distinction cost a day: the script shipped
 2026-08-15, was never installed to the box, and the invariant went unchecked until
 2026-08-16. **A detector that is not deployed is not a detector**, and one that only
-runs when a human remembers is barely one either — the refill is a consequence of token
-refresh, so it appears at hours when nobody has touched the box.
+runs when a human remembers is barely one either — the mirror fires on token refresh, so
+it happens at hours when nobody has touched the box.
 
 | Path | Source | Owner |
 |---|---|---|
@@ -123,15 +133,21 @@ gateway startup**, so what `main` holds at boot decides the entire uptime; a vio
 introduced now otherwise surfaces one restart later.
 
 A violation sends the owner a Signal message through the outbox, the same path as
-`wpa-oc-auth-failed`. Verify that half deliberately — a silent alarm is the failure
-mode this whole section exists to avoid:
+`wpa-oc-auth-failed`. Verify the detector itself on a fixture — it builds its own, and
+asserts both directions:
 
 ```bash
-sudo OPENCLAW_AGENTS_DIR=/tmp/fixture-with-nonempty-main systemctl start wpa-agent-auth
+bash deploy/check-agent-auth.test.sh     # needs sqlite3, so run it on the Pi
 ```
 
-**Adding an agent is the operation that breaks rule 2**, so re-run the check after any
-`openclaw models auth --agent <id> login` rather than waiting for the timer.
+**Adding an agent is the operation that breaks this**, so re-run the check after any
+`openclaw models auth --agent <id> login` rather than waiting for the timer. The
+dangerous case is not a new agent, though — it is a **new kind of credential**. The
+first time one agent gets a profile the others should not have (NVB-17's calendar,
+NVB-18's mailbox), its first token refresh mirrors that profile into `main` and every
+agent lacking it inherits it at the next gateway start. This check is what catches that;
+the fix is a separate account or a credential mounted into the sandbox, because profile
+ids are keyed on the **account**, not the agent.
 
 ## Reader
 

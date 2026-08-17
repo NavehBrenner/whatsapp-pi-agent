@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# The alarm test for check-agent-auth.sh, on a fixture rather than the live box.
+#
+# ponytail: a shell script beside the thing it tests, not a pytest — it needs the
+# sqlite3 CLI, which exists on the Pi and not in CI, and a test that only ever
+# skips is theatre. Run it on the Pi after changing the checker:
+#
+#   bash deploy/check-agent-auth.test.sh
+#
+# Asserts both directions: a green tree exits 0, and an agent missing one of the
+# default agent's profile ids exits 1 and is named.
+
+set -u
+
+script=${1:-$(dirname "$0")/check-agent-auth.sh}
+command -v sqlite3 >/dev/null || { echo "SKIP: no sqlite3 (run this on the Pi)"; exit 0; }
+
+fx=$(mktemp -d)
+trap 'rm -rf "$fx"' EXIT
+mkdir -p "$fx/agents/main/agent" "$fx/agents/bob/agent"
+printf '%s' '{"agents":{"list":[{"id":"main","default":true},{"id":"bob"}]}}' >"$fx/openclaw.json"
+
+seed() {
+	sqlite3 "$fx/agents/$1/agent/openclaw-agent.sqlite" \
+		"CREATE TABLE auth_profile_store(store_key TEXT, store_json TEXT, updated_at INT);
+		 INSERT INTO auth_profile_store VALUES('primary','{\"profiles\":{$2}}',1);"
+}
+
+run() { OPENCLAW_CONFIG="$fx/openclaw.json" OPENCLAW_AGENTS_DIR="$fx/agents" bash "$script"; }
+
+rc=0
+
+# 1. bob holds everything main does — nothing inherits.
+seed main '"xai:a@b.com":{}'
+seed bob '"xai:a@b.com":{}'
+if run >/dev/null 2>&1; then
+	echo "ok   matching profile ids exit 0"
+else
+	echo "FAIL matching profile ids should exit 0"; rc=1
+fi
+
+# 2. main gains a profile bob lacks — bob inherits it. This is the NVB-17 shape:
+#    one agent's calendar token mirrored into main and read through by everyone.
+rm -f "$fx/agents"/*/agent/openclaw-agent.sqlite
+seed main '"xai:a@b.com":{},"google:cal":{}'
+seed bob '"xai:a@b.com":{}'
+out=$(run 2>&1) && { echo "FAIL an inherited profile should exit 1"; rc=1; } || {
+	case "$out" in
+		*"VIOLATION"*"google:cal"*) echo "ok   inherited profile named and exits 1" ;;
+		*) echo "FAIL violation did not name google:cal"; rc=1 ;;
+	esac
+}
+
+exit "$rc"

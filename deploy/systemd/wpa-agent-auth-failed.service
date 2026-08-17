@@ -5,4 +5,4 @@ Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/r
 [Service]
 Type=oneshot
 # Root, because the outbox is 0700 wpa-gate. Same shape as wpa-oc-auth-failed.
-ExecStart=/usr/local/bin/wpa-outbox-notify owner "⚠️ Credential isolation is not holding on the Pi (NVB-32). Either `main` holds a profile — every agent without its own inherits it — or an agent has none of its own. Check: sudo /opt/wpa/deploy/check-agent-auth.sh"
+ExecStart=/usr/local/bin/wpa-outbox-notify owner "⚠️ Credential isolation is not holding on the Pi (NVB-32). An agent is missing a profile that `main` holds, so it inherits main's copy. Emptying `main` will NOT fix it — it is re-mirrored on the next token refresh, by design. Check: sudo /opt/wpa/deploy/check-agent-auth.sh"
