@@ -42,10 +42,22 @@ else
   chmod 0640 /opt/wpa/config/config.toml
 fi
 
-install -m 0644 "$repo"/deploy/systemd/*.service "$repo"/deploy/systemd/*.timer /etc/systemd/system/
+# The gitignored config above is the only copy of the authority table, so it gets a
+# backup that fires when it changes. Installed here rather than left to a hand-run
+# command: a safety net nobody remembers to deploy is not one.
+install -m 0755 "$repo"/deploy/backup-gate-config.sh /usr/local/bin/wpa-config-backup
+
+# *.path as well as *.service and *.timer — a path unit missing from this glob installs
+# nothing, reports nothing, and the backup silently never runs.
+install -m 0644 "$repo"/deploy/systemd/*.service "$repo"/deploy/systemd/*.timer \
+  "$repo"/deploy/systemd/*.path /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now wpa-reader.timer
 systemctl enable --now wpa-staleness.timer
+systemctl enable --now wpa-config-backup.path
+# Take one immediately: on a box that already has a live config, the path unit does not
+# fire until the next edit, so without this the first backup could be months away.
+systemctl start wpa-config-backup.service
 
 echo
 echo "installed. check with:"

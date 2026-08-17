@@ -1,0 +1,24 @@
+[Unit]
+Description=Keep dated copies of the gate's live config outside /opt/wpa
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/runbooks/01-deploy.md
+
+[Service]
+Type=oneshot
+
+# Root, unlike almost everything else here: it reads a root-owned config and writes
+# under /var/backups. It parses nothing and touches no message content, so this is the
+# ADR 0006 split holding rather than an exception to it.
+ExecStart=/usr/local/bin/wpa-config-backup
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+# /var/backups, not /var/backups/wpa-config: the script creates that subdirectory, and
+# a ReadWritePaths= naming a path that does not exist yet refuses to start the unit.
+ReadWritePaths=/var/backups
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes

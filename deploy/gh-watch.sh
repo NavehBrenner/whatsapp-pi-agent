@@ -21,6 +21,7 @@ set -euo pipefail
 # is read out of the gateway's own config below rather than copied to a second place.
 : "${GH_REPO:?set in /etc/wpa-project.env}"          # owner/name
 : "${GH_SESSION_KEY:?set in /etc/wpa-project.env}"   # agent:<id>:signal:group:<id>
+: "${GH_WORKSPACE:?set in /etc/wpa-project.env}"     # the agent's workspace directory
 
 state="${STATE_DIRECTORY:-/var/lib/wpa-gh-watch}"
 cursor="$state/cursor"        # ISO8601; the window start for the next poll
@@ -66,6 +67,42 @@ note() {   # id, text
   echo "$1" >> "$seen"
   events="${events:+$events; }$2"
 }
+
+# The mirror runs FIRST, on every tick and not only when a PR event was seen. Two
+# reasons, and the second is the one that matters:
+#
+#   1. Ordering. The worktree for a PR has to exist before the agent is woken about
+#      it, otherwise the first thing it does is read a directory that is not there.
+#   2. The head sha catches what the poll below cannot. NOT because `updated_at` misses
+#      a push — it does move for one, measured 2026-08-17 — but because that loop drops
+#      events authored by the token owner, so a PR Naveh raised by hand produces
+#      nothing at all. `refs/pull/*` does not care who opened it. The sha also names the
+#      commit, so the wake says what to read, and it comes from the mirror that just
+#      synced, so the agent is never sent to a worktree that is not there.
+#
+# Read before and after rather than kept in a state file of its own: repo-sync.json is
+# already the record of what the agent is looking at, so there is one thing to check
+# when it disagrees with reality.
+heads() { jq -c '[.prs[]? | {(.number|tostring): .head}] | add // {}' "$1" 2>/dev/null || echo '{}'; }
+status="$GH_WORKSPACE/repo-sync.json"
+before=$(heads "$status")
+
+# A failing sync must NOT swallow the wake. Comments and CI failures still need to get
+# through, and an agent told its checkout is stale is far better off than one not woken
+# at all. Bounded well inside this unit's TimeoutStartSec.
+stale=""
+if ! WPA_SYNC_FORCE=1 timeout 90 /usr/local/bin/wpa-project-sync >/dev/null; then
+  stale=" — WARNING: the code mirror failed to sync, so any checkout you read may be stale"
+fi
+
+# New PRs land here too (absent from `before`), which is what we want: one event
+# carrying the path, whether the PR was just opened or just gained commits.
+while IFS=$'\t' read -r number sha; do
+  [ -n "${number:-}" ] || continue
+  note "pr-head:$number:$sha" \
+    "PR #$number is at ${sha:0:8} — checkout /workspace/pr-$number/, diff /workspace/pr-$number.diff"
+done < <(jq -rn --argjson a "$before" --argjson b "$(heads "$status")" \
+  '$b | to_entries[] | select($a[.key] != .value) | [.key, .value] | @tsv')
 
 # Issue comments — this is where the /oc plan reply lands.
 comments=$(gh_api "$api/repos/$GH_REPO/issues/comments?since=$window&sort=updated&direction=desc&per_page=50")
@@ -135,4 +172,4 @@ tail -n 500 "$seen" > "$seen.tmp" && mv "$seen.tmp" "$seen"
 # indistinguishable from a quiet repo, which is the whole failure this guards.
 echo "waking $GH_SESSION_KEY: $events"
 openclaw agent --session-key "$GH_SESSION_KEY" --deliver --timeout 120 \
-  --message "GitHub activity on $GH_REPO — $events. Work out what it means for the work in flight, and tell Naveh only if it needs him."
+  --message "GitHub activity on $GH_REPO — $events$stale. Open PRs are checked out under /workspace/pr-<N>/ with the diff at /workspace/pr-<N>.diff, and /workspace/repo-sync.json lists each one's head commit — read those rather than guessing, and say which commit you reviewed. Work out what it means for the work in flight, and tell Naveh only if it needs him."
