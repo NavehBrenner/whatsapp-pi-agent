@@ -75,19 +75,39 @@ ancestor of `main`** and `git branch --merged` reports that nothing has ever mer
 the obvious implementation of "delete the worktrees of merged branches" would have
 deleted nothing, forever. The open set also catches a PR closed without merging.
 
-### Fixed — a push to a PR branch woke nobody, because `updated_at` does not move for one (2026-08-17)
+### Added — the head sha is a wake trigger, and `updated_at` turned out not to be broken (2026-08-17)
 
-`wpa-gh-watch` polls `issues?state=all&since=`, which keys on `updated_at`. That moves
-for comments, labels, title edits and state changes — but not for a plain push to a
-PR's head branch. So "opencode pushed a fix to the open PR", the single update the
-room exists to react to, was invisible to the watcher. Nothing in the logs said so:
-the poll ran, found nothing, and was correct about what it had asked for.
+`wpa-gh-watch` now reports any PR whose head commit moved, read out of
+`repo-sync.json` before and after the sync.
 
-The trigger is now the head sha, read out of `repo-sync.json` before and after the
-sync. Exact, free (the pull refs are fetched anyway), and it covers a newly-opened PR
-and a re-pushed one with the same event. The watcher therefore runs the sync inline on
-every tick rather than only on PR events — the worktree has to exist before the agent
-is told about it, and the comparison needs the fetch to have happened.
+**This was built on a claim that measurement then disproved.** The design assumed
+`updated_at` does not move for a plain push to a PR branch, making "opencode pushed a
+fix" invisible to the existing `issues?since=` poll. An empty commit to PR #9 settled
+it the other way: `updated_at` went from `2026-08-16T04:17:18Z` to
+`2026-08-17T09:14:57Z`, two seconds after the push, with zero comments. The existing
+poll does catch a push. The assumption was recorded as fact in the first version of
+this entry and in runbook 06 before anything had tested it — worth remembering as the
+shape of the mistake, since the feature was verified end to end while its stated
+justification was never checked at all.
+
+What the head sha is actually worth, having measured:
+
+- **It is not author-filtered.** The `issues?since=` loop drops events whose author is
+  the token owner, so a PR **Naveh raised by hand** produces nothing — five of the
+  first seven PRs on that repo. `refs/pull/*` does not care who opened it. This is the
+  real gap, and it is not the one the feature was designed for.
+- **It names the commit.** The wake carries the sha and the checkout path, so the
+  agent is told what to read rather than that something changed, and its dedupe id
+  carries the sha so a re-push is a new event while a re-read is not.
+- **It is derived from the mirror on disk**, so the agent is never woken about a PR
+  whose worktree is missing.
+
+Both triggers fire for a bot-authored push, which is why the verification reported
+PR #9 twice. The `seen` list keeps each to one event.
+
+The watcher runs the sync inline on every tick rather than only on PR events — the
+worktree has to exist before the agent is told about it, and the comparison needs the
+fetch to have happened. That reasoning is independent of the above and still holds.
 
 A failing sync appends a stale-mirror warning to the wake instead of aborting it:
 comments and CI failures still have to get through, and an agent told its checkout may

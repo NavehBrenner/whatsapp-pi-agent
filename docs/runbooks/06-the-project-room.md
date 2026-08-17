@@ -224,20 +224,35 @@ The mirror also fetches `refs/pull/*/head` and lays out one checkout per **open*
   read a frozen tree as current.
 - ~280 KB per PR against a 604 KB object store, so this is not a disk question.
 
-### The trigger is the head sha, because `updated_at` is not one
+### The trigger is the head sha
 
 `wpa-gh-watch` reads `repo-sync.json` before and after the sync and reports any PR
 whose head moved — which covers a PR that was just opened and one that just gained
 commits, with the same event.
 
-It has to work this way. The `issues?state=all&since=` poll in §3 keys on
-`updated_at`, which moves for comments, labels, title edits and state changes — but
-**not for a plain push to the head branch**. "opencode pushed a fix", the update this
-room exists to react to, is invisible to that endpoint. The head sha is exact, costs
-nothing extra since the pull refs are fetched anyway, and its dedupe id carries the
-sha so a re-push is a new event while a re-read is not.
+**`updated_at` does move on a plain push** — measured on 2026-08-17 with an empty
+commit to PR #9: it went from `2026-08-16T04:17:18Z` to `2026-08-17T09:14:57Z`, two
+seconds after the push, with zero comments. An earlier version of this runbook claimed
+the opposite and justified the head-sha trigger with it. That was wrong, and the
+`since=` poll in §3 does catch a push on its own.
 
-Two consequences worth keeping straight:
+What the head sha is still doing, now stated honestly:
+
+- **It is not author-filtered.** The `issues?since=` loop drops anything whose author
+  is the token owner, so a PR **Naveh raised by hand** produces no event at all — five
+  of the first seven PRs on that repo. `refs/pull/*` does not care who opened it.
+- **It names the commit.** The event carries the sha and the checkout path, so the
+  agent is told what to read rather than that something changed. Its dedupe id carries
+  the sha, so a re-push is a new event and a re-read is not.
+- **It is tied to what is on disk, not to GitHub's metadata.** The event is derived
+  from the mirror that just synced, so the agent is never told about a PR whose
+  worktree is missing.
+
+Both fire for a bot-authored push, which is why the verification run reported the PR
+twice — that is duplication, not a fault, and the `seen` list keeps each to one event.
+
+Two consequences worth keeping straight, and neither depends on the `updated_at`
+question above:
 
 - **The sync runs on every watcher tick, not only when a PR event was seen.** A
   worktree the agent is told about must already exist, and the sha comparison needs

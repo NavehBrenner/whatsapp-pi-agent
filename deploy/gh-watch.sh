@@ -73,10 +73,12 @@ note() {   # id, text
 #
 #   1. Ordering. The worktree for a PR has to exist before the agent is woken about
 #      it, otherwise the first thing it does is read a directory that is not there.
-#   2. `updated_at` does not move for a plain push. The issues endpoint below reports
-#      comments, labels, title edits and state changes — so "opencode pushed a fix to
-#      the PR", the update this room exists to react to, is invisible to it. A changed
-#      head sha is exact and free, since the sync fetches the pull refs anyway.
+#   2. The head sha catches what the poll below cannot. NOT because `updated_at` misses
+#      a push — it does move for one, measured 2026-08-17 — but because that loop drops
+#      events authored by the token owner, so a PR Naveh raised by hand produces
+#      nothing at all. `refs/pull/*` does not care who opened it. The sha also names the
+#      commit, so the wake says what to read, and it comes from the mirror that just
+#      synced, so the agent is never sent to a worktree that is not there.
 #
 # Read before and after rather than kept in a state file of its own: repo-sync.json is
 # already the record of what the agent is looking at, so there is one thing to check
