@@ -12,7 +12,10 @@ OnBootSec=2min
 # it can appear at any hour without anyone touching the box; "run it after a
 # login" was the old habit and it is exactly what missed this for a day.
 OnUnitActiveSec=1h
-Persistent=true
+# No Persistent=true, deliberately: systemd honours it only for OnCalendar= timers,
+# so on a monotonic one it is an inert line that reads like a guarantee about missed
+# runs. Nothing is lost — after downtime OnBootSec fires the check at startup, which
+# is the run that matters anyway.
 AccuracySec=1min
 
 [Install]
