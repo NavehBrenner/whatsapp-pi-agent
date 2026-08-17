@@ -51,4 +51,26 @@ out=$(run 2>&1) && { echo "FAIL an inherited profile should exit 1"; rc=1; } || 
 	esac
 }
 
+# 3. A tool credential held by EVERY agent inherits nothing — but it still must not
+#    be in the auth store at all (ADR 0013). Rule 2 alone would pass this.
+rm -f "$fx/agents"/*/agent/openclaw-agent.sqlite
+seed main '"xai:a@b.com":{},"google:cal":{}'
+seed bob '"xai:a@b.com":{},"google:cal":{}'
+out=$(run 2>&1) && { echo "FAIL a tool credential in the store should exit 1"; rc=1; } || {
+	case "$out" in
+		*"TOOL credential"*"google:cal"*) echo "ok   tool credential caught even when nothing inherits" ;;
+		*) echo "FAIL did not report google:cal as a tool credential"; rc=1 ;;
+	esac
+}
+
+# 4. Model providers other than the default one are not strays.
+rm -f "$fx/agents"/*/agent/openclaw-agent.sqlite
+seed main '"anthropic:a@b.com":{}'
+seed bob '"anthropic:a@b.com":{}'
+if run >/dev/null 2>&1; then
+	echo "ok   a second model provider is not a stray"
+else
+	echo "FAIL anthropic: should be an allowed model prefix"; rc=1
+fi
+
 exit "$rc"

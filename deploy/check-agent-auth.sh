@@ -17,16 +17,22 @@
 # So an empty `main` is not a state this system has. Asserting it produced a red
 # light on every run, which is worse than no light at all.
 #
-# What is worth asserting is the thing that actually leaks:
+# Two things are worth asserting instead.
 #
-#   for every profile id in the default agent's store, every other agent holds
-#   that same profile id itself
+#   1. every profile id is a MODEL credential (ADR 0013)
+#
+# The auth store is for model providers only, because that is the one credential
+# class every agent legitimately shares. A tool credential belongs in its own MCP
+# server entry, one per principal, where it has no profile id and so nothing can
+# mirror it anywhere. A `google:` or `ms:` id appearing here means someone ran
+# `models auth login` for a tool — catch it before its first refresh, not after.
+#
+#   2. for every profile id in the default agent's store, every other agent holds
+#      that same profile id itself
 #
 # because an agent that lacks it resolves read-through to main's copy. Today main
 # holds only the shared xai account, which every agent authenticates as anyway, so
-# nothing crosses a boundary. The moment one agent gets a credential the others
-# should not have — NVB-17's calendar, NVB-18's mailbox — its first token refresh
-# mirrors it into main and everyone else inherits it. That is the alarm.
+# nothing crosses a boundary. Rule 1 is what keeps that true.
 #
 # The signature by hand: a moving `main` row beside FROZEN per-agent rows. Read
 # updated_at from the row, never the file mtime — a WAL checkpoint moves the file
@@ -42,6 +48,12 @@ set -euo pipefail
 
 CONFIG=${OPENCLAW_CONFIG:-/var/lib/openclaw/.openclaw/openclaw.json}
 AGENTS_DIR=${OPENCLAW_AGENTS_DIR:-/var/lib/openclaw/.openclaw/agents}
+
+# Model providers whose credentials may live in the auth store (ADR 0013). A space
+# -separated list of `<prefix>:` values; anything else in any store is a tool
+# credential in the wrong place. Widen it when a model provider is added, never to
+# quiet an alarm about a tool.
+MODEL_PROFILE_PREFIXES=${MODEL_PROFILE_PREFIXES:-xai: anthropic: openai: google-vertex:}
 
 [ -r "$CONFIG" ] || { echo "cannot read $CONFIG (run with sudo)" >&2; exit 2; }
 
@@ -70,15 +82,35 @@ ids() {
 		2>/dev/null || true
 }
 
+# Profile ids on stdin that are NOT model-provider credentials (ADR 0013).
+strays() {
+	local pid prefix ok
+	while read -r pid; do
+		[ -n "$pid" ] || continue
+		ok=0
+		for prefix in $MODEL_PROFILE_PREFIXES; do
+			case "$pid" in "$prefix"*) ok=1; break ;; esac
+		done
+		[ "$ok" = 1 ] || printf '%s\n' "$pid"
+	done
+}
+
 main_ids=$(ids "$default_agent")
 
 fail=0
+stray_report=""
 printf '%-16s %-9s %s\n' AGENT PROFILES VERDICT
 
-# The default agent first, for context. Never a violation on its own.
+# The default agent first, for context. A non-empty main is never a fault on its own.
 n=$(printf '%s' "$main_ids" | grep -c . || true)
 printf '%-16s %-9s %s\n' "$default_agent" "$n" \
 	"(default — mirrored credentials land here by design, NVB-32)"
+
+for pid in $(printf '%s\n' "$main_ids" | strays); do
+	stray_report="$stray_report  $default_agent: $pid
+"
+	fail=1
+done
 
 while read -r id; do
 	[ -n "$id" ] || continue
@@ -96,6 +128,12 @@ while read -r id; do
 		$main_ids
 	EOF
 
+	for pid in $(printf '%s\n' "$agent_ids" | strays); do
+		stray_report="$stray_report  $id: $pid
+"
+		fail=1
+	done
+
 	if [ -n "$inherited" ]; then
 		verdict="VIOLATION: inherits from '$default_agent':$inherited"
 		fail=1
@@ -109,13 +147,32 @@ while read -r id; do
 	printf '%-16s %-9s %s\n' "$id" "$n" "$verdict"
 done <<<"$all_agents"
 
-if [ "$fail" -ne 0 ]; then
+if [ -n "$stray_report" ]; then
 	cat >&2 <<-EOF
 
+	A TOOL credential is in the auth profile store. ADR 0013 says it must not be:
+
+	$stray_report
+	The auth store is for model providers only. Anything with a profile id gets
+	mirrored into '$default_agent' on its next token refresh and inherited by every
+	agent that lacks it — that is the leak ADR 0013 exists to avoid, and it is not
+	fixable by tidying the store afterwards.
+
+	Move it to its own MCP server entry, one per principal, credential in that
+	entry's env, and grant only that agent its '<server>__*' tools. Then delete the
+	profile:
+
+	    openclaw models auth --agent <id> logout --provider <p>
+
+	EOF
+fi
+
+if [ "$fail" -ne 0 ]; then
+	cat >&2 <<-EOF
 	Credential isolation is not holding.
 
-	An agent is resolving read-through to '$default_agent' for a profile it does not
-	hold itself. Emptying the default agent does NOT fix this — it refills on the
+	If an agent is resolving read-through to '$default_agent' for a profile it does
+	not hold itself: emptying the default agent does NOT fix it — main refills on the
 	next token refresh, by design (NVB-32). Give the agent its own profile instead:
 
 	    openclaw models auth --agent <id> login --provider <p> --method oauth
@@ -125,10 +182,11 @@ if [ "$fail" -ne 0 ]; then
 
 	If the inherited profile is one this agent must never have, it needs a separate
 	account — profile ids are keyed on the account, not the agent, so two agents on
-	one account cannot be separated by this store at all.
+	one account cannot be separated by this store at all. See ADR 0013.
 	EOF
 	exit 1
 fi
 
 echo
-echo "OK — every agent holds each of '$default_agent's profile ids itself, so nothing inherits."
+echo "OK — auth store is model-only, and every agent holds each of '$default_agent's"
+echo "     profile ids itself, so nothing inherits."

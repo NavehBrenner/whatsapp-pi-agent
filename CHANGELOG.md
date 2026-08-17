@@ -11,6 +11,53 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added — ADR 0013: tool credentials live in a per-agent MCP server, never in the auth store (2026-08-17, NVB-32)
+
+The answer to "if `main` can't be kept empty, how do NVB-17/18 mount a calendar and a
+mailbox safely". **Keep them out of the auth store entirely.** A credential with a
+profile id gets mirrored into `main` on its next refresh and inherited by every agent
+lacking it; a credential in an MCP server entry's `env` has no profile id, so there is
+nothing to mirror. The design is *immune* to the mechanism rather than defended against
+it.
+
+One server per principal, credential in that entry's `env`, and the agent's
+`tools.alsoAllow` naming only its own server's tools. **This is already the shape the
+GitHub PAT ships in** — verified in the live config: `code-invariants` holds
+`github__issue_write … github__pull_request_review_write`, no other agent has any
+`github__*` tool, `family`/`liron`/`aryeh` carry no `tools` key at all, and `main` is
+`deny: ["*"]`.
+
+**ADR 0012 had already written this** — *"let main hold the model credential only… tool
+credentials stay out of main, which is the part that was ever load-bearing"* — as a
+fallback, then retired it on 2026-08-14 as unnecessary because `main` was empty at the
+time. Three rounds of Q7 went into rediscovering a paragraph we had already written. The
+mistake was reading "the invariant currently holds" as evidence it held *for the stated
+reason*.
+
+Two things the upstream docs settled that the design now depends on:
+
+- **The tool prefix is derived from the server key, not equal to it.** *"Non-`[A-Za-z0-9_-]`
+  characters become `-`, names that do not start with a letter get an `mcp-` prefix, and
+  long or duplicate prefixes may be truncated or suffixed."* Two similar server names can
+  collide and be silently auto-suffixed, renaming the tool an allowlist pins. Server
+  names stay short, ASCII, letter-initial and obviously distinct, and the resolved name
+  gets read back rather than assumed.
+- **`openclaw secrets audit` does not see MCP credentials.** Run live it flags
+  `gateway.auth.token` and lists the six auth stores as legacy residue, and says nothing
+  about the PAT in `mcp.servers.github.env`. A clean audit is not "no plaintext tool
+  credentials".
+
+What this does **not** buy: kernel separation of the credentials from each other. They
+sit in `openclaw.json` and the gateway holds them all. What separates `owner`'s calendar
+from `family` is a tool allowlist plus the container that stops `family` reading that
+file — policy plus containment, not structure. Recorded plainly in the ADR because
+ADR 0010's original promise was stronger, and NVB-22 is where it gets revisited.
+
+`deploy/check-agent-auth.sh` now enforces the rule: any profile id outside the
+model-provider prefixes fails the check, **even when every agent holds it** and nothing
+is inherited — the case the previous rule passed. `MODEL_PROFILE_PREFIXES` is widened
+when a model provider is added, never to quiet an alarm about a tool.
+
 ### Changed — the default agent cannot be kept empty, so the check now asserts something else (2026-08-17, NVB-32)
 
 `main` was emptied with the gateway stopped and verified empty. It refilled **36 seconds

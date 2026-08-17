@@ -77,10 +77,24 @@ plus whatever the default agent holds.
 ADR 0010's claim is that a tool outside the bundle is absent rather than refused.
 That claim survives, but it now rests on a structural rule instead of a config key:
 
-**The default agent holds no credentials.** It is a bare responder with an empty
+~~**The default agent holds no credentials.** It is a bare responder with an empty
 tool list, and every agent that can do anything is a non-default entry with its own
 auth store. An agent cannot inherit what does not exist upstream. This is an
-invariant `deploy/render-agents.py` must assert, not a thing to remember.
+invariant `deploy/render-agents.py` must assert, not a thing to remember.~~
+
+> **Superseded 2026-08-17 by [ADR 0013](0013-tool-credentials-live-in-a-per-agent-mcp-server.md)
+> — the invariant above is not a reachable state.** OpenClaw mirrors every refreshed
+> OAuth credential into the default agent's store on purpose
+> (`mirrorRefreshedCredentialIntoMainStore`, `agentDir: void 0`), because `main` is the
+> rendezvous peers adopt from instead of racing a single-use refresh token. Emptied with
+> the gateway stopped, `main` refilled **36 seconds after the restart**. Three rounds of
+> Q7 went into establishing this; the full account is there and in NVB-32.
+>
+> Deeper: **auth profile ids are keyed on the account, not the agent**, so agents sharing
+> one login are one principal to OpenClaw. There is no per-agent isolation in this store
+> to restore. ADR 0013 moves tool credentials out of it entirely — into one MCP server
+> per principal — which is immune to the mirror rather than defended against it. The
+> auth store keeps only model credentials, which every agent already shares.
 
 **Verified 2026-08-12, and it is worse than read-through.** A canary key placed only in
 `main` was retrieved and sent upstream by `family`, which has no store file at all —
