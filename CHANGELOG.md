@@ -11,6 +11,34 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — `wpa-gh-watch` could mark an event reported and then never report it (2026-08-17)
+
+Two ways the watcher could lose an event for good, both found by asking whether it
+catches up after the outage below.
+
+**`note()` appended to the `seen` list the moment it found an event**, before the wake
+ran. Anything that killed the script in between — a 5xx on a later endpoint, a failed
+wake — left the id recorded as reported and never reported. The un-advanced cursor does
+not rescue that: the next run re-fetches the event and `seen` drops it. Ids are now held
+in memory and committed only once the wake returns 0, along with the cursor.
+
+**The PR head-sha comparison read `repo-sync.json` before and after the sync, in one
+run.** The sync rewrites that file mid-script, so a run that died after it had already
+written the new sha left the next run's "before" matching — the push then invisible
+forever. Comments and CI runs survive that because they re-query with `since=`; a head
+sha had nothing to fall back on. The baseline is now the heads this watcher last
+*reported*, in `/var/lib/wpa-gh-watch/heads`.
+
+`deploy/gh-watch.test.sh` covers all of it with stubs on `PATH` — a failed wake commits
+nothing, the same event is replayed once the wake succeeds, a landed event is not
+repeated, and a moved sha reports again. Checked against the previous version of the
+script, where it fails, which is the only evidence that a regression test tests
+anything. `WPA_SYNC_BIN` exists so the sync can be stubbed; it defaults to the real path.
+
+Worth recording for the next person who wonders why the room was quiet: **the watcher
+watches `NavehBrenner/code-invariants`**, not this repo. A day of activity here produces
+no wakes there, correctly.
+
 ### Fixed — `wpa-gh-watch` paged the owner about GitHub's uptime (2026-08-17)
 
 `api.github.com` served 401, 503 and 504 six times between 16:28 and 18:23, with

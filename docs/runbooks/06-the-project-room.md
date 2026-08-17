@@ -272,9 +272,17 @@ The mirror also fetches `refs/pull/*/head` and lays out one checkout per **open*
 
 ### The trigger is the head sha
 
-`wpa-gh-watch` reads `repo-sync.json` before and after the sync and reports any PR
-whose head moved — which covers a PR that was just opened and one that just gained
+`wpa-gh-watch` compares the heads it last **reported** — kept in
+`/var/lib/wpa-gh-watch/heads` — against `repo-sync.json` after the sync, and reports
+any PR whose head moved. That covers a PR just opened and one that just gained
 commits, with the same event.
+
+> **Changed 2026-08-17.** It used to read `repo-sync.json` before *and* after the
+> sync, within one run. That loses a push permanently whenever the run dies between
+> the two: the sync has already written the new sha, so the next run's "before"
+> matches it and the change is never seen. Comments and CI runs survive that because
+> they re-query with `since=`; a head sha had nothing to fall back on. Keeping the
+> reported heads in their own file makes the comparison mean what it says.
 
 **`updated_at` does move on a plain push** — measured on 2026-08-17 with an empty
 commit to PR #9: it went from `2026-08-16T04:17:18Z` to `2026-08-17T09:14:57Z`, two
@@ -380,7 +388,8 @@ timeout rather than NXDOMAIN.
 | Agent answers in the wrong room | binding uses a `uuid:` prefix on a group id | group ids carry no prefix; check `sessions.json` |
 | Everything replayed after a reboot | cursor lost | `StateDirectory=` owns it; check it exists and is `openclaw`-owned |
 | Agent describes code that has changed | mirror stale or frozen | `repo-sync.json` carries the commit and fetch time; `journalctl -u wpa-project-sync` |
-| Room silent when opencode pushes to a PR | head-sha comparison broken, not `updated_at` | is `.prs[]` in `repo-sync.json` moving? if not, the sync is failing inside `wpa-gh-watch` |
+| Room silent when opencode pushes to a PR | head-sha comparison broken, not `updated_at` | is `.prs[]` in `repo-sync.json` moving? compare it with `/var/lib/wpa-gh-watch/heads`, which is what was last reported; if `.prs[]` is empty the sync is failing inside `wpa-gh-watch` |
+| Room silent, and `GH_REPO` is not the repo you were looking at | the watcher watches one repo | `grep GH_REPO /etc/wpa-project.env` — activity on any other repo is correctly ignored |
 | `/workspace/pr-<N>/` missing for an open PR | sync failed, or the PR is not in `?state=open` | `journalctl -u wpa-gh-watch` — the wake message says so when the sync failed |
 | `another sync holds the lock` in the journal | a fetch took >45s and both paths collided | transient; if it repeats, the network is the problem, not the lock |
 | Agent says a tool it was granted "is not available" | an agent-level `alsoAllow` **replaced** the global one | list the agent's own `tools.alsoAllow` and check the global names are repeated in it |

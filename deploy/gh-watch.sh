@@ -31,15 +31,14 @@ owner_file="$state/token-owner"
 api="https://api.github.com"
 # -4 because this Pi has no global IPv6 and a resolver that prefers AAAA stalls on
 # an address that was never reachable. Same class of trap as the dockerd drop-in.
-# --retry because api.github.com serves transient 502/503/504 often enough to matter:
-# on 2026-08-17 it did so four times in half an hour, and each one exited non-zero,
-# tripped OnFailure and sent the owner a Signal message about a watcher that was
-# fine. An alarm that cries wolf at GitHub's uptime gets muted, and then the real
-# failure is silent too. curl's default retry set is exactly the transient class —
-# 5xx, 408, 429, connection errors — so a genuinely bad token still fails fast and
-# still pages, which is what should happen.
-# -4 because this Pi has no global IPv6 and a resolver that prefers AAAA stalls on
-# an address that was never reachable. Same class of trap as the dockerd drop-in.
+#
+# --retry because api.github.com serves transient 401/502/503/504 often enough to
+# matter: on 2026-08-17 it did so six times in two hours, with successful runs in
+# between, and each failure exited non-zero, tripped OnFailure and sent the owner a
+# Signal message about a watcher that was fine. An alarm that cries wolf at GitHub's
+# uptime gets muted, and then the real failure is silent too. curl's default retry
+# set is the transient class — 5xx, 408, 429, connection errors — so a genuinely bad
+# token still fails on the first try and still pages, which is what should happen.
 curl_opts=(-4 --silent --show-error --fail-with-body --max-time 30
            --retry 3 --retry-delay 5)
 
@@ -72,9 +71,20 @@ fi
 touch "$seen"
 events=""
 
+# Ids found this run, held in memory until the wake has landed. They used to be
+# appended to $seen the moment they were found, which meant an event could be
+# marked reported and then never reported — anything that killed the script
+# between the two (a 5xx on a later endpoint, a failed wake) suppressed it for
+# good. The un-advanced cursor does not rescue that: the next run re-fetches the
+# event and $seen drops it. Same silent-suppression shape as the auth check
+# reading an unreadable store as an empty one (NVB-32).
+pending=""
+
 note() {   # id, text
   grep -qxF "$1" "$seen" && return 0
-  echo "$1" >> "$seen"
+  printf '%s' "$pending" | grep -qxF "$1" && return 0
+  pending="$pending$1
+"
   events="${events:+$events; }$2"
 }
 
@@ -90,28 +100,37 @@ note() {   # id, text
 #      commit, so the wake says what to read, and it comes from the mirror that just
 #      synced, so the agent is never sent to a worktree that is not there.
 #
-# Read before and after rather than kept in a state file of its own: repo-sync.json is
-# already the record of what the agent is looking at, so there is one thing to check
-# when it disagrees with reality.
+# The baseline is the heads this watcher last REPORTED, in its own state file —
+# not repo-sync.json read before the sync overwrites it.
+#
+# That earlier design had one thing to check when it disagreed with reality, and one
+# way to lose a push forever: the sync rewrites repo-sync.json in the middle of this
+# script, so if the run then died before waking, the new sha was already on disk and
+# the next run's "before" matched it. Comments and CI runs survive that because they
+# re-query with `since`; a head sha had nothing to fall back on. Keeping the reported
+# heads separately costs one small file and makes the comparison mean what it says.
 heads() { jq -c '[.prs[]? | {(.number|tostring): .head}] | add // {}' "$1" 2>/dev/null || echo '{}'; }
 status="$GH_WORKSPACE/repo-sync.json"
-before=$(heads "$status")
+heads_file="$state/heads"
+before=$(cat "$heads_file" 2>/dev/null || echo '{}')
+[ -n "$before" ] || before='{}'
 
 # A failing sync must NOT swallow the wake. Comments and CI failures still need to get
 # through, and an agent told its checkout is stale is far better off than one not woken
 # at all. Bounded well inside this unit's TimeoutStartSec.
 stale=""
-if ! WPA_SYNC_FORCE=1 timeout 90 /usr/local/bin/wpa-project-sync >/dev/null; then
+if ! WPA_SYNC_FORCE=1 timeout 90 "${WPA_SYNC_BIN:-/usr/local/bin/wpa-project-sync}" >/dev/null; then
   stale=" — WARNING: the code mirror failed to sync, so any checkout you read may be stale"
 fi
 
 # New PRs land here too (absent from `before`), which is what we want: one event
 # carrying the path, whether the PR was just opened or just gained commits.
+after=$(heads "$status")
 while IFS=$'\t' read -r number sha; do
   [ -n "${number:-}" ] || continue
   note "pr-head:$number:$sha" \
     "PR #$number is at ${sha:0:8} — checkout /workspace/pr-$number/, diff /workspace/pr-$number.diff"
-done < <(jq -rn --argjson a "$before" --argjson b "$(heads "$status")" \
+done < <(jq -rn --argjson a "$before" --argjson b "$after" \
   '$b | to_entries[] | select($a[.key] != .value) | [.key, .value] | @tsv')
 
 # Issue comments — this is where the /oc plan reply lands.
@@ -155,16 +174,29 @@ while IFS=$'\t' read -r id name concl branch updated url; do
 done < <(jq -r '.workflow_runs[]? | select(.conclusion == "failure" or .conclusion == "timed_out")
                 | [.id, .name, .conclusion, .head_branch, .updated_at, .html_url] | @tsv' <<<"$runs")
 
+# Nothing is committed until the wake has landed. A failed wake leaves the cursor,
+# the seen list and the head record exactly as they were, so the next run re-fetches
+# the same window and reports the same events instead of losing them.
+#
 # The cursor advances to NOW minus the overlap, not to the newest event seen. Those
 # differ when nothing happened: anchoring on the newest event freezes the window, so
 # a quiet week means every poll re-fetches a week of history. With per_page=50 and no
 # pagination that eventually drops events off the end — the quiet repo silently
 # breaking the busy one. The overlap plus the seen-list is what makes advancing safe.
-date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ > "$cursor"
-# ponytail: a flat file, trimmed. Ids are small and 500 covers days of activity.
-tail -n 500 "$seen" > "$seen.tmp" && mv "$seen.tmp" "$seen"
+commit() {
+  date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ > "$cursor"
+  printf '%s' "$after" > "$heads_file"
+  if [ -n "$pending" ]; then
+    printf '%s' "$pending" >> "$seen"
+    # ponytail: a flat file, trimmed. Ids are small and 500 covers days of activity.
+    tail -n 500 "$seen" > "$seen.tmp" && mv "$seen.tmp" "$seen"
+  fi
+}
 
-[ -n "$events" ] || exit 0
+if [ -z "$events" ]; then
+  commit
+  exit 0
+fi
 
 # Wake the agent inside the room's own session, so it keeps its memory and the
 # conversation so far, and `--deliver` puts the reply in the room.
@@ -183,3 +215,7 @@ tail -n 500 "$seen" > "$seen.tmp" && mv "$seen.tmp" "$seen"
 echo "waking $GH_SESSION_KEY: $events"
 openclaw agent --session-key "$GH_SESSION_KEY" --deliver --timeout 120 \
   --message "GitHub activity on $GH_REPO — $events$stale. Open PRs are checked out under /workspace/pr-<N>/ with the diff at /workspace/pr-<N>.diff, and /workspace/repo-sync.json lists each one's head commit — read those rather than guessing, and say which commit you reviewed. Work out what it means for the work in flight, and tell Naveh only if it needs him."
+
+# Only now, and only because the wake returned 0. set -e means a failed wake never
+# reaches this line, which is the point.
+commit
