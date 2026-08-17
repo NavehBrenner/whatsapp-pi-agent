@@ -9,7 +9,10 @@
 > answers. **xAI OAuth is obtainable**, and *one subscription permits a device-code
 > login per agent* — `owner` and `family` each hold their own profile from the same
 > account, so the "let main hold the model credential only" fallback below is **not
-> needed** and `main` stays empty. **Per-agent existence separation holds on the built-in
+> needed** and ~~`main` stays empty~~ — **corrected 2026-08-17
+> ([ADR 0013](0013-tool-credentials-live-in-a-per-agent-mcp-server.md)): `main` does not
+> stay empty and cannot be made to.** Every agent holding its own profile is still true
+> and still worth doing; it just never implied an empty default agent. **Per-agent existence separation holds on the built-in
 > runtime**: with a narrowing on one agent, `owner` reported
 > `apply_patch, edit, read, session_status, write` and `family` reported
 > `read, session_status`. **Durable memory works** — a file written by the agent landed
@@ -172,10 +175,18 @@ it must not be cited again without rechecking Anthropic's own support articles.
   provider-side cap is already accepted. Tool credentials stay out of main, which is the
   part that was ever load-bearing.
 
-  **Settled 2026-08-14: one subscription does permit it.** `owner` and `family` each
-  hold their own `xai/oauth` profile issued to the same account, with independent
-  expiries. The fallback above was never exercised and `main` remains empty, so the
-  invariant stands as written rather than as a compromise.
+  ~~**Settled 2026-08-14: one subscription does permit it.**~~ `owner` and `family` do
+  each hold their own `xai/oauth` profile issued to the same account — but the conclusion
+  drawn from it was wrong. **Reopened and settled again 2026-08-17
+  ([ADR 0013](0013-tool-credentials-live-in-a-per-agent-mcp-server.md)): `main` does not
+  remain empty**, because OpenClaw mirrors refreshed credentials into it on purpose.
+
+  **The "fallback" above was the right design all along** and should never have been
+  retired: *let main hold the model credential only… tool credentials stay out of main,
+  which is the part that was ever load-bearing.* That is exactly what ADR 0013 now
+  mandates, and what `deploy/check-agent-auth.sh` asserts. Three rounds of Q7 went into
+  rediscovering a paragraph this ADR had already written — the cost of treating "the
+  invariant currently holds" as evidence that it holds *for the stated reason*.
 - **`tools.deny` must stop denying the file tools.** They are now the memory path.
   `tools.profile: "minimal"` also needs revisiting, since it strips `web_search` — exactly
   what the least-trusting family profile is for.

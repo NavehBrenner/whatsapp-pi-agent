@@ -11,6 +11,149 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — `wpa-gh-watch` could mark an event reported and then never report it (2026-08-17)
+
+Two ways the watcher could lose an event for good, both found by asking whether it
+catches up after the outage below.
+
+**`note()` appended to the `seen` list the moment it found an event**, before the wake
+ran. Anything that killed the script in between — a 5xx on a later endpoint, a failed
+wake — left the id recorded as reported and never reported. The un-advanced cursor does
+not rescue that: the next run re-fetches the event and `seen` drops it. Ids are now held
+in memory and committed only once the wake returns 0, along with the cursor.
+
+**The PR head-sha comparison read `repo-sync.json` before and after the sync, in one
+run.** The sync rewrites that file mid-script, so a run that died after it had already
+written the new sha left the next run's "before" matching — the push then invisible
+forever. Comments and CI runs survive that because they re-query with `since=`; a head
+sha had nothing to fall back on. The baseline is now the heads this watcher last
+*reported*, in `/var/lib/wpa-gh-watch/heads`.
+
+`deploy/gh-watch.test.sh` covers all of it with stubs on `PATH` — a failed wake commits
+nothing, the same event is replayed once the wake succeeds, a landed event is not
+repeated, and a moved sha reports again. Checked against the previous version of the
+script, where it fails, which is the only evidence that a regression test tests
+anything. `WPA_SYNC_BIN` exists so the sync can be stubbed; it defaults to the real path.
+
+Worth recording for the next person who wonders why the room was quiet: **the watcher
+watches `NavehBrenner/code-invariants`**, not this repo. A day of activity here produces
+no wakes there, correctly.
+
+### Fixed — `wpa-gh-watch` paged the owner about GitHub's uptime (2026-08-17)
+
+`api.github.com` served 401, 503 and 504 six times between 16:28 and 18:23, with
+successful runs in between. Each one exited non-zero, tripped `OnFailure` and sent a
+Signal message saying the project room would not hear about PRs until it was fixed —
+about a watcher that was working. The same outage was visible from a laptop at the same
+time.
+
+`--retry 3 --retry-delay 5` on the curl options. curl's default retry set is exactly the
+transient class (5xx, 408, 429, connection errors), so a genuinely bad token still fails
+on the first try and still pages, which is the behaviour worth keeping. **An alarm that
+cries wolf at a third party's uptime gets muted, and then the real failure is silent
+too** — the same reasoning that reshaped the credential check in this release.
+
+### Added — ADR 0013: tool credentials live in a per-agent MCP server, never in the auth store (2026-08-17, NVB-32)
+
+The answer to "if `main` can't be kept empty, how do NVB-17/18 mount a calendar and a
+mailbox safely". **Keep them out of the auth store entirely.** A credential with a
+profile id gets mirrored into `main` on its next refresh and inherited by every agent
+lacking it; a credential in an MCP server entry's `env` has no profile id, so there is
+nothing to mirror. The design is *immune* to the mechanism rather than defended against
+it.
+
+One server per principal, credential in that entry's `env`, and the agent's
+`tools.alsoAllow` naming only its own server's tools. **This is already the shape the
+GitHub PAT ships in** — verified in the live config: `code-invariants` holds
+`github__issue_write … github__pull_request_review_write`, no other agent has any
+`github__*` tool, `family`/`liron`/`aryeh` carry no `tools` key at all, and `main` is
+`deny: ["*"]`.
+
+**ADR 0012 had already written this** — *"let main hold the model credential only… tool
+credentials stay out of main, which is the part that was ever load-bearing"* — as a
+fallback, then retired it on 2026-08-14 as unnecessary because `main` was empty at the
+time. Three rounds of Q7 went into rediscovering a paragraph we had already written. The
+mistake was reading "the invariant currently holds" as evidence it held *for the stated
+reason*.
+
+Two things the upstream docs settled that the design now depends on:
+
+- **The tool prefix is derived from the server key, not equal to it.** *"Non-`[A-Za-z0-9_-]`
+  characters become `-`, names that do not start with a letter get an `mcp-` prefix, and
+  long or duplicate prefixes may be truncated or suffixed."* Two similar server names can
+  collide and be silently auto-suffixed, renaming the tool an allowlist pins. Server
+  names stay short, ASCII, letter-initial and obviously distinct, and the resolved name
+  gets read back rather than assumed.
+- **`openclaw secrets audit` does not see MCP credentials.** Run live it flags
+  `gateway.auth.token` and lists the six auth stores as legacy residue, and says nothing
+  about the PAT in `mcp.servers.github.env`. A clean audit is not "no plaintext tool
+  credentials".
+
+What this does **not** buy: kernel separation of the credentials from each other. They
+sit in `openclaw.json` and the gateway holds them all. What separates `owner`'s calendar
+from `family` is a tool allowlist plus the container that stops `family` reading that
+file — policy plus containment, not structure. Recorded plainly in the ADR because
+ADR 0010's original promise was stronger, and NVB-22 is where it gets revisited.
+
+`deploy/check-agent-auth.sh` now enforces the rule: any profile id outside the
+model-provider prefixes fails the check, **even when every agent holds it** and nothing
+is inherited — the case the previous rule passed. `MODEL_PROFILE_PREFIXES` is widened
+when a model provider is added, never to quiet an alarm about a tool.
+
+It also stops treating an unreadable store as an empty one. Swallowing a failed
+`sqlite3` made the whole check a **silent pass**: no ids read anywhere means no strays
+and nothing inherited, so it printed OK and exited 0 having seen nothing. It now exits 2
+and names the agent.
+
+That was found chasing a failure mode that does not exist. The theory was that a WAL
+database cannot be opened read-only once its `-shm` sidecar is gone, so the
+`OnBootSec=2min` run would race the gateway's start. **Tested and false:** with `-shm`
+and `-wal` removed *and* the directory `chmod a-w`, SQLite reads the stores fine — the
+restriction applies only to a non-empty WAL needing replay. The guard is kept because
+"reads nothing, reports OK" is wrong whatever the cause, and permissions or a bad disk
+need no theory. `After=wpa-openclaw.service` is kept too, on the honest reason:
+read-through resolves at gateway startup, so a boot-time check that beats the gateway up
+gives a true answer about a moment that does not matter.
+
+### Changed — the default agent cannot be kept empty, so the check now asserts something else (2026-08-17, NVB-32)
+
+`main` was emptied with the gateway stopped and verified empty. It refilled **36 seconds
+after the restart**: gateway ready 16:32:51, `main`'s row written 16:33:17, `family`'s
+own row written in the same second, `locks/oauth-refresh/` touched at 16:33:17.458. One
+token refresh, two writes.
+
+The second write is `mirrorRefreshedCredentialIntoMainStore`, called with
+`agentDir: void 0` immediately after a successful refresh is saved to the owning agent's
+own store. It is unconditional — it does not care whether `main` held anything before.
+Together with the 08-16 finding below that is the whole lifecycle: **the mirror seeds
+`main`, and the owner-resolution keeps it fed.**
+
+**It is intended, and the code says so.** The refresh lock's comment: *"prevents the
+`refresh_token_reused` storm when N agents share one OAuth profile (see issue #26322)
+… peers can adopt the resulting fresh credentials instead of racing against a
+single-use refresh token."* `main` is the rendezvous. Emptying it removes the shared
+copy until the next refresh restores it.
+
+**So the upstream issue drafted yesterday was withdrawn unfiled.** It would have
+reported intended behaviour as a bug. The correction that matters is not about this
+codebase: **profile ids are keyed on the account**, so two agents authenticating as the
+same account are not separable by this store, and no amount of tidying `main` changes
+that.
+
+**ADR 0011's rule — "the default agent holds no credentials" — is not a state this
+system can be in.** Today it costs nothing: `main` holds only `xai:navegerc@gmail.com`,
+which every agent uses anyway. It bites at NVB-17/18, where `owner`'s calendar token
+would be mirrored into `main` on its first refresh and inherited by every agent lacking
+it at the next gateway start.
+
+`deploy/check-agent-auth.sh` therefore asserts a different thing: *for every profile id
+in the default agent's store, every other agent holds that id itself* — the exact
+condition under which nothing is inherited, and one that can actually hold. The old
+rule 1 would have alarmed on every run forever, which is how a monitor becomes
+furniture. `deploy/check-agent-auth.test.sh` covers both directions on a fixture; it is
+a shell script beside the thing it tests rather than a pytest, because it needs the
+`sqlite3` CLI, which CI does not have.
+
 ### Added — the project agent can leave a formal PR review (2026-08-17)
 
 `github__pull_request_review_write` granted to `code-invariants`, so it can submit a
@@ -159,6 +302,64 @@ Checked while doing this and worth recording as a *non*-finding: the author filt
 `gh-watch.sh:89` drops events whose author is the token owner (`NavehBrenner`), and
 the opencode runner authors its PRs as `nvb-opencode[bot]`, so runner PRs are not
 being filtered. The concern was that the two shared an account; they do not.
+### Fixed — Q7 answered: the token refresh writes the credential into `main`, by design (2026-08-16, NVB-32)
+
+Two rounds of this question ended by naming the last thing that changed before a quiet
+period, and both were wrong. This one reads the code instead, and the mechanism turns
+out to be ordinary, documented behaviour doing exactly what it was written to do.
+
+Traced in the shipped `dist` of `2026.7.1-2` (`0790d9f`):
+
+1. `resolveAgentDir(agentDir)` is `agentDir ?? resolveDefaultAgentDir({})`. **Undefined
+   means `main`** — every write below inherits that default.
+2. `resolvePersistedAuthProfileOwnerAgentDir` picks the store a credential update is
+   persisted to, and returns `void 0` — main — for an agent's **own** profile whenever
+   `shouldUseMainOwnerForLocalOAuthCredential` agrees.
+3. That function agrees when both credentials are OAuth, the identities are adoptable,
+   and **`main.expires >= local.expires`**.
+
+So once `main` holds a copy of the same identity — here `xai:navegerc@gmail.com`, shared
+by every agent because the profile id is the *account*, not the agent — every agent's
+token refresh lands in `main` rather than in its own store. Main's copy is then always
+the freshest, the expiry comparison stays true, and **the condition re-arms itself on
+every refresh.** Nothing in the path asks whether anyone is inheriting.
+
+Every recorded observation falls out of that one mechanism:
+
+| observed | why |
+|---|---|
+| main's row at 20:06, `owner`'s frozen at 13:58 | the 13:58 token came due ~19:58 and the refresh went to main, so owner's own row never moved |
+| refilled with every agent holding its own profile | the mechanism never consults whether anyone lacks one — which is why the 2026-08-15 hypothesis died |
+| emptying main "held" for twenty hours | with main empty the check fails on its first line (`main?.type !== "oauth"`), so refreshes stay local. Emptying **is** the lever |
+| bisection never caught the writer | it fires on token expiry, not on anything a person was doing at the time |
+
+**A frozen per-agent row beside a moving `main` row is the signature.** Watch the rows,
+not the file — a WAL checkpoint touches the sqlite file without touching the row, which
+is how `owner` appeared to have been written at 19:30 when its row said 13:58. That
+mistake was made and caught inside this same investigation.
+
+Ruled out empirically en route: `mergeOAuthFileIntoStore` reads
+`$STATE_DIR/credentials/oauth.json`, and no such file exists on the Pi. The earlier
+round was right that there is no flat file to re-import from — the source was never a
+file.
+
+**The re-seed is answered too — see the 2026-08-17 entry above.** The suspect named
+during this round (`maybeSyncPersistedExternalCliAuthProfiles`) was wrong.
+
+An instrumented copy of `dist/sqlite-B1ze-fre.js` was prepared to catch the write
+live, and was never needed — reading the code answered both halves. It was staged and
+not installed; the live `dist` is untouched.
+
+### Added — the isolation check finally runs on a schedule (2026-08-16, NVB-32)
+
+`deploy/check-agent-auth.sh` shipped on 2026-08-15, reached the box on 2026-08-16, and
+until now ran only when someone remembered. Given the mechanism above fires on token
+expiry, "run it after a login" was never going to catch it.
+
+`wpa-agent-auth.{service,timer}` plus `wpa-agent-auth-failed.service`, following the
+`wpa-oc-auth` pattern: boot + hourly, Signal message to the owner on violation.
+`OnBootSec=2min` is load-bearing rather than tidy — read-through resolves at **gateway
+startup**, so what `main` holds at boot decides the whole uptime.
 
 ### Added — a third family DM agent, and placeholder names in the example configs (2026-08-16)
 

@@ -89,6 +89,87 @@ Anthropic auth follows [Q4](../OPEN-QUESTIONS.md): sanctioned subscription auth 
 Agent SDK. **Do not paste subscription OAuth tokens into third-party tools** — prohibited
 by Anthropic policy as of Feb 2026.
 
+## The credential-isolation check (NVB-32)
+
+ADR 0011 rested its credential isolation on the **default agent holding nothing**.
+**That rule is not achievable** (2026-08-17, NVB-32): OpenClaw mirrors every refreshed
+OAuth credential into the default agent's store on purpose, so `main` refills within
+seconds of any restart that leaves it empty — measured at 36 seconds. Do not go looking
+for the leak when you see `main` non-empty; that is the designed state.
+
+`deploy/check-agent-auth.sh` asserts two things that can be true instead:
+
+> 1. every profile id is a **model** credential ([ADR 0013](../decisions/0013-tool-credentials-live-in-a-per-agent-mcp-server.md))
+> 2. for every profile id in the default agent's store, every other agent holds that same
+>    profile id itself
+
+Rule 2 is the condition under which nothing is inherited — an agent missing one of main's
+ids resolves read-through to main's copy, and the script names the id. **Rule 1 is the
+one that matters going forward**: a tool credential must never get a profile id at all,
+because anything with one is mirrored into `main` on its next refresh. It fails even when
+every agent holds the stray id and nothing is inherited, which is the case rule 2 passes.
+
+Widen `MODEL_PROFILE_PREFIXES` when a model provider is added. Never to silence rule 1
+about a tool — moving the credential to its own MCP server is the fix.
+
+It runs on a timer, not after logins. That distinction cost a day: the script shipped
+2026-08-15, was never installed to the box, and the invariant went unchecked until
+2026-08-16. **A detector that is not deployed is not a detector**, and one that only
+runs when a human remembers is barely one either — the mirror fires on token refresh, so
+it happens at hours when nobody has touched the box.
+
+| Path | Source | Owner |
+|---|---|---|
+| `/usr/local/bin/wpa-agent-auth` | `deploy/check-agent-auth.sh` | `root 0755` |
+| `/etc/systemd/system/wpa-agent-auth.service` | `deploy/systemd/` | root |
+| `/etc/systemd/system/wpa-agent-auth.timer` | `deploy/systemd/` | root |
+| `/etc/systemd/system/wpa-agent-auth-failed.service` | `deploy/systemd/` | root |
+
+```bash
+sudo install -m 0755 deploy/check-agent-auth.sh /usr/local/bin/wpa-agent-auth
+sudo install -m 0644 deploy/systemd/wpa-agent-auth.service \
+                     deploy/systemd/wpa-agent-auth.timer \
+                     deploy/systemd/wpa-agent-auth-failed.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now wpa-agent-auth.timer
+systemctl list-timers wpa-agent-auth.timer
+```
+
+`OnBootSec=2min` is load-bearing rather than tidy. Auth read-through resolves **at
+gateway startup**, so what `main` holds at boot decides the entire uptime; a violation
+introduced now otherwise surfaces one restart later.
+
+A violation sends the owner a Signal message through the outbox, the same path as
+`wpa-oc-auth-failed`. Verify the detector itself on a fixture — it builds its own, and
+asserts both directions:
+
+```bash
+bash deploy/check-agent-auth.test.sh     # needs sqlite3, so run it on the Pi
+```
+
+**Adding an agent is the operation that breaks rule 2**, so re-run the check after any
+`openclaw models auth --agent <id> login` rather than waiting for the timer.
+
+**The dangerous operation is adding a new kind of credential.** The first time someone
+runs `models auth login` for a calendar or a mailbox, that credential gets a profile id,
+and a profile id is mirrored into `main` on its first refresh and inherited by every
+agent lacking it. Do not do that — [ADR 0013](../decisions/0013-tool-credentials-live-in-a-per-agent-mcp-server.md)
+puts tool credentials in their own MCP server entry per principal:
+
+```jsonc
+"mcp": { "servers": {
+  "cal-owner": { "command": "…", "env": { "GOOGLE_OAUTH_TOKEN": "<owner's>" } }
+}},
+"agents": { "list": [
+  { "id": "owner", "tools": { "alsoAllow": ["cal-owner__list_events"] } }
+]}
+```
+
+No profile id, so nothing to mirror. Confirm the resolved tool prefix rather than
+assuming it matches the server key — it is derived, and duplicate or long prefixes get
+truncated or suffixed. `openclaw mcp reload` picks up a new server without restarting the
+gateway.
+
 ## Reader
 
 Deploy from WSL, then install on the Pi:

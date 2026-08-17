@@ -1,0 +1,28 @@
+[Unit]
+Description=Assert the ADR 0011 credential-isolation invariant on every agent's auth store
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/runbooks/04-agent-deploy.md
+OnFailure=wpa-agent-auth-failed.service
+# Read-through resolves at GATEWAY STARTUP, so the state worth checking is the one
+# the gateway just resolved. Running at OnBootSec=2min without this ordering can
+# check a box whose gateway has not started yet — a true answer about a moment that
+# does not matter. Ordering only, deliberately not Requires=: if the gateway is
+# down the check should still run and report, not be skipped.
+After=wpa-openclaw.service
+
+[Service]
+Type=oneshot
+# Root, and there is no smaller uid that works: the stores live under
+# /var/lib/openclaw/.openclaw/agents/*/agent/ at 0700 owned by uid 991, and the
+# whole point of this check is to read them from OUTSIDE the gateway's own
+# process. Running it as `openclaw` would ask the suspect to audit itself.
+ExecStart=/usr/local/bin/wpa-agent-auth
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+# Read-only everywhere. The script opens every database with mode=ro and writes
+# nothing; if that ever stops being true, this makes it fail loudly.
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/openclaw

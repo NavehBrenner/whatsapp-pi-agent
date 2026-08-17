@@ -1,0 +1,8 @@
+[Unit]
+Description=Tell the owner in Signal that credential isolation is not holding
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/runbooks/04-agent-deploy.md
+
+[Service]
+Type=oneshot
+# Root, because the outbox is 0700 wpa-gate. Same shape as wpa-oc-auth-failed.
+ExecStart=/usr/local/bin/wpa-outbox-notify owner "⚠️ Credential isolation is not holding on the Pi (NVB-32). An agent is missing a profile that `main` holds, so it inherits main's copy. Emptying `main` will NOT fix it — it is re-mirrored on the next token refresh, by design. Check: sudo /opt/wpa/deploy/check-agent-auth.sh"
