@@ -76,23 +76,69 @@ The PAT is the floor and the only one that holds if the other two are misconfigu
 
 ```bash
 sudo -u openclaw HOME=/var/lib/openclaw openclaw mcp probe github --json
-# expect: 4 tools, diagnostics: []
+# expect: 8 tools, diagnostics: []
 ```
 
-### `create_issue` does not exist
+The eight are `issue_write`, `add_issue_comment`, `issue_read`, `list_issues`,
+`actions_get`, `actions_list`, `get_job_logs` and `pull_request_review_write`.
 
-`list-scopes` advertises it, `--tools=create_issue` is accepted without complaint,
-and **nothing registers**. The real tool is `issue_write`. Only the tool *count* in
-`mcp probe` exposed it — the same silent-non-grant failure ADR 0011 records for
-OpenClaw tool lists, appearing here in GitHub's own server.
+### Half the names in `list-scopes` do not register
 
-It also costs the narrow verb ADR 0010 asks for: `issue_write` is a consolidated
-write that can close and relabel, and there is no create-only tool. The containment
-falls back to the PAT's scope.
+`list-scopes` advertises `create_issue`; `--tools=create_issue` is accepted without
+complaint and **nothing registers**. The real tool is `issue_write`. The same thing
+happened again on 2026-08-17 with `create_pull_request_review`, also advertised, also
+accepted, also registering nothing — the real tool is `pull_request_review_write`.
+
+Two instances make it a rule rather than an anecdote:
+
+> **On this server, a grant is verified by tool count. The absence of an error proves
+> nothing.**
+
+The cheapest way to check a name before touching the live config is to list the tools
+from a throwaway instance — `tools/list` does not authenticate, so no credential is
+needed and nothing is spawned by the gateway:
+
+```bash
+{ printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"p","version":"1"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'; sleep 4; } \
+| GITHUB_PERSONAL_ACCESS_TOKEN=x github-mcp-server stdio --tools=<candidate> 2>/dev/null \
+| tail -1 | jq -r '.result.tools[].name'
+```
+
+Empty output means the name is a phantom. Keep the `sleep`: the server exits on stdin
+EOF and answers nothing if the pipe closes first.
+
+It also costs the narrow verb ADR 0010 asks for, twice. `issue_write` is a
+consolidated write that can close and relabel; `pull_request_review_write` carries
+`create`, `submit_pending`, `delete_pending`, `resolve_thread` and
+`unresolve_thread` in one tool. There is no create-only variant of either, so the
+containment falls back to the PAT's scope.
 
 **Put the tool count in the checklist, not just `config validate`.** `mcp probe`
 returns tools and no diagnostics against a *dead* credential, because listing tools
 does not authenticate.
+
+### Formal reviews, and what the agent cannot review
+
+`pull_request_review_write` takes `event: APPROVE | REQUEST_CHANGES | COMMENT`, so the
+agent can request changes rather than leaving a plain comment that cannot mark the
+merge box.
+
+**It cannot do that on a PR it authored** — GitHub rejects `REQUEST_CHANGES` and
+`APPROVE` on your own pull requests, and the agent's PAT is the owner's identity. So
+any PR *Naveh* opens can only receive a `COMMENT` review from the agent. The PRs that
+matter are the runner's, authored by `nvb-opencode[bot]`, and those take the full set.
+
+This ruined the first smoke test: the test PR was opened by the owner, so
+`REQUEST_CHANGES` was impossible on it and the agent fell back to `COMMENT` and
+explained why. **Design the probe so the identity is right**, not just the payload —
+the same lesson as §5, one layer further in.
+
+An approving review is advisory on this repo: `required_approving_review_count` is 0,
+so approve is not merge authority. The required `build` check and `enforce_admins`
+are what actually gate `main`.
 
 ### A rotated token needs a gateway restart
 
@@ -162,7 +208,9 @@ what makes that safe.
 
 ## 4. The code mirror
 
-`wpa-project-sync.timer` → `/usr/local/bin/wpa-project-sync`, ticking every 60s.
+`wpa-project-sync.timer` → `/usr/local/bin/wpa-project-sync`, ticking every 60s —
+and `wpa-gh-watch` also runs it inline on every tick with `WPA_SYNC_FORCE=1`, which
+is where it actually earns its keep (see §4a).
 
 `/workspace/repo` inside the sandbox is a shallow, single-branch mirror of `main`,
 which the agent reads with the `read` tool it already has. **That is the whole point
@@ -190,6 +238,80 @@ nothing new at all.
 
 git goes through libcurl, which does Happy Eyeballs and falls back to IPv4 on its
 own — this is **not** the Go-resolver trap that needs `GODEBUG=netdns=cgo`.
+
+## 4a. Pull requests: a checkout each, and the diff beside it
+
+The mirror also fetches `refs/pull/*/head` and lays out one checkout per **open** PR:
+
+| Path in the sandbox | What |
+|---|---|
+| `/workspace/pr-<N>/` | a linked worktree of the PR's head, detached |
+| `/workspace/pr-<N>.diff` | `git diff origin/main...pr/<N>` |
+| `/workspace/repo-sync.json` → `.prs[]` | `{number, head}` for every open PR |
+
+- **The pull refs need no credential.** The repo is public, so this cost the PAT
+  nothing — still `Issues: read/write`, no contents. That is the whole reason this
+  shape won over the GitHub MCP's PR tools, which would have needed
+  `Pull requests: read` + `Contents: read`, a rotation, a gateway restart, and would
+  still return a truncated diff through a 5000-char window.
+- **The diff file exists because the agent has no `exec`.** It cannot run `git diff`,
+  so a checkout on its own would leave it comparing two trees by eye. Three-dot, not
+  two: they agree today because `main` requires branches to be up to date, but the
+  merge-base form stays correct if that rule is relaxed.
+- **What is open comes from the API, never from git.** `main` is protected as linear
+  history, so PRs land **squashed** — a merged PR's head is never an ancestor of
+  `main`, and `git branch --merged` / `merge-base --is-ancestor` report that nothing
+  has ever merged. `GET /pulls?state=open` is also the only signal that catches a PR
+  closed *without* merging, and it self-corrects after a failed tick.
+- **Cleanup is "delete everything not in the open set",** checkout and diff in one
+  pass so neither outlives the other, then `git worktree prune`. The self-heal path
+  (`rm -rf repo`) wipes the `pr-*` dirs too: they are linked worktrees of that store,
+  and left behind they would hold a `.git` file pointing at nothing while the agent
+  read a frozen tree as current.
+- ~280 KB per PR against a 604 KB object store, so this is not a disk question.
+
+### The trigger is the head sha
+
+`wpa-gh-watch` reads `repo-sync.json` before and after the sync and reports any PR
+whose head moved — which covers a PR that was just opened and one that just gained
+commits, with the same event.
+
+**`updated_at` does move on a plain push** — measured on 2026-08-17 with an empty
+commit to PR #9: it went from `2026-08-16T04:17:18Z` to `2026-08-17T09:14:57Z`, two
+seconds after the push, with zero comments. An earlier version of this runbook claimed
+the opposite and justified the head-sha trigger with it. That was wrong, and the
+`since=` poll in §3 does catch a push on its own.
+
+What the head sha is still doing, now stated honestly:
+
+- **It is not author-filtered.** The `issues?since=` loop drops anything whose author
+  is the token owner, so a PR **Naveh raised by hand** produces no event at all — five
+  of the first seven PRs on that repo. `refs/pull/*` does not care who opened it.
+- **It names the commit.** The event carries the sha and the checkout path, so the
+  agent is told what to read rather than that something changed. Its dedupe id carries
+  the sha, so a re-push is a new event and a re-read is not.
+- **It is tied to what is on disk, not to GitHub's metadata.** The event is derived
+  from the mirror that just synced, so the agent is never told about a PR whose
+  worktree is missing.
+
+Both fire for a bot-authored push, which is why the verification run reported the PR
+twice — that is duplication, not a fault, and the `seen` list keeps each to one event.
+
+Two consequences worth keeping straight, and neither depends on the `updated_at`
+question above:
+
+- **The sync runs on every watcher tick, not only when a PR event was seen.** A
+  worktree the agent is told about must already exist, and the sha comparison needs
+  the fetch to have happened.
+- **A failed sync does not swallow the wake.** It is bounded at 90s and, on failure,
+  appends a stale-mirror warning to the message instead of aborting — comments and CI
+  failures still have to get through, and an agent told its checkout may be stale is
+  far better off than one not woken at all. `wpa-gh-watch.service` therefore carries
+  `TimeoutStartSec=300`, which must stay above 90s + the agent's `--timeout 120`.
+
+`flock` on `$GH_WORKSPACE/.git.lock` serialises the two paths. Without it the timer
+and the watcher fetch into the same `.git` and race on `index.lock`, and under
+`set -e` a lost race becomes an `OnFailure` DM about nothing.
 
 ## 5. Verifying without touching the repo
 
@@ -258,6 +380,9 @@ timeout rather than NXDOMAIN.
 | Agent answers in the wrong room | binding uses a `uuid:` prefix on a group id | group ids carry no prefix; check `sessions.json` |
 | Everything replayed after a reboot | cursor lost | `StateDirectory=` owns it; check it exists and is `openclaw`-owned |
 | Agent describes code that has changed | mirror stale or frozen | `repo-sync.json` carries the commit and fetch time; `journalctl -u wpa-project-sync` |
+| Room silent when opencode pushes to a PR | head-sha comparison broken, not `updated_at` | is `.prs[]` in `repo-sync.json` moving? if not, the sync is failing inside `wpa-gh-watch` |
+| `/workspace/pr-<N>/` missing for an open PR | sync failed, or the PR is not in `?state=open` | `journalctl -u wpa-gh-watch` — the wake message says so when the sync failed |
+| `another sync holds the lock` in the journal | a fetch took >45s and both paths collided | transient; if it repeats, the network is the problem, not the lock |
 | Agent says a tool it was granted "is not available" | an agent-level `alsoAllow` **replaced** the global one | list the agent's own `tools.alsoAllow` and check the global names are repeated in it |
 
 ## Operational notes

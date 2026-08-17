@@ -11,6 +11,154 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added — the project agent can leave a formal PR review (2026-08-17)
+
+`github__pull_request_review_write` granted to `code-invariants`, so it can submit a
+review with `REQUEST_CHANGES` rather than a plain comment that cannot mark the merge
+box. Four layers updated — the server's `--tools` argv, `mcp.servers.github.
+toolFilter.include`, the agent's `tools.alsoAllow` and the room's `tools.allow`
+ceiling — and the tool count moved 7 → 8.
+
+**The PAT already had `Pull requests: write`.** Verified before changing anything, by
+posting a review to a closed PR and reading the status: `403` would have meant the
+permission was missing, and a `200` came back instead. The pending review it created
+was deleted immediately; a pending review is only ever visible to its author.
+
+**`create_pull_request_review` is a phantom name.** `list-scopes` advertises it,
+`--tools=` accepts it, and nothing registers — the same silent non-grant as
+`create_issue`, which is now two instances and therefore a rule: on this server a
+grant is verified by tool count, never by the absence of an error. Runbook 06 carries
+a credential-free `tools/list` recipe for checking a name before touching live config.
+The narrow verb ADR 0010 asks for does not exist here either: the real tool bundles
+create, submit, delete-pending and thread resolution.
+
+**REQUEST_CHANGES is not yet verified, and the smoke test is why.** GitHub rejects
+`REQUEST_CHANGES` and `APPROVE` on your own PRs, and the agent's PAT is the owner's
+identity — so the test PR, opened by the owner, could never have exercised it. The
+agent fell back to `COMMENT` and said so, which is the failure reporting itself
+correctly rather than a gap in the grant. The runner's PRs are authored by
+`nvb-opencode[bot]` and take the full set, so the next real one settles it. Recorded
+because a probe whose identity is wrong looks exactly like a working feature.
+
+What the agent found in the planted test file is worth keeping as a baseline: both
+deliberate bugs (`startsWith` matching `"src/gen"` against `"src/generated"`, an empty
+pattern matching everything) plus two nobody planted — no path normalisation, and a
+module wired to nothing.
+
+Widening tool policy did **not** need the session store cleared. The documented trap
+is that policy binds at session creation and *tightening* leaves existing sessions
+alone; after a gateway restart the room session had the new tool without further
+intervention.
+
+### Fixed — `/opt/wpa` was emptied by a hand-written deploy, and nothing reported it (2026-08-17)
+
+An `rsync -a --delete` from a staging directory whose own transfer had not finished
+deleted the contents of every subdirectory of `/opt/wpa`, including `src/` and
+`config/`. The recovery is written up in
+[runbook 04](docs/runbooks/04-agent-deploy.md#optwpa-is-not-a-scratch-directory); what
+is worth recording here is the shape of it.
+
+**It did not look like an outage.** `wpa-gate` had its code and config in memory from a
+restart the previous day and carried on serving. `systemctl is-active` said `active`,
+`NRestarts=0`, no unit failed, the journal was clean. The damage would have surfaced at
+the next unplanned reboot. Service state is not evidence about the tree it was loaded
+from; `find /opt/wpa -type f | wc -l` is.
+
+**The only copy of `config/config.toml` was in the directory that got wiped.** It is
+gitignored — correctly, it names real people and real group ids — so the repo could not
+restore it. It came back only because unrelated OpenClaw work the night before had left
+a copy in `~/openclaw-snapshots/`. That is luck, and it is now
+`wpa-config-backup.path`: a copy per change into `/var/backups/wpa-config`, keeping 20.
+On change and not on a timer, because the file had been edited the day before it was
+lost and weekly retention would have restored a version that predated the edit.
+
+**`deploy/install-reader.sh` already did this correctly.** Its rsync carries
+`--exclude config/config.toml` and it re-applies `root:wpa-config 0640` afterwards. The
+loss came entirely from bypassing it with an ad-hoc command. `AGENTS.md` said "deploy
+with `git pull` or `rsync -a --delete`", which invited exactly that; it now names the
+installer and says why.
+
+Three smaller findings, each of which cost a round trip:
+
+- **rsync leaves in-progress directories at mode `700` and fixes permissions only at
+  the end.** So a staging tree at `700` with link count `2` is a transfer that died
+  partway, and syncing onward from it propagates the emptiness. Both directories looked
+  plausible in `ls`.
+- **`pin-group.py` prints the block, it does not write it.** Restoring a config whose
+  pinned membership is one person short does not error — the gate drops that
+  conversation as membership drift and the room just goes quiet.
+- **The reader is the canary, not the gate.** Restoring the config as
+  `root:wpa-gate 0640` let the gate start cleanly and broke `wpa-reader`, which is in
+  `wpa-config` and re-reads the file every 30s. A long-running process holding a file
+  in memory cannot tell you whether that file is still readable.
+
+### Added — the project agent can read a pull request, not just `main` (2026-08-17)
+
+The room could be told a PR existed and could read `main`; it could not read the PR.
+`wpa-project-sync` now also fetches `refs/pull/*/head` and lays out one detached
+worktree per **open** PR at `/workspace/pr-<N>/`, with `git diff origin/main...pr/<N>`
+written beside it and each head sha recorded in `repo-sync.json`.
+
+**The PAT did not change.** Pull refs need no credential on a public repo, so this is
+still `Issues: read/write`, no contents — which is what won it over the GitHub MCP's
+PR tools, where the same feature costs `Pull requests: read` + `Contents: read`, a
+token rotation, a gateway restart, and returns a truncated diff through a 5000-char
+window anyway.
+
+The diff file is not a convenience. The agent has no `exec`, so it cannot run
+`git diff`; a checkout alone would leave it comparing two trees by eye.
+
+Cleanup is driven by `GET /pulls?state=open`, not by git. `main` is protected as
+linear history so PRs land squashed, which means **a merged PR's head is never an
+ancestor of `main`** and `git branch --merged` reports that nothing has ever merged —
+the obvious implementation of "delete the worktrees of merged branches" would have
+deleted nothing, forever. The open set also catches a PR closed without merging.
+
+### Added — the head sha is a wake trigger, and `updated_at` turned out not to be broken (2026-08-17)
+
+`wpa-gh-watch` now reports any PR whose head commit moved, read out of
+`repo-sync.json` before and after the sync.
+
+**This was built on a claim that measurement then disproved.** The design assumed
+`updated_at` does not move for a plain push to a PR branch, making "opencode pushed a
+fix" invisible to the existing `issues?since=` poll. An empty commit to PR #9 settled
+it the other way: `updated_at` went from `2026-08-16T04:17:18Z` to
+`2026-08-17T09:14:57Z`, two seconds after the push, with zero comments. The existing
+poll does catch a push. The assumption was recorded as fact in the first version of
+this entry and in runbook 06 before anything had tested it — worth remembering as the
+shape of the mistake, since the feature was verified end to end while its stated
+justification was never checked at all.
+
+What the head sha is actually worth, having measured:
+
+- **It is not author-filtered.** The `issues?since=` loop drops events whose author is
+  the token owner, so a PR **Naveh raised by hand** produces nothing — five of the
+  first seven PRs on that repo. `refs/pull/*` does not care who opened it. This is the
+  real gap, and it is not the one the feature was designed for.
+- **It names the commit.** The wake carries the sha and the checkout path, so the
+  agent is told what to read rather than that something changed, and its dedupe id
+  carries the sha so a re-push is a new event while a re-read is not.
+- **It is derived from the mirror on disk**, so the agent is never woken about a PR
+  whose worktree is missing.
+
+Both triggers fire for a bot-authored push, which is why the verification reported
+PR #9 twice. The `seen` list keeps each to one event.
+
+The watcher runs the sync inline on every tick rather than only on PR events — the
+worktree has to exist before the agent is told about it, and the comparison needs the
+fetch to have happened. That reasoning is independent of the above and still holds.
+
+A failing sync appends a stale-mirror warning to the wake instead of aborting it:
+comments and CI failures still have to get through, and an agent told its checkout may
+be stale is better off than one not woken at all. `flock` serialises the watcher's
+inline run against the timer's, which otherwise race on `index.lock` and turn into an
+`OnFailure` DM about nothing. `wpa-gh-watch.service` moves to `TimeoutStartSec=300`
+to stay above 90s of sync plus the agent's `--timeout 120`.
+
+Checked while doing this and worth recording as a *non*-finding: the author filter at
+`gh-watch.sh:89` drops events whose author is the token owner (`NavehBrenner`), and
+the opencode runner authors its PRs as `nvb-opencode[bot]`, so runner PRs are not
+being filtered. The concern was that the two shared an account; they do not.
 ### Fixed — Q7 answered: the token refresh writes the credential into `main`, by design (2026-08-16, NVB-32)
 
 Two rounds of this question ended by naming the last thing that changed before a quiet

@@ -169,6 +169,76 @@ sudo wc -l /var/lib/wpa-reader/messages.jsonl
 
 `messages.jsonl` grows without bound until the M3 consumer drains it. Nothing rotates it yet.
 
+## `/opt/wpa` is not a scratch directory
+
+Two rules, both paid for on 2026-08-17 when a hand-written
+`rsync -a --delete /tmp/stage/ /opt/wpa/` emptied it.
+
+**Never rsync into `/opt/wpa` by hand — run `install-reader.sh`.** Its own rsync
+carries `--exclude config/config.toml` and re-applies `root:wpa-config 0640` on the
+way out. Both matter:
+
+- **`config/config.toml` is gitignored, so `/opt/wpa` holds the only copy.** It is not
+  in the repo and cannot be restored from it. It names real people, real group ids and
+  the profile each pair gets.
+- **Ownership is `root:wpa-config`, mode `0640`, and the group is load-bearing.**
+  `wpa-config` contains exactly `wpa-gate` and `wpa-reader` — the two processes that
+  read it. `root:root 0644` "works" and is wrong: it makes the authority table
+  world-readable on a box that also runs a sandboxed agent. `0640 root:wpa-gate` is
+  wrong in the other direction and fails *silently at the next timer tick* rather than
+  at deploy time, because the gate is long-running and holds the file in memory while
+  the reader re-opens it every 30s. The reader is the canary here, not the gate.
+
+### A wiped `/opt/wpa` does not look like an outage
+
+Nothing failed when it happened. `wpa-gate` had its code and config in memory and kept
+serving; `systemctl is-active` said `active`, `NRestarts=0`. The damage was invisible
+until the next restart — which, left alone, would have been an unplanned reboot.
+
+So after any deploy accident, **check the tree, not the service state**:
+
+```bash
+find /opt/wpa -type f | wc -l                      # ~2300; a few hundred means empty subdirs
+stat -c '%a %U:%G %n' /opt/wpa/src /opt/wpa/config  # both 755; 700 breaks every service user
+sudo -u wpa-gate   test -r /opt/wpa/config/config.toml && echo gate ok
+sudo -u wpa-reader test -r /opt/wpa/config/config.toml && echo reader ok
+```
+
+An empty directory and a populated one are the same `ls -ld` line apart: a link count
+of `2` means no subdirectories, and rsync leaves partially-transferred directories at
+mode `700` until it finishes. **A staging directory at `700` is a transfer that did not
+complete** — do not sync onward from it.
+
+### Recovering the gate config
+
+`wpa-config-backup.path` watches `/opt/wpa/config/config.toml` and copies every changed
+version to `/var/backups/wpa-config/config-<date>.toml`, keeping 20. On change rather
+than on a timer, because weekly retention would not have helped: the file had been
+edited the day before it was lost.
+
+```bash
+ls -1t /var/backups/wpa-config/                    # newest first
+sudo install -o root -g wpa-config -m 0640 \
+     /var/backups/wpa-config/config-<date>.toml /opt/wpa/config/config.toml
+sudo -u wpa-gate PYTHONPATH=/opt/wpa/src python3 -m gate.signal --check /opt/wpa/config/config.toml
+```
+
+**Validate before restarting anything.** `--check` prints conversations, pinned member
+counts and each principal's profile, and the running gate's own startup line
+(`gate up: N conversation(s), M agent(s)`) is what you compare it against —
+`journalctl -u wpa-gate | grep 'gate up'` gives the count the live process actually
+loaded, which is the only ground truth available while it is still running.
+
+Two traps in a restore:
+
+- **Pinned group membership goes stale.** `deploy/pin-group.py` **prints** the correct
+  block; it does not write it. Paste the `members` list in by hand. Restoring a config
+  whose pin is one person short does not error — the gate refuses that conversation
+  entirely as membership drift, and the room simply goes quiet.
+- **A backup taken before a change is not the running config.** Check the file's
+  timestamp against the gate's `ActiveEnterTimestamp`; anything written before the last
+  restart may be missing whatever that restart was for.
+
 ## Rootless Docker for the agent sandbox (NVB-25)
 
 `sandbox.mode: "all"` needs a Docker daemon, and the gateway must reach its socket to

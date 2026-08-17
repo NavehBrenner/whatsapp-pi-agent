@@ -1,0 +1,13 @@
+[Unit]
+Description=Watch the gate's live config for changes
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/runbooks/01-deploy.md
+
+[Path]
+# PathChanged, not PathModified: fires once when the writer closes the file rather
+# than on every write within a save. Also fires when the file is replaced by an
+# `install`/`mv`, which is how the config is meant to be updated.
+PathChanged=/opt/wpa/config/config.toml
+Unit=wpa-config-backup.service
+
+[Install]
+WantedBy=multi-user.target
