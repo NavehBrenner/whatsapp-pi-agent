@@ -76,23 +76,69 @@ The PAT is the floor and the only one that holds if the other two are misconfigu
 
 ```bash
 sudo -u openclaw HOME=/var/lib/openclaw openclaw mcp probe github --json
-# expect: 4 tools, diagnostics: []
+# expect: 8 tools, diagnostics: []
 ```
 
-### `create_issue` does not exist
+The eight are `issue_write`, `add_issue_comment`, `issue_read`, `list_issues`,
+`actions_get`, `actions_list`, `get_job_logs` and `pull_request_review_write`.
 
-`list-scopes` advertises it, `--tools=create_issue` is accepted without complaint,
-and **nothing registers**. The real tool is `issue_write`. Only the tool *count* in
-`mcp probe` exposed it — the same silent-non-grant failure ADR 0011 records for
-OpenClaw tool lists, appearing here in GitHub's own server.
+### Half the names in `list-scopes` do not register
 
-It also costs the narrow verb ADR 0010 asks for: `issue_write` is a consolidated
-write that can close and relabel, and there is no create-only tool. The containment
-falls back to the PAT's scope.
+`list-scopes` advertises `create_issue`; `--tools=create_issue` is accepted without
+complaint and **nothing registers**. The real tool is `issue_write`. The same thing
+happened again on 2026-08-17 with `create_pull_request_review`, also advertised, also
+accepted, also registering nothing — the real tool is `pull_request_review_write`.
+
+Two instances make it a rule rather than an anecdote:
+
+> **On this server, a grant is verified by tool count. The absence of an error proves
+> nothing.**
+
+The cheapest way to check a name before touching the live config is to list the tools
+from a throwaway instance — `tools/list` does not authenticate, so no credential is
+needed and nothing is spawned by the gateway:
+
+```bash
+{ printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"p","version":"1"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'; sleep 4; } \
+| GITHUB_PERSONAL_ACCESS_TOKEN=x github-mcp-server stdio --tools=<candidate> 2>/dev/null \
+| tail -1 | jq -r '.result.tools[].name'
+```
+
+Empty output means the name is a phantom. Keep the `sleep`: the server exits on stdin
+EOF and answers nothing if the pipe closes first.
+
+It also costs the narrow verb ADR 0010 asks for, twice. `issue_write` is a
+consolidated write that can close and relabel; `pull_request_review_write` carries
+`create`, `submit_pending`, `delete_pending`, `resolve_thread` and
+`unresolve_thread` in one tool. There is no create-only variant of either, so the
+containment falls back to the PAT's scope.
 
 **Put the tool count in the checklist, not just `config validate`.** `mcp probe`
 returns tools and no diagnostics against a *dead* credential, because listing tools
 does not authenticate.
+
+### Formal reviews, and what the agent cannot review
+
+`pull_request_review_write` takes `event: APPROVE | REQUEST_CHANGES | COMMENT`, so the
+agent can request changes rather than leaving a plain comment that cannot mark the
+merge box.
+
+**It cannot do that on a PR it authored** — GitHub rejects `REQUEST_CHANGES` and
+`APPROVE` on your own pull requests, and the agent's PAT is the owner's identity. So
+any PR *Naveh* opens can only receive a `COMMENT` review from the agent. The PRs that
+matter are the runner's, authored by `nvb-opencode[bot]`, and those take the full set.
+
+This ruined the first smoke test: the test PR was opened by the owner, so
+`REQUEST_CHANGES` was impossible on it and the agent fell back to `COMMENT` and
+explained why. **Design the probe so the identity is right**, not just the payload —
+the same lesson as §5, one layer further in.
+
+An approving review is advisory on this repo: `required_approving_review_count` is 0,
+so approve is not merge authority. The required `build` check and `enforce_admins`
+are what actually gate `main`.
 
 ### A rotated token needs a gateway restart
 
