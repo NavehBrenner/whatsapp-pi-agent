@@ -31,7 +31,17 @@ owner_file="$state/token-owner"
 api="https://api.github.com"
 # -4 because this Pi has no global IPv6 and a resolver that prefers AAAA stalls on
 # an address that was never reachable. Same class of trap as the dockerd drop-in.
-curl_opts=(-4 --silent --show-error --fail-with-body --max-time 30)
+# --retry because api.github.com serves transient 502/503/504 often enough to matter:
+# on 2026-08-17 it did so four times in half an hour, and each one exited non-zero,
+# tripped OnFailure and sent the owner a Signal message about a watcher that was
+# fine. An alarm that cries wolf at GitHub's uptime gets muted, and then the real
+# failure is silent too. curl's default retry set is exactly the transient class —
+# 5xx, 408, 429, connection errors — so a genuinely bad token still fails fast and
+# still pages, which is what should happen.
+# -4 because this Pi has no global IPv6 and a resolver that prefers AAAA stalls on
+# an address that was never reachable. Same class of trap as the dockerd drop-in.
+curl_opts=(-4 --silent --show-error --fail-with-body --max-time 30
+           --retry 3 --retry-delay 5)
 
 # The token lives in exactly one place: the MCP server's env in the gateway config.
 # Reading it here rather than copying it into another file keeps that true.

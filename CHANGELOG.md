@@ -11,6 +11,20 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — `wpa-gh-watch` paged the owner about GitHub's uptime (2026-08-17)
+
+`api.github.com` served 401, 503 and 504 six times between 16:28 and 18:23, with
+successful runs in between. Each one exited non-zero, tripped `OnFailure` and sent a
+Signal message saying the project room would not hear about PRs until it was fixed —
+about a watcher that was working. The same outage was visible from a laptop at the same
+time.
+
+`--retry 3 --retry-delay 5` on the curl options. curl's default retry set is exactly the
+transient class (5xx, 408, 429, connection errors), so a genuinely bad token still fails
+on the first try and still pages, which is the behaviour worth keeping. **An alarm that
+cries wolf at a third party's uptime gets muted, and then the real failure is silent
+too** — the same reasoning that reshaped the credential check in this release.
+
 ### Added — ADR 0013: tool credentials live in a per-agent MCP server, never in the auth store (2026-08-17, NVB-32)
 
 The answer to "if `main` can't be kept empty, how do NVB-17/18 mount a calendar and a
