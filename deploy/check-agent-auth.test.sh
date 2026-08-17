@@ -63,7 +63,20 @@ out=$(run 2>&1) && { echo "FAIL a tool credential in the store should exit 1"; r
 	esac
 }
 
-# 4. Model providers other than the default one are not strays.
+# 4. A store that exists but cannot be read must not read as "holds nothing".
+#    A corrupt file, because the cause does not matter — permissions, corruption or
+#    a bad disk all produce the same silent pass if the error is swallowed.
+rm -f "$fx/agents"/*/agent/openclaw-agent.sqlite
+seed main '"xai:a@b.com":{}'
+printf 'not a database' >"$fx/agents/bob/agent/openclaw-agent.sqlite"
+out=$(run 2>&1); rc_run=$?
+if [ "$rc_run" = 2 ] && case "$out" in *"Could not read"*bob*) true ;; *) false ;; esac; then
+	echo "ok   unreadable store exits 2 rather than passing silently"
+else
+	echo "FAIL unreadable store should exit 2 and name bob (got $rc_run)"; rc=1
+fi
+
+# 5. Model providers other than the default one are not strays.
 rm -f "$fx/agents"/*/agent/openclaw-agent.sqlite
 seed main '"anthropic:a@b.com":{}'
 seed bob '"anthropic:a@b.com":{}'

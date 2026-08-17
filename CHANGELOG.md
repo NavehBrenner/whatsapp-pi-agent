@@ -72,6 +72,21 @@ model-provider prefixes fails the check, **even when every agent holds it** and 
 is inherited — the case the previous rule passed. `MODEL_PROFILE_PREFIXES` is widened
 when a model provider is added, never to quiet an alarm about a tool.
 
+It also stops treating an unreadable store as an empty one. Swallowing a failed
+`sqlite3` made the whole check a **silent pass**: no ids read anywhere means no strays
+and nothing inherited, so it printed OK and exited 0 having seen nothing. It now exits 2
+and names the agent.
+
+That was found chasing a failure mode that does not exist. The theory was that a WAL
+database cannot be opened read-only once its `-shm` sidecar is gone, so the
+`OnBootSec=2min` run would race the gateway's start. **Tested and false:** with `-shm`
+and `-wal` removed *and* the directory `chmod a-w`, SQLite reads the stores fine — the
+restriction applies only to a non-empty WAL needing replay. The guard is kept because
+"reads nothing, reports OK" is wrong whatever the cause, and permissions or a bad disk
+need no theory. `After=wpa-openclaw.service` is kept too, on the honest reason:
+read-through resolves at gateway startup, so a boot-time check that beats the gateway up
+gives a true answer about a moment that does not matter.
+
 ### Changed — the default agent cannot be kept empty, so the check now asserts something else (2026-08-17, NVB-32)
 
 `main` was emptied with the gateway stopped and verified empty. It refilled **36 seconds

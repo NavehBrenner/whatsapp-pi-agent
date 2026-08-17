@@ -74,12 +74,33 @@ print("\n".join(a["id"] for a in c.get("agents", {}).get("list", [])))
 
 # Profile ids held by an agent, one per line. An agent that has never run has no
 # store file at all, which is simply no ids.
+#
+# A store that exists but cannot be READ is a different thing entirely, and it must
+# never be reported as "holds nothing". Swallowing the error turned the whole check
+# into a silent pass: no ids anywhere means no strays and nothing inherited, so it
+# printed OK and exited 0 having read nothing at all. A monitor that cannot see is
+# not a monitor that is happy.
+#
+# This was found while chasing a failure mode that turned out not to exist. The
+# theory was that a WAL database cannot be opened read-only once its -shm sidecar
+# is gone, so the OnBootSec run would race the gateway. Tested against copies with
+# -shm and -wal removed AND the directory chmod a-w: SQLite reads them fine. The
+# restriction only applies to a non-empty WAL needing replay; a cleanly checkpointed
+# database opens read-only without shared memory. The guard stays anyway, because
+# "reads nothing, reports OK" is wrong for any cause — permissions, corruption, a
+# bad disk — and those do not need a theory to happen.
+UNREADABLE='!unreadable'
 ids() {
 	local db="$AGENTS_DIR/$1/agent/openclaw-agent.sqlite"
 	[ -e "$db" ] || return 0
 	sqlite3 "file:$db?mode=ro" \
 		"SELECT key FROM auth_profile_store, json_each(json_extract(store_json, '\$.profiles'));" \
-		2>/dev/null || true
+		2>/dev/null || printf '%s\n' "$UNREADABLE"
+}
+
+unreadable=""
+note_unreadable() {  # agent id, its ids
+	case "$2" in *"$UNREADABLE"*) unreadable="$unreadable $1" ;; esac
 }
 
 # Profile ids on stdin that are NOT model-provider credentials (ADR 0013).
@@ -96,6 +117,7 @@ strays() {
 }
 
 main_ids=$(ids "$default_agent")
+note_unreadable "$default_agent" "$main_ids"
 
 fail=0
 stray_report=""
@@ -117,6 +139,7 @@ while read -r id; do
 	[ "$id" != "$default_agent" ] || continue
 
 	agent_ids=$(ids "$id")
+	note_unreadable "$id" "$agent_ids"
 	n=$(printf '%s' "$agent_ids" | grep -c . || true)
 
 	# Anything main holds that this agent does not, it inherits.
@@ -146,6 +169,23 @@ while read -r id; do
 	fi
 	printf '%-16s %-9s %s\n' "$id" "$n" "$verdict"
 done <<<"$all_agents"
+
+if [ -n "$unreadable" ]; then
+	cat >&2 <<-EOF
+
+	Could not read the auth store of:$unreadable
+
+	This is not a clean bill of health — it is no reading at all. The usual cause is
+	the gateway being stopped: SQLite will not open a WAL database read-only once the
+	-shm sidecar is gone, and that file disappears when the last connection closes.
+
+	    systemctl is-active wpa-openclaw.service
+
+	Start the gateway and re-run. If it is already running, check that this is running
+	as root — the stores are 0700 and owned by uid 991.
+	EOF
+	exit 2
+fi
 
 if [ -n "$stray_report" ]; then
 	cat >&2 <<-EOF
