@@ -67,10 +67,22 @@ Also: read a **copy including `-wal`**. The `?mode=ro` form opens without it, an
 WAL was 4MB and nine hours newer than the `.db` — recent enough to hide exactly the
 person being looked up. The copy is the account itself and was deleted afterwards.
 
-Pending, and the agent is not finished without it: `aviv` holds no auth profile of his
-own yet, so `deploy/check-agent-auth.sh` reports `VIOLATION: inherits from 'main'`. The
-login needs a real TTY (`ssh -t pi`), and an agent inheriting `main`'s credential
-answers perfectly while doing it, which is why the check exists rather than a smoke test.
+Logged in and verified. Before the login `check-agent-auth.sh` read
+`VIOLATION: inherits from 'main'`, which is the state worth naming: an agent inheriting
+main's credential answers perfectly while doing it, so the check exists precisely because
+a smoke test passes there. After it: every agent `ok`,
+`xai effective=profiles:~/.openclaw/agents/aviv/agent/openclaw-agent.sqlite`, his own
+sandbox container `openclaw-sbx-agent-aviv-…` alongside owner's and code-invariants', and
+a neutral CLI probe answering `Pi` / Aviv's chat / the eight-tool surface with no `exec`.
+The workspace bootstrap on that first turn left the hand-written `IDENTITY.md` and
+`USER.md` alone.
+
+**The channel path is still the untested half.** A CLI probe creates `agent:aviv:main`,
+not `agent:aviv:signal:direct:uuid:…`, so it exercises the agent and not the binding —
+and a binding is the thing here that fails *silently*, by routing the DM to `main`. This
+project has already paid once for accepting a proxy for the path it changed (the blue
+PNG read as "green", 2026-08-15). The binding is confirmed on a real inbound message or
+it is not confirmed.
 
 ### Added — `deploy/install.sh`, one command for the whole box (2026-08-18)
 
