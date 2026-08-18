@@ -83,6 +83,31 @@ covers it: a concurrent tick skips and commits nothing.
 alarm describes. Two were GitHub 5xx, one was our own timer racing itself. A monitor
 whose false-positive rate is this high stops being read, which is the failure it was
 built to prevent.
+### Added — `web_search` for the project agent (2026-08-18)
+
+Granted to `code-invariants`, which had every other tool it needed and no way to look
+anything up.
+
+**It took two edits, not one.** The global `tools.alsoAllow` already carried
+`web_search`, but an agent-level `alsoAllow` **replaces** the global list rather than
+merging — the fault runbook 06 already records from when granting the GitHub tools
+silently removed this agent's `read`/`write`/`edit` and its ability to write its own
+`MEMORY.md`. So the agent list needed it, and the room's `tools.allow` ceiling needed it
+too, because a ceiling strips whatever it does not name. Adding it in one place
+validates cleanly and does nothing. The other four layers already permitted it:
+`tools.deny`, `tools.sandbox.tools.allow`, `tools.web.search` (`enabled`, provider
+`grok`), and the built-in sandbox deny.
+
+The example config gains both, and the project room's ceiling with it — it had never
+been mirrored there, only the family room's, which is why the layer most likely to
+strip a tool was the one with no documentation.
+
+**Worth naming, because it is a real widening.** The family room's comment already says
+what `web_search` costs: search results are attacker-influenceable text entering an
+agent with durable memory. Here it lands in a room that also holds a GitHub PAT with
+issue-write. Still egress-only — an injection reads a page it chose, it cannot pick a
+recipient — but this is the first path pulling open-web text into a session that can
+post. NVB-18's injection smoke test should target it here, not only in the family room.
 
 
 ### Fixed — `wpa-gh-watch` could mark an event reported and then never report it (2026-08-17)
