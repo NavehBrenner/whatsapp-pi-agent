@@ -126,14 +126,16 @@ it happens at hours when nobody has touched the box.
 | `/etc/systemd/system/wpa-agent-auth-failed.service` | `deploy/systemd/` | root |
 
 ```bash
-sudo install -m 0755 deploy/check-agent-auth.sh /usr/local/bin/wpa-agent-auth
-sudo install -m 0644 deploy/systemd/wpa-agent-auth.service \
-                     deploy/systemd/wpa-agent-auth.timer \
-                     deploy/systemd/wpa-agent-auth-failed.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now wpa-agent-auth.timer
+cd /opt/wpa && sudo git pull && sudo deploy/install.sh
 systemctl list-timers wpa-agent-auth.timer
 ```
+
+`deploy/install.sh` is the single entry point for everything in this repo that lives on
+the box: helpers into `/usr/local/bin`, unit files, all seven timers, both test suites,
+and a report of which long-running services are still running from an old unit file. It
+is idempotent, so re-running it after any `git pull` is the whole deploy. The
+per-artifact table above is what it does, kept here because knowing which file becomes
+which is what you need when one of them is wrong.
 
 `OnBootSec=2min` is load-bearing rather than tidy. Auth read-through resolves **at
 gateway startup**, so what `main` holds at boot decides the entire uptime; a violation

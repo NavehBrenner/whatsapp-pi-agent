@@ -28,6 +28,29 @@ cursor="$state/cursor"        # ISO8601; the window start for the next poll
 seen="$state/seen"            # event ids already reported, newest last
 owner_file="$state/token-owner"
 
+# ONE WAKE AT A TIME. A room turn takes minutes — reading a PR diff is not fast —
+# while this unit fires every 60s, so ticks pile up: the second one waits on the
+# gateway until the transport gives up at 150s. `openclaw agent` then falls back to
+# an EMBEDDED agent with a fresh session, which is wrong twice over. It loses the
+# room's memory and the conversation so far, which is the entire reason the wake
+# below uses --session-key. And it runs outside the gateway's environment, so it has
+# no DOCKER_HOST, cannot start a sandbox, and exits 1 — paging the owner about a
+# watcher that was merely busy. All of that observed on 2026-08-18.
+#
+# Deliberately NOT fixed by giving this unit DOCKER_HOST. That would make the
+# fallback *work*, and an amnesiac agent answering in the room about a PR it has no
+# memory of is worse than a tick that skipped. The fallback is not wanted here at
+# any time, and `openclaw agent` has no flag to refuse it — so the fix is to never
+# be late enough to trigger it.
+#
+# Skipping costs nothing: no state is committed until a wake lands, so the next tick
+# re-reports whatever this one found.
+exec {lockfd}>"$state/wake.lock"
+if ! flock -n "$lockfd"; then
+  echo "a previous wake is still running; skipping this tick"
+  exit 0
+fi
+
 api="https://api.github.com"
 # -4 because this Pi has no global IPv6 and a resolver that prefers AAAA stalls on
 # an address that was never reachable. Same class of trap as the dockerd drop-in.

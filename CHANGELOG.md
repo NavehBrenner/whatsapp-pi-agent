@@ -11,6 +11,78 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added — `deploy/install.sh`, one command for the whole box (2026-08-18)
+
+Deploying had grown to seven artifacts across two locations and no single command that
+put them there. The gap showed up twice in two days: the credential checker sat in the
+repo for a day before reaching the box, and `wpa-gh-watch` ran a version two commits
+behind while we debugged the alarms it was sending.
+
+```bash
+cd /opt/wpa && sudo git pull && sudo deploy/install.sh
+```
+
+Installs six helpers into `/usr/local/bin` from a table in the script (`wpa-agent-auth`,
+`wpa-gh-watch`, `wpa-oc-auth`, `wpa-project-sync`, `wpa-signal-backup`, and
+`wpa-outbox-notify` at `0700` because it writes into an outbox owned by the gate),
+delegates the tree sync and reader units to `install-reader.sh`, enables all seven
+timers, and runs both test suites plus the live isolation check. Idempotent.
+
+Three decisions worth stating:
+
+- **It never restarts a long-running service.** Installing a unit file does not change
+  the process already running from the old one, so it diffs the unit files before and
+  after and *names* what needs restarting. Restarting the gateway interrupts every agent
+  mid-conversation; that is not a deploy script's call. Verified by drifting
+  `wpa-gate.service` deliberately and watching it get named — then restored, because the
+  install rewrites it from the repo.
+- **It does not deploy the gateway config**, and says so. `openclaw.json` lives outside
+  the repo and outside git; `config/openclaw.example.json5` documents it rather than
+  driving it. A script that claimed to "apply all config" while silently skipping the
+  file where agents and tool policy actually live would be worse than no script.
+- **`install-reader.sh` now skips the tree sync when it is already running from
+  `/opt/wpa`.** In-place is the normal case now, and rsyncing a directory onto itself
+  with `--delete` is the exact shape of the command that emptied `/opt/wpa` on
+  2026-08-17. Not worth finding out whether it is safe.
+
+Run end to end on the Pi before merging: 10/10 tests, seven timers enabled, isolation
+check green.
+
+### Fixed — a busy watcher paged the owner about a watcher that was fine (2026-08-18)
+
+`wpa-gh-watch` fired `OnFailure` twice today. Nothing was wrong with it, and nothing
+was wrong with GitHub either — this one was ours.
+
+The chain, from the journal:
+
+1. A room turn was still running when the next tick fired. Turns take minutes; the
+   timer fires every 60s.
+2. The second tick waited on the gateway and hit the transport timeout at **150s**.
+3. `openclaw agent` then fell back, unasked, to an **embedded agent with a fresh
+   session** (`gateway-fallback-<uuid>`).
+4. That embedded agent runs outside the gateway's environment, so it has no
+   `DOCKER_HOST`, could not start a sandbox, and exited 1 — `Cannot connect to the
+   Docker daemon at unix:///var/run/docker.sock`.
+
+Step 4 was predicted verbatim by NVB-25's drop-in on the gateway unit: *"Without
+DOCKER_HOST the CLI would look for /var/run/docker.sock, which this user can no longer
+reach — by design."* The watcher unit never got the matching drop-in.
+
+**The fix is a `flock`, not a `DOCKER_HOST`.** Giving the watcher the socket would make
+the fallback *work*, and an amnesiac agent answering in the room about a PR it has no
+memory of is worse than a tick that skipped — the wake uses `--session-key` precisely
+so the room keeps its memory and its conversation. `openclaw agent` has no flag to
+refuse the fallback, so the fix is to never be late enough to trigger it: one wake at a
+time, and a tick that finds the lock held exits 0.
+
+Skipping costs nothing now that state is committed only after a wake lands (same
+release), so the next tick re-reports whatever the skipped one found. The test suite
+covers it: a concurrent tick skips and commits nothing.
+
+**The shape worth keeping:** three alarms in two days, none of them the failure the
+alarm describes. Two were GitHub 5xx, one was our own timer racing itself. A monitor
+whose false-positive rate is this high stops being read, which is the failure it was
+built to prevent.
 ### Added — `web_search` for the project agent (2026-08-18)
 
 Granted to `code-invariants`, which had every other tool it needed and no way to look

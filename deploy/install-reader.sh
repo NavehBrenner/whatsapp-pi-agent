@@ -14,11 +14,18 @@ id wpa-reader >/dev/null 2>&1 ||
 install -d -m 0700 -o wpa-reader -g wpa-reader /var/lib/wpa-reader
 
 install -d -m 0755 /opt/wpa
-# config.toml is gitignored, so it is not in the source tree — without excluding
-# it, --delete removes the live allowlist on every deploy and the block below
-# silently puts back an empty one, i.e. the reader stops reading anything.
-rsync -a --delete --exclude .git --exclude .venv --exclude '__pycache__' \
-  --exclude config/config.toml "$repo/" /opt/wpa/
+# Running from /opt/wpa itself is the normal case now (git pull in place, then
+# deploy/install.sh), and rsyncing a directory onto itself with --delete is the
+# exact shape of the command that emptied /opt/wpa on 2026-08-17. Not risked.
+if [ "$(realpath "$repo")" = /opt/wpa ]; then
+  echo "already running from /opt/wpa — skipping the tree sync"
+else
+  # config.toml is gitignored, so it is not in the source tree — without excluding
+  # it, --delete removes the live allowlist on every deploy and the block below
+  # silently puts back an empty one, i.e. the reader stops reading anything.
+  rsync -a --delete --exclude .git --exclude .venv --exclude '__pycache__' \
+    --exclude config/config.toml "$repo/" /opt/wpa/
+fi
 chmod 0755 /opt/wpa/deploy/snapshot.sh
 
 # config.toml holds the authority table — which chats are read, which conversations
