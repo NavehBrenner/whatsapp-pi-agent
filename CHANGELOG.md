@@ -11,6 +11,43 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added — `deploy/install.sh`, one command for the whole box (2026-08-18)
+
+Deploying had grown to seven artifacts across two locations and no single command that
+put them there. The gap showed up twice in two days: the credential checker sat in the
+repo for a day before reaching the box, and `wpa-gh-watch` ran a version two commits
+behind while we debugged the alarms it was sending.
+
+```bash
+cd /opt/wpa && sudo git pull && sudo deploy/install.sh
+```
+
+Installs six helpers into `/usr/local/bin` from a table in the script (`wpa-agent-auth`,
+`wpa-gh-watch`, `wpa-oc-auth`, `wpa-project-sync`, `wpa-signal-backup`, and
+`wpa-outbox-notify` at `0700` because it writes into an outbox owned by the gate),
+delegates the tree sync and reader units to `install-reader.sh`, enables all seven
+timers, and runs both test suites plus the live isolation check. Idempotent.
+
+Three decisions worth stating:
+
+- **It never restarts a long-running service.** Installing a unit file does not change
+  the process already running from the old one, so it diffs the unit files before and
+  after and *names* what needs restarting. Restarting the gateway interrupts every agent
+  mid-conversation; that is not a deploy script's call. Verified by drifting
+  `wpa-gate.service` deliberately and watching it get named — then restored, because the
+  install rewrites it from the repo.
+- **It does not deploy the gateway config**, and says so. `openclaw.json` lives outside
+  the repo and outside git; `config/openclaw.example.json5` documents it rather than
+  driving it. A script that claimed to "apply all config" while silently skipping the
+  file where agents and tool policy actually live would be worse than no script.
+- **`install-reader.sh` now skips the tree sync when it is already running from
+  `/opt/wpa`.** In-place is the normal case now, and rsyncing a directory onto itself
+  with `--delete` is the exact shape of the command that emptied `/opt/wpa` on
+  2026-08-17. Not worth finding out whether it is safe.
+
+Run end to end on the Pi before merging: 10/10 tests, seven timers enabled, isolation
+check green.
+
 ### Fixed — a busy watcher paged the owner about a watcher that was fine (2026-08-18)
 
 `wpa-gh-watch` fired `OnFailure` twice today. Nothing was wrong with it, and nothing

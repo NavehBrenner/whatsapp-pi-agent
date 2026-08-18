@@ -104,13 +104,32 @@ mounting was rejected — UNC paths didn't work with Cowork. `core.autocrlf` is
 `input` and `.gitattributes` pins `eol=lf`, so shell scripts survive the round
 trip to the Pi.
 
-**Deploy with `deploy/install-reader.sh`, never by rsyncing into `/opt/wpa` by hand.**
-Stage into a home directory and let the installer sync from there:
+**Deploy with `deploy/install.sh`, never by rsyncing into `/opt/wpa` by hand.**
+`/opt/wpa` is itself a checkout, so the normal path is to update it in place:
+
+```bash
+ssh pi 'cd /opt/wpa && sudo git pull && sudo deploy/install.sh'
+```
+
+That installs every helper into `/usr/local/bin`, every unit file, enables all seven
+timers, runs the test suites, and **names any long-running service whose unit changed**
+so you know what still needs a restart — installing a unit file does not change the
+process already running from the old one. It never restarts anything itself.
+
+From a laptop checkout instead, stage into a home directory and let it sync from there:
 
 ```bash
 rsync -a --delete --exclude .git --exclude .venv ./ pi:~/whatsapp-pi-agent/
-ssh pi 'sudo ~/whatsapp-pi-agent/deploy/install-reader.sh'
+ssh pi 'sudo ~/whatsapp-pi-agent/deploy/install.sh'
 ```
+
+`install.sh` calls `install-reader.sh` for the tree sync and the reader's own users and
+units; run the latter directly only if the reader is all you are touching.
+
+**It does not deploy the gateway's config.** `/var/lib/openclaw/.openclaw/openclaw.json`
+is outside this repo and outside git; `config/openclaw.example.json5` documents it and
+does not drive it. Agent and tool-policy changes are edited on the box, then mirrored
+back into the example.
 
 The installer's own rsync carries `--exclude config/config.toml` and restores the
 file's `root:wpa-config 0640` ownership. A hand-rolled `rsync -a --delete` into
