@@ -620,7 +620,7 @@
       //   workspace: "~/.openclaw/workspaces/code-invariants",
       //   tools: {
       //     alsoAllow: [
-      //       "read", "write", "edit", "apply_patch",   // the global set, repeated
+      //       "read", "write", "edit", "apply_patch", "web_search",  // global set, repeated
       //       "github__issue_write", "github__add_issue_comment",
       //       "github__issue_read", "github__list_issues",
       //       "github__pull_request_review_write",      // formal reviews; see below
@@ -634,6 +634,20 @@
       //   // to GitHub as the owner. `subagents` must also be removed from the global
       //   // tools.deny and added to tools.sandbox.tools.allow.
       // },
+      //
+      // `web_search` was added 2026-08-18 and needed TWO edits, which is the shape
+      // worth remembering: the agent list above AND the room's tools.allow ceiling
+      // below. The global policy already had it; the per-agent list overrode that,
+      // and the ceiling would have stripped it anyway. Adding it in one place looks
+      // correct, validates, and does nothing.
+      //
+      // The cost is the one the family room's comment already names, now arriving in
+      // a room that holds a GitHub PAT: search results are attacker-influenceable
+      // text entering an agent with durable memory AND write access to issues. It is
+      // still egress-only — an injection reads a page it chose, it does not pick a
+      // recipient — but this is the first path that pulls open-web text into a
+      // session that can post. Make it the injection smoke test's first target here,
+      // not only in the family room.
 
       // ---------------------------------------------------------------------
       // One agent per family member's 1:1 chat. THREE AGENTS, NOT ONE SHARED ONE,
