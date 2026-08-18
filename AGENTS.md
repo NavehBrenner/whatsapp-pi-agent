@@ -169,6 +169,27 @@ invocation. It holds whether the assistant runs on a dedicated account or a
 linked device. ([ADR 0004](docs/decisions/0004-signal-control-channel.md),
 [ADR 0007](docs/decisions/0007-principals-on-the-control-channel.md))
 
+**Two allowlists guard Signal, and they disagree about what a sender *is*.** The
+gate reads `sourceUuid` off the envelope and keys on the ACI. OpenClaw's Signal
+plugin calls `resolveSignalSender`, which checks **`sourceNumber` first** and only
+falls back to `sourceUuid` — then `isSignalSenderAllowed` refuses to match across
+kinds (`phone`↔`phone`, `uuid`↔`uuid`, anything else `false`). So one person arrives
+at the gate as a uuid and at the channel as a phone, and a `channels.signal.allowFrom`
+holding only their ACI refuses them **in silence**. Routing has the same split —
+`resolveSignalPeerId` returns that phone form too, so the binding misses as well and
+the DM lands on the default agent.
+
+A DM principal therefore needs **both forms in `allowFrom` and a binding for each**.
+Whether a number is shared is the *sender's* privacy setting and can change without
+notice, so neither form alone is durable. Verified on hardware 2026-08-19: Aviv's
+envelopes carried `sourceNumber` and were dropped for 20 minutes with nothing logged
+anywhere, while the owner — whose envelopes carry no number — was answered normally
+throughout.
+
+This does **not** relax the gate's rule. There, `sourceNumber` is null on real
+traffic and a number-keyed row matches nothing; the uuid is still identity and the
+number still only a second key a human can check by eye.
+
 **A trigger is a `dataMessage` with a non-empty body, never any `receive`
 envelope.** Typing indicators and read receipts arrive on the same stream with no
 `dataMessage` at all, so an agent that fires on `receive` is invocable by anyone

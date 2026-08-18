@@ -116,9 +116,29 @@
       //
       // The envelope tap in .local/pi.md answers it too and is the worst of the
       // three — it writes plaintext bodies to disk to learn one uuid.
+      //
+      // ⚠️ **A UUID ALONE IS NOT ENOUGH, AND THIS IS THE OPPOSITE OF THE GATE'S RULE.**
+      // Read from the shipped plugin, 2026-08-19: `resolveSignalSender` checks
+      // `sourceNumber` FIRST and only falls back to `sourceUuid`, and
+      // `isSignalSenderAllowed` then compares kind-to-kind — a `phone` sender against
+      // a `uuid` entry returns false, never a match. So a sender who shares their
+      // phone number is refused by a uuid-only allowlist, **in silence**: no journal
+      // line, no entry in the gateway's own log file, nothing.
+      //
+      // Whether a number is shared is the SENDER's privacy setting, not ours, and it
+      // can change without notice — so list BOTH forms for every DM principal and
+      // give each its own binding (`resolveSignalPeerId` returns the same phone form,
+      // so routing misses too and the DM silently lands on the default agent).
+      //
+      // Cost it honestly: a phone entry is a weaker identity than an ACI — numbers get
+      // recycled, ACIs do not — so this is two keys for one principal, not a better
+      // key. It is what the plugin's precedence forces, and the uuid entry is what
+      // keeps working the day they stop sharing the number.
       allowFrom: [
         "uuid:00000000-0000-0000-0000-000000000000", // owner
         "uuid:11111111-1111-1111-1111-111111111111", // alice
+        "+15550000001",                              // alice again — SAME principal.
+          // Both forms, because which one arrives is her setting and not ours.
         "uuid:22222222-2222-2222-2222-222222222222", // bob
         "uuid:33333333-3333-3333-3333-333333333333", // carol
       ],
@@ -804,6 +824,21 @@
         peer: { kind: "direct", id: "uuid:11111111-1111-1111-1111-111111111111" },
       },
       comment: "alice-1to1",
+    },
+    // The SAME principal, in the phone form. Not a duplicate: the peer id comes from
+    // `resolveSignalPeerId`, which returns the e164 whenever the envelope carried a
+    // `sourceNumber` — so without this row her DM is admitted by `allowFrom` and then
+    // routed to the DEFAULT agent, which is a worse failure than being refused: she
+    // gets an answer, from an agent that is not hers and whose workspace is not hers.
+    // Verified on hardware 2026-08-19; the live session key read
+    // `agent:aviv:signal:direct:+9725…`, not `…:uuid:…`.
+    {
+      agentId: "alice",
+      match: {
+        channel: "signal",
+        peer: { kind: "direct", id: "+15550000001" },
+      },
+      comment: "alice-1to1 — phone form of the same person",
     },
     {
       agentId: "bob",
