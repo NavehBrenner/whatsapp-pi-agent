@@ -13,76 +13,101 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ### Added — `aviv`, the fourth 1:1 agent, live on the Pi (2026-08-19)
 
-The last of the three family agents added in config on 2026-08-14 reaches the box.
-Same four halves as `liron` and `aryeh`, and nothing else: one `allowFrom` uuid, one
-`agents.list` entry, one binding, one workspace with an `IDENTITY.md`. The diff against
-`openclaw.json.bak-preaviv` is exactly those three hunks; `openclaw config validate`
-clean; gateway restarted with `NRestarts=0`, `2 plugins: signal, xai`, `xai/grok-4.5`.
+The last of the three family agents added in config on 2026-08-14 reaches the box. It
+took two attempts, and the second one is the entry worth reading: **the first deploy was
+correct by every check this repo had, and the agent was unreachable for twenty minutes
+with nothing logged anywhere.**
 
-Deliberately **not** done, each an independent grant:
+Live config gains, for one person: two `channels.signal.allowFrom` entries and two
+`bindings` — his ACI `uuid:eab7ef34-…` and his number `+972559621616` — plus one
+`agents.list` entry and `workspace-aviv` with a hand-written `IDENTITY.md`/`USER.md`.
+`openclaw config validate` clean, gateway `NRestarts=0`, `check-agent-auth.sh` green,
+own sandbox container, and `[signal] delivered reply to +972559621616` on a real message
+from his phone.
 
-- **`groupAllowFrom` gains nothing.** It is channel-wide, so a uuid added there for
-  tidiness is admitted to *every* allowlisted group. Aviv has a private chat and is in
-  no room.
-- **No gate config change.** `/opt/wpa/config/config.toml` carries `owner-1to1`,
-  `family` and `code-invariants`; family DMs do not pass through `wpa-gate` at all.
-- **No `tools` block and no `dms` entry.** "Everything except `exec`" is the global
-  policy, so the inherited surface is the requested one, and an empty per-agent block is
-  an invitation to widen it later without re-asking the question.
+Deliberately **not** done, each an independent grant: no `groupAllowFrom` (channel-wide,
+so it would admit him to *every* allowlisted group), no gate config change (family DMs
+never pass through `wpa-gate`), no `tools` block and no `dms` entry.
 
-#### Hot reload saw the binding and did not say it applied it
+#### The channel prefers the phone number over the ACI, and refuses in silence
 
-Writing the file was enough to trigger a reload, unasked. The journal is worth reading
-twice:
+This project keys senders on the uuid everywhere, for reasons that are written down and
+still correct: Signal does not share numbers by default, so `sourceNumber` is null on
+real traffic and a number-keyed row matches nothing. **OpenClaw's Signal plugin does the
+opposite**, and the two configs on this box now disagree about what a sender *is*:
+
+```js
+resolveSignalSender:    sourceNumber checked FIRST -> {kind:"phone"}, else sourceUuid
+isSignalSenderAllowed:  phone<->phone, uuid<->uuid; crossing kinds returns false
+resolveSignalPeerId:    the e164 for a phone sender -> the BINDING misses too
+```
+
+So a sender who shares their phone number is refused by a uuid-only allowlist, and had
+the allowlist been fixed alone the binding would still have missed and dropped him on
+the default agent — answered, by an agent that is not his, out of a workspace that is
+not his. That is the worse of the two failures and it is the one that looks like
+success.
+
+**Nothing logged it.** Not journald, not the gateway's own `/tmp/openclaw/*.log`, not
+`openclaw status`. The gate logged `dropped: sender`, which is the gate correctly
+refusing a conversation it was never given — true, expected, and a red herring.
+
+What actually found it: **reading the shipped plugin**. Three rounds of correlation had
+produced a plausible wrong answer (`groupAllowFrom` — everyone who worked was in both
+lists, and the one person who wasn't, failed) from three samples. This is the second
+time in three days that reading `dist/` beat instrumenting it; NVB-32 said so at the
+time and it is now a habit worth having rather than a note.
+
+The evidence that made it certain came from a structural-only envelope tap — sender id,
+message kind, body *length*, never a body:
 
 ```
-[reload] config change detected; evaluating reload (channels.signal.allowFrom, agents.list, bindings)
-[reload] config hot reload applied (channels.signal.allowFrom, agents.list)
+sourceUuid: eab7ef34-…  kinds:[dataMessage]  body_len:16  sourceNumber_present: true   <- refused
+sourceUuid: b0c72586-…  kinds:[dataMessage]  body_len:5   sourceNumber_present: false  <- answered
 ```
 
-**`bindings` is in the first list and not the second.** Whether that is a terser log
-line or a binding that genuinely did not take, the failure mode if it is the latter is
-the silent one this config warns about everywhere — an unbound DM falls through to
-`main` with no error. Not worth establishing which: the gateway was restarted
-deliberately, which is what the deploy notes already say to do. What is worth keeping is
-that **a config edit here is live before you decide it should be**, so the window
-between writing a half-finished config and restarting is not a private one.
+**Which form arrives is the sender's privacy setting, not ours**, so neither key is
+durable on its own and both go in. *Unresolved:* why his envelopes carry a number and
+the owner's do not, on one account minutes apart. It may be his Signal "who can see my
+number", or it may be that our own `getUserStatus` lookup wrote his number into the
+daemon's recipient store — his row had none before that call and had one after. An
+earlier draft of this entry asserted the NULL-number behaviour as a finding; it is a
+hypothesis, and the honest version is that we do not know which.
 
-#### Capturing an ACI: the documented query returns nothing for someone who messaged
+Recorded as an invariant in [`AGENTS.md`](AGENTS.md) and in the example config, because
+a config that is correct under one of the two rules and silently dead under the other is
+exactly the shape of mistake this repo keeps paying for.
 
-`.local/pi.md`'s recipe leads with `SELECT … FROM recipient WHERE number = '+972…'`.
-For Aviv it returned no row, from an account that had his message. **Signal does not
-share phone numbers by default, so a recipient row created from an inbound envelope
-carries the ACI and a NULL `number`** — the same fact that makes a number-keyed
-allowlist match nothing on the wire, arriving one layer down in the debugging.
+#### `aryeh` has never been verified on the wire
 
-An empty result there is indistinguishable from "they never messaged", which is the
-second recipe in that file to fail this way (`listContacts` was the first, 2026-08-14).
-What worked: `getUserStatus` for a uuid, then confirming which column it lands in —
-`aci` bare or `pni` with the `PNI:` prefix — plus an `identity` row proving a real
-correspondent rather than a lookup. Aviv's uuid came back in the `aci` column with an
-identity, so it is an ACI and not the PNI that `getUserStatus` hands back for a stranger.
+Found while debugging: `aryeh` has only ever held an `agent:aryeh:main` session — a CLI
+probe — and never a `signal:direct` one, in the three days since he was recorded as live.
+He may have the identical defect. **A CLI probe is not the channel path**: it creates
+`agent:<id>:main`, exercises the agent and not the binding, and passes while the thing a
+user would do fails. The same lesson as the blue PNG read as "green" (2026-08-15), now
+with a second victim. One test message settles it and it has not been sent yet.
 
-Also: read a **copy including `-wal`**. The `?mode=ro` form opens without it, and the
-WAL was 4MB and nine hours newer than the `.db` — recent enough to hide exactly the
-person being looked up. The copy is the account itself and was deleted afterwards.
+#### The gateway rewrites `openclaw.json` underneath you
 
-Logged in and verified. Before the login `check-agent-auth.sh` read
-`VIOLATION: inherits from 'main'`, which is the state worth naming: an agent inheriting
-main's credential answers perfectly while doing it, so the check exists precisely because
-a smoke test passes there. After it: every agent `ok`,
-`xai effective=profiles:~/.openclaw/agents/aviv/agent/openclaw-agent.sqlite`, his own
-sandbox container `openclaw-sbx-agent-aviv-…` alongside owner's and code-invariants', and
-a neutral CLI probe answering `Pi` / Aviv's chat / the eight-tool surface with no `exec`.
-The workspace bootstrap on that first turn left the hand-written `IDENTITY.md` and
-`USER.md` alone.
+`configWrites: false` does not cover this — that setting stops a *channel* writing
+config, not the gateway's own bookkeeping. It stamps `meta.lastTouchedAt` and
+re-serialises to its own conventions (literal UTF-8, trailing newline), which is not
+Python's `json.dumps(..., indent=2)` default. The second edit's guard caught exactly
+this and refused rather than reformatting the file under a running process:
 
-**The channel path is still the untested half.** A CLI probe creates `agent:aviv:main`,
-not `agent:aviv:signal:direct:uuid:…`, so it exercises the agent and not the binding —
-and a binding is the thing here that fails *silently*, by routing the DM to `main`. This
-project has already paid once for accepting a proxy for the path it changed (the blue
-PNG read as "green", 2026-08-15). The binding is confirmed on a real inbound message or
-it is not confirmed.
+```python
+ser = lambda c: json.dumps(c, indent=2, ensure_ascii=False) + "\n"
+assert ser(json.loads(raw)) == raw, "formatting mismatch, aborting"
+```
+
+Worth keeping on every scripted edit of that file. The failure it prevents is not a
+broken config — it is a 400-line diff that hides the three lines you meant to change.
+
+Also observed, and the reason the restart was not skipped: writing the file at all
+triggers a hot reload, which logged `bindings` in "config change detected" and **not** in
+"config hot reload applied". Whether that is terser logging or a binding that did not
+take, an unbound DM falls through to the default agent in silence, so the gateway was
+restarted deliberately.
 
 ### Added — `deploy/install.sh`, one command for the whole box (2026-08-18)
 
