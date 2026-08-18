@@ -11,6 +11,43 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — a busy watcher paged the owner about a watcher that was fine (2026-08-18)
+
+`wpa-gh-watch` fired `OnFailure` twice today. Nothing was wrong with it, and nothing
+was wrong with GitHub either — this one was ours.
+
+The chain, from the journal:
+
+1. A room turn was still running when the next tick fired. Turns take minutes; the
+   timer fires every 60s.
+2. The second tick waited on the gateway and hit the transport timeout at **150s**.
+3. `openclaw agent` then fell back, unasked, to an **embedded agent with a fresh
+   session** (`gateway-fallback-<uuid>`).
+4. That embedded agent runs outside the gateway's environment, so it has no
+   `DOCKER_HOST`, could not start a sandbox, and exited 1 — `Cannot connect to the
+   Docker daemon at unix:///var/run/docker.sock`.
+
+Step 4 was predicted verbatim by NVB-25's drop-in on the gateway unit: *"Without
+DOCKER_HOST the CLI would look for /var/run/docker.sock, which this user can no longer
+reach — by design."* The watcher unit never got the matching drop-in.
+
+**The fix is a `flock`, not a `DOCKER_HOST`.** Giving the watcher the socket would make
+the fallback *work*, and an amnesiac agent answering in the room about a PR it has no
+memory of is worse than a tick that skipped — the wake uses `--session-key` precisely
+so the room keeps its memory and its conversation. `openclaw agent` has no flag to
+refuse the fallback, so the fix is to never be late enough to trigger it: one wake at a
+time, and a tick that finds the lock held exits 0.
+
+Skipping costs nothing now that state is committed only after a wake lands (same
+release), so the next tick re-reports whatever the skipped one found. The test suite
+covers it: a concurrent tick skips and commits nothing.
+
+**The shape worth keeping:** three alarms in two days, none of them the failure the
+alarm describes. Two were GitHub 5xx, one was our own timer racing itself. A monitor
+whose false-positive rate is this high stops being read, which is the failure it was
+built to prevent.
+
+
 ### Fixed — `wpa-gh-watch` could mark an event reported and then never report it (2026-08-17)
 
 Two ways the watcher could lose an event for good, both found by asking whether it

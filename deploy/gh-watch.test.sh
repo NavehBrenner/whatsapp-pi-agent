@@ -92,4 +92,23 @@ else
 	echo "FAIL a moved head sha did not report: $out"; rc=1
 fi
 
+# 5. A tick that arrives while a previous wake is still running must skip, and must
+#    commit nothing — otherwise the pile-up that triggers the embedded-agent
+#    fallback also loses whatever this tick found.
+if command -v flock >/dev/null; then
+	rm -f "$fx/state/cursor" "$fx/state/heads" "$fx/state/seen"
+	exec 9>"$fx/state/wake.lock"
+	flock -n 9
+	out=$(run 0); code=$?
+	exec 9>&-
+	if [ "$code" = 0 ] && case "$out" in *"skipping this tick"*) true ;; *) false ;; esac \
+	   && state_is_clean; then
+		echo "ok   a tick skips while a wake is in flight, committing nothing"
+	else
+		echo "FAIL concurrent tick did not skip cleanly (exit $code): $out"; rc=1
+	fi
+else
+	echo "SKIP no flock"
+fi
+
 exit "$rc"
