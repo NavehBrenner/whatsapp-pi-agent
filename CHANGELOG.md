@@ -11,6 +11,81 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added — ask-first approvals, and the first OpenClaw plugin this repo owns (2026-08-19)
+
+`deploy/openclaw-plugins/wpa-approve/` — a `before_tool_call` hook that stops a named
+tool until a person answers in Signal. NVB-16, and the prerequisite for NVB-37's deploy
+endpoint. It **ships gating nothing**: the mechanism was proven against `web_search` as
+a throwaway probe and that entry was removed, because an approval prompt on every search
+is a tax nobody agreed to pay and a gate that cries wolf gets tapped through.
+
+Everything below was read out of the shipped `dist` or measured on the box, not taken
+from the docs — the NVB-32 habit, and it paid again.
+
+**Most of NVB-16's specification was already satisfied by core.** Targeting, expiry, the
+emoji vocabulary, the fail-closed default and the prompt text are all upstream. What
+remained ours is policy: which tools ask, what the prompt says, which decisions are
+offered. Verified end to end on hardware: 👍 approves, 👎 refuses, a second reaction on a
+resolved prompt does nothing, and an unanswered prompt expires.
+
+Reaction bindings are fixed in core and are **not** configurable — 👍 `allow-once`,
+♾️ `allow-always`, 👎 `deny`, with skin-tone and variation selectors stripped before
+matching. Better than the issue asked for: a closed three-emoji vocabulary rather than
+any-emoji-approves. The emoji offered follow `allowedDecisions`, so withholding
+`allow-always` withholds ♾️ as well — one setting, both surfaces.
+
+**Four numbers that constrain anything built on this:** `title` caps at 80 characters,
+`description` at **512**, the timeout defaults to 120s and is clamped to **600s**. The
+512 cap is the one with teeth — it rules out putting a full config diff in a deploy
+prompt, which NVB-37 had assumed it could.
+
+**`allow-always` is in the DEFAULT decision set.** Omitting `allowedDecisions` silently
+offers a standing grant. Every gated tool must name its decisions, and for anything
+privileged that list is `["allow-once", "deny"]`.
+
+**A refusal with no approval route is not fast, and that is the trap.** "No approval
+route → the call is blocked" is true in outcome only: the turn waits out the entire
+timeout, Signal shows a typing indicator throughout, and the health monitor logs
+`stalled_agent_run` every 30s with `recovery=none`. The plugin now checks the route
+itself and blocks immediately, failing closed. `route.test.mjs` covers it, run by
+`install.sh` because CI is mypy and pytest and cannot see a JavaScript plugin.
+
+That check exists because of a real regression caught before it bit anyone: `web_search`
+is in the global `tools.alsoAllow`, so **every** agent holds it, while
+`approvals.plugin.agentFilter` named only `owner`. Gating the tool therefore armed a
+ten-minute hang for every other person on the box. **`agentFilter` names who can be
+asked; the plugin names what gets gated, and nothing upstream checks that the two
+agree.**
+
+**A denied tool does not necessarily produce a visible failure.** Blocked mid-turn, the
+model answered the question from its own knowledge — confidently, correctly, with
+nothing marking that a tool call had been refused. For NVB-37 this is the load-bearing
+consequence: whether a deploy happened must be read from the host, never from the
+agent's account of it.
+
+**The prompt's layout cannot be changed by a plugin.** An approval is delivered by the
+approval forwarder — `handlePluginApprovalRequested` → `deliverToTargets` →
+`sendDurableMessageBatch` — a path that never emits `message_sending`; that hook belongs
+to the reply/dispatch pipeline. The payload is built by the *channel's* approval renderer
+(`resolveChannelApprovalAdapter`). So `Tool:`, `Plugin:`, `Agent:`, `ID:`, `Expires in:`,
+`Reply with:` and the "Allow Always is unavailable" footnote are Signal's and core's, and
+a `message_sending` rewriter loads cleanly, reports no error and never runs. One was
+written, deployed and believed for an hour on exactly that evidence. What we control is
+`title`, `description`, `severity` and `allowedDecisions` — nothing else.
+
+The footnote is the price of the safety property, not a defect: it appears *because*
+`allow-always` is withheld.
+
+**`onResolution` receives a bare string**, not a resolution object — `"allow-once" |
+"allow-always" | "deny" | "timeout" | "cancelled"`. Reading `.decision` off it yields
+`undefined`; an earlier version defaulted that to `"timed-out"` and logged two successful
+human decisions, an approve and a deny, as timeouts. For a privileged tool that line is
+the audit trail, so a wrong default there is worse than no line at all.
+
+**OpenClaw refuses a plugin directory owned by a foreign uid** — "blocked plugin
+candidate: suspicious ownership" — which reads exactly like an allowlist problem and is
+not one. `install.sh` installs plugins root-owned for that reason.
+
 ### Added — `aviv`, the fourth 1:1 agent, live on the Pi (2026-08-19)
 
 The last of the three family agents added in config on 2026-08-14 reaches the box. It

@@ -68,6 +68,31 @@ EOF
 # 0700 on the notifier is not a typo: it writes into an agent outbox owned by the
 # gate, and nothing but root has any business invoking it.
 
+# ---------------------------------------------------------------------------
+# OpenClaw plugins we own. These run INSIDE the gateway process, so they are the
+# most privileged code this repo installs — and OpenClaw enforces that: it refuses
+# a plugin directory owned by anyone but root or the gateway user, reporting
+# "blocked plugin candidate: suspicious ownership", which reads exactly like an
+# allowlist problem and is not one. Hence the explicit chown.
+#
+# Installing them changes nothing on its own. A plugin is loaded only if
+# `plugins.load.paths` names this directory AND `plugins.allow` names the plugin,
+# both in the gateway's own config, which this repo does not deploy (runbook 07).
+# ---------------------------------------------------------------------------
+echo
+echo "== openclaw plugins =="
+oc_plugins=/usr/local/lib/wpa/openclaw-plugins
+install -d -m 0755 -o root -g root "$oc_plugins"
+for p in "$repo"/deploy/openclaw-plugins/*/; do
+	[ -d "$p" ] || continue
+	name=$(basename "$p")
+	rsync -a --delete --exclude '*.test.mjs' "$p" "$oc_plugins/$name/"
+	chown -R root:root "$oc_plugins/$name"
+	chmod -R a+rX "$oc_plugins/$name"
+	printf '  %-22s %s\n' "$name" "$oc_plugins/$name"
+done
+echo "  a changed plugin needs a gateway restart — code is loaded at startup"
+
 systemctl daemon-reload
 
 echo
@@ -114,6 +139,12 @@ echo "== checks =="
 # not abort a deploy half way through and leave the box in a state nobody described.
 bash "$repo/deploy/check-agent-auth.test.sh" || echo "  ! check-agent-auth.test.sh FAILED"
 bash "$repo/deploy/gh-watch.test.sh"         || echo "  ! gh-watch.test.sh FAILED"
+# CI is mypy + pytest, which cannot see a JavaScript plugin, so its one check runs
+# here instead — the same reason the shell tests above do.
+for t in "$repo"/deploy/openclaw-plugins/*/*.test.mjs; do
+	[ -f "$t" ] || continue
+	node "$t" || echo "  ! $(basename "$t") FAILED"
+done
 echo
 /usr/local/bin/wpa-agent-auth || echo "  ! credential isolation check FAILED (see above)"
 

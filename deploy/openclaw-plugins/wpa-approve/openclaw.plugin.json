@@ -1,0 +1,7 @@
+{
+  "id": "wpa-approve",
+  "name": "WPA Ask-First",
+  "description": "Requires a human approval in Signal before a named tool runs.",
+  "activation": { "onStartup": true },
+  "configSchema": { "type": "object", "additionalProperties": false, "properties": {} }
+}
