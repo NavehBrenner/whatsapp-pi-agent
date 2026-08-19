@@ -330,7 +330,27 @@
   // On Signal these render as 👍 (allow once) / 👎 (deny) reactions on the prompt,
   // and an ask_user prompt with 2-4 options as 1️⃣-4️⃣. The reaction is bound to that
   // request id — a stronger link between a YES and the action it authorises than the
-  // quoted reply we designed. VERIFY on hardware (NVB-20 phase 3.3).
+  // quoted reply we designed.
+  //
+  // ✅ VERIFIED ON HARDWARE 2026-08-19 (NVB-16, PR #33), for the `plugin` kind: 👍
+  // approves, 👎 refuses, a second reaction on a resolved prompt does nothing, and an
+  // unanswered prompt expires. The emoji are FIXED IN CORE and not configurable —
+  // 👍 allow-once, ♾️ allow-always, 👎 deny — with skin-tone and variation selectors
+  // stripped before matching. The set offered follows `allowedDecisions`, so
+  // withholding allow-always withholds ♾️ too.
+  //
+  // Numbers a caller cannot exceed: `title` 80 chars, `description` 512, timeout
+  // default 120s and CLAMPED to 600s.
+  //
+  // ⚠️ `allow-always` IS IN THE DEFAULT DECISION SET. A plugin that omits
+  // `allowedDecisions` offers a standing grant.
+  //
+  // ⚠️ AN APPROVAL NOBODY CAN ANSWER DOES NOT FAIL FAST. It waits out the whole
+  // timeout — typing indicator throughout, `stalled_agent_run` logged every 30s —
+  // and only then refuses. So `agentFilter` (who can be ASKED) must cover every
+  // agent the wpa-approve plugin GATES, and nothing upstream checks that. NOT
+  // setting agentFilter is the safer default and is why it is absent below: with
+  // `targets` at the owner, every agent's prompt reaches someone.
   // -------------------------------------------------------------------------
   approvals: {
     exec: {
@@ -1025,12 +1045,24 @@
   // It is a good default on their part: a plugin that can see every message, or
   // hold every credential, should not load because some other block mentions it.
   // -------------------------------------------------------------------------
+  // ⚠️ `plugins.allow` GATES STOCK PLUGINS TOO, not just external ones. Providers
+  // are stock plugins, which is why `xai` has to be listed. An unlisted plugin is
+  // "present but blocked", and `plugins enable <id>` is the command that says so.
   plugins: {
-    allow: ["signal", "xai"],
+    allow: ["signal", "xai", "wpa-approve"],
     entries: {
       signal: { enabled: true },
       xai: { enabled: true }, // the model provider (ADR 0012)
+      // Ours. `enabled` is documented as "restart required", and it is: plugin code
+      // is read at gateway startup, so an edited plugin keeps running the old copy
+      // until wpa-openclaw is restarted.
+      "wpa-approve": { enabled: true },
     },
+    // WHY: a plugin runs INSIDE the gateway process, with everything that process
+    // holds — so this path is the most trusted directory this config names.
+    // `deploy/install.sh` populates it root-owned, and OpenClaw independently
+    // refuses a plugin directory owned by anyone else ("suspicious ownership").
+    load: { paths: ["/usr/local/lib/wpa/openclaw-plugins"] },
   },
 
   // -------------------------------------------------------------------------
