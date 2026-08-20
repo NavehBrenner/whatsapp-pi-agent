@@ -11,7 +11,7 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
-### Added — `builder`, the agent that works on this repo, holding nothing (2026-08-19)
+### Added — `builder`, the agent that works on this repo, holding nothing (2026-08-20)
 
 Phase 1 of NVB-33 (NVB-34): the agent exists and routes, and that is deliberately all
 it does. Its own room ("agents management"), its own workspace, its own auth profile,
@@ -60,6 +60,36 @@ request-file was built for it in the meantime — nothing to migrate off later.
 
 A full clone rather than the shallow single-branch mirror the other room uses, because
 Phase 3 branches from it.
+
+#### Verified
+
+The tool surface was read from the agent, in the room's own session key, with neutral
+text — "list every tool you are able to call right now" rather than a list to agree
+with. It answered `apply_patch, edit, read, session_status, web_search, write`: the
+ceiling exactly, no media tools, nothing plugin-backed, nothing from GitHub.
+
+It also read `/workspace/repo/.git/HEAD` and the ref it points at to name the commit it
+was reasoning from, unprompted by anything but its workspace `AGENTS.md`. That habit is
+the whole reason the mirror carries no automation yet — an agent that states its commit
+is one whose staleness is visible.
+
+The gateway config diff against the pre-change copy is three additions and nothing
+else, so no other room or tool surface moved. `check-agent-auth.sh` is green across all
+eight agents.
+
+#### The auth check caught the deploy mid-flight, which is the shape worth keeping
+
+Between the `agents.list` edit and `openclaw models auth --agent builder login`, the
+hourly check fired a Signal DM: `builder 0 VIOLATION: inherits from 'main'`. That was
+correct — read-through resolves at gateway startup, and for that window the new agent
+genuinely was running on `main`'s credential.
+
+It is also a false alarm about a deploy being performed correctly by a human standing
+at the terminal, and the two are indistinguishable to the checker as written. Which is
+the interesting half: the monitor detects and does not contain, so a real violation at
+03:00 holds for the rest of the uptime. NVB-38 tracks turning it into a quarantine, and
+records why the two obvious enforcement points — the gate, and `ExecStartPre=` on the
+gateway — are both wrong.
 
 ### Added — ask-first approvals, and the first OpenClaw plugin this repo owns (2026-08-19)
 
