@@ -58,6 +58,23 @@ login`, never `… login --agent X`.
 Verify the fourth with `openclaw models --agent code-invariants status` and read the
 `effective=` path. If it names `agents/main/...`, the login did not take.
 
+## 1a. The second room, and the one thing it must not inherit
+
+`builder` (NVB-34) is deployed by the same four steps and serves the "agents
+management" group. Two differences, and the second is the one that would be
+destructive:
+
+- **It holds no MCP tools and no plugins.** Its room ceiling is `read`, `write`,
+  `edit`, `apply_patch`, `session_status`, `web_search` and nothing else — no
+  `group:plugins`, so it also has no `image_generate` / `video_generate` despite the
+  global grant. The narrowing lives entirely in the ceiling: that agent carries no
+  `tools` block at all, so there is one list to read rather than two to reconcile.
+- **`/workspace/repo` is a hand-seeded clone and must never join
+  `wpa-project-sync.timer`.** That script does `reset --hard` + `clean -qfd` every
+  tick — correct for a reviewer that only reads, fatal for an author whose work in
+  progress would be deleted within the minute, silently. `builder` gets its sync tool
+  in NVB-35 and gets none before then.
+
 ## 2. The GitHub MCP server
 
 `/usr/local/bin/github-mcp-server` (v1.9.0, arm64, checksum-verified), spawned over

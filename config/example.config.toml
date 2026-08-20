@@ -134,6 +134,23 @@ name = "owner"                                     # the pair name: unique every
 # uuid = "<owner uuid>"
 # name = "owner-code-invariants"                # the pair name: unique everywhere
 
+# The room where this repo is worked on (NVB-34). Same shape as the project room
+# above, one step closer to home: it reads the source that defines every agent on the
+# box. It shares the `project` profile rather than having its own — the two bundles
+# are identical today, and a profile is a bundle, not an identity. They split when
+# the grants actually differ, not before.
+#
+# [[signal.conversations]]
+# label   = "builder"
+# id      = "<group id>"                        # deploy/pin-group.py prints both lines
+# members = ["<assistant uuid>", "<owner uuid>"]  # TWO: the assistant is a member too
+# agent   = "builder"
+# profile = "project"
+# purpose = "the whatsapp-pi-agent repo: the agent that builds it"
+# [[signal.conversations.senders]]
+# uuid = "<owner uuid>"
+# name = "owner-builder"
+
 # One 1:1 per family member. Three conversations, three agents, three profiles' worth
 # of the same bundle — a DM is a conversation whose id is the other party's ACI and
 # whose member set is exactly that person, so these have the same shape as owner-1to1

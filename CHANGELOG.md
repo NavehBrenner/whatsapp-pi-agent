@@ -11,6 +11,86 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added — `builder`, the agent that works on this repo, holding nothing (2026-08-20)
+
+Phase 1 of NVB-33 (NVB-34): the agent exists and routes, and that is deliberately all
+it does. Its own room ("agents management"), its own workspace, its own auth profile,
+its own `MEMORY.md` — and no tool that reaches GitHub, the box, or a network. Every
+privileged thing arrives in a later phase, on top of an agent already proven to route
+correctly, so "the agent is misrouted" and "the tool does not work" never get to hide
+behind each other.
+
+Live config gains: one `[[signal.conversations]]` row in the gate, one `agents.list`
+entry, one binding on the **group** id, and one room ceiling. The owner was already in
+`groupAllowFrom`, so no channel-wide grant was needed and none was made.
+
+**It shares the `project` profile with `code-invariants` rather than getting its own.**
+The two bundles are identical today — no tools, `send_to` at the default `["self"]` —
+and a profile is a bundle, not an identity. A second empty profile that duplicates the
+first is a thing to keep in sync for no benefit until the grants actually differ, which
+is NVB-35.
+
+#### The agent carries no `tools` block at all, and that is the safer shape
+
+An agent-level `tools.alsoAllow` **replaces** the global one rather than merging — the
+fault that silently stripped `code-invariants` of its own file tools. The obvious
+reading of that lesson is "repeat the global names carefully"; the better one is to not
+open that door. `builder` narrows entirely in the room's `tools.allow` ceiling:
+
+    read, write, edit, apply_patch, session_status, web_search
+
+`image_generate` and `video_generate` are in the global grant and absent here, which is
+what the ceiling is for. `group:plugins` is absent too, so nothing plugin-backed —
+including the approval prompt shipped this week — reaches this room yet. It arrives in
+NVB-35 with the MCP server it is needed for.
+
+One list to read when asking what this agent holds, instead of two to reconcile.
+
+#### The mirror is hand-seeded, and joining the sync timer would delete work
+
+`/workspace/repo` is a full clone of `main`, cloned once by the host. It is **not** on
+`wpa-project-sync.timer` and must not be: that script does `reset --hard` +
+`clean -qfd` on every 60s tick. For `code-invariants`, which only ever reads, a mirror
+that force-heals is easier to reason about at 04:00 than one that wedges. For an agent
+whose workspace is where it drafts, it is a silent `rm` of work in progress within the
+minute.
+
+So `builder` gets no sync mechanism at all until NVB-35's `wpa__sync`, and no
+request-file was built for it in the meantime — nothing to migrate off later.
+
+A full clone rather than the shallow single-branch mirror the other room uses, because
+Phase 3 branches from it.
+
+#### Verified
+
+The tool surface was read from the agent, in the room's own session key, with neutral
+text — "list every tool you are able to call right now" rather than a list to agree
+with. It answered `apply_patch, edit, read, session_status, web_search, write`: the
+ceiling exactly, no media tools, nothing plugin-backed, nothing from GitHub.
+
+It also read `/workspace/repo/.git/HEAD` and the ref it points at to name the commit it
+was reasoning from, unprompted by anything but its workspace `AGENTS.md`. That habit is
+the whole reason the mirror carries no automation yet — an agent that states its commit
+is one whose staleness is visible.
+
+The gateway config diff against the pre-change copy is three additions and nothing
+else, so no other room or tool surface moved. `check-agent-auth.sh` is green across all
+eight agents.
+
+#### The auth check caught the deploy mid-flight, which is the shape worth keeping
+
+Between the `agents.list` edit and `openclaw models auth --agent builder login`, the
+hourly check fired a Signal DM: `builder 0 VIOLATION: inherits from 'main'`. That was
+correct — read-through resolves at gateway startup, and for that window the new agent
+genuinely was running on `main`'s credential.
+
+It is also a false alarm about a deploy being performed correctly by a human standing
+at the terminal, and the two are indistinguishable to the checker as written. Which is
+the interesting half: the monitor detects and does not contain, so a real violation at
+03:00 holds for the rest of the uptime. NVB-38 tracks turning it into a quarantine, and
+records why the two obvious enforcement points — the gate, and `ExecStartPre=` on the
+gateway — are both wrong.
+
 ### Added — ask-first approvals, and the first OpenClaw plugin this repo owns (2026-08-19)
 
 `deploy/openclaw-plugins/wpa-approve/` — a `before_tool_call` hook that stops a named

@@ -269,6 +269,25 @@
           // v2026.7.2-beta.7 dropped `agents.defaults.cliBackends`, which was a
           // blocker only while we depended on that block. We no longer do.
         },
+
+        // The builder room (NVB-34). Its ceiling is the ONLY place that agent is
+        // narrowed: it carries no agent-level `tools` block, precisely so this list
+        // stays the single thing to read when asking what it holds.
+        //
+        // `image_generate` / `video_generate` are absent, and that is the whole
+        // reason the ceiling exists here — the global `alsoAllow` grants them to
+        // every agent, and a room about source code has no use for them.
+        //
+        // `group:plugins` is absent too, so nothing plugin-backed reaches this room
+        // yet. Phase 2 adds it with the MCP server it is needed for, not before.
+        // "<agents-management base64 groupId>": {
+        //   requireMention: false,   // the room exists only to talk to the assistant
+        //   tools: {
+        //     allow: [
+        //       "read", "write", "edit", "apply_patch", "session_status", "web_search",
+        //     ],
+        //   },
+        // },
       },
 
       dms: {
@@ -689,6 +708,22 @@
       // session that can post. Make it the injection smoke test's first target here,
       // not only in the family room.
 
+      // The builder room (NVB-34): the repo this assistant is itself built from.
+      // Same containment argument as `code-invariants` one step closer to home — it
+      // reads the repo that defines every other agent on this box, so it gets its own
+      // agent, its own workspace and its own MEMORY.md.
+      //
+      // ⚠️ NO `tools` BLOCK, DELIBERATELY. The global `alsoAllow` already carries
+      // read/write/edit/apply_patch/web_search plus image_generate/video_generate, and
+      // an agent-level list REPLACES it rather than merging (see the code-invariants
+      // warning above). Narrowing happens in the room's `tools.allow` ceiling instead,
+      // which is the layer that can drop the two media tools without repeating — and
+      // re-auditing — the whole global set here.
+      // {
+      //   id: "builder",
+      //   workspace: "~/.openclaw/workspaces/builder",
+      // },
+
       // ---------------------------------------------------------------------
       // One agent per family member's 1:1 chat. THREE AGENTS, NOT ONE SHARED ONE,
       // and the reason is memory rather than tools: `session.dmScope` already gives
@@ -834,6 +869,15 @@
     //     peer: { kind: "group", id: "<code-invariants base64 groupId>" },
     //   },
     //   comment: "code-invariants project room — owner only",
+    // },
+    // The builder room. Also a GROUP id, also no prefix.
+    // {
+    //   agentId: "builder",
+    //   match: {
+    //     channel: "signal",
+    //     peer: { kind: "group", id: "<agents-management base64 groupId>" },
+    //   },
+    //   comment: "agents management room — owner only",
     // },
     // The three 1:1 chats. Note the `uuid:` prefix on every one — a bare uuid here
     // matches nothing, says nothing, and routes the DM to `main`.
