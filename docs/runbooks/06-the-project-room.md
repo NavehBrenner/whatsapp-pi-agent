@@ -170,6 +170,94 @@ sudo sh /path/to/check-mcp-token.sh    # file / config / live process, hashes on
 
 Restart `wpa-openclaw` after any credential change.
 
+## 2a. The `wpa` MCP server — the one we write
+
+`/opt/wpa/.venv/bin/python -m wpa_mcp`, stdio, spawned by the gateway. NVB-35, phase 2
+of NVB-33. Source in `src/wpa_mcp/`; the git logic is in `sync.py` and the protocol
+binding in `__main__.py`, split so the tests never import the SDK.
+
+**It holds no credential.** `wpa__sync` fetches a public repo over https, so the server
+entry's `env` carries no secret — which is why this tool went first. The server is
+proven before phase 4 hangs an approval-gated deploy off it.
+
+Three things about it are load-bearing and easy to get wrong.
+
+### The class is `MCPServer`, not `FastMCP`
+
+`mcp.server.fastmcp` was **removed** in the SDK's 2.0.0; the high-level class is
+`MCPServer` in `mcp.server.mcpserver`. Every tutorial and most model memory still says
+FastMCP, and the failure is an `ImportError` at spawn that surfaces as a dead server
+rather than as a name that changed.
+
+Related: `ToolAnnotations` takes **snake_case** field names (`read_only_hint`), even
+though the spec spells them `readOnlyHint` and the server emits them that way on the
+wire. The camelCase spelling is rejected as an unexpected keyword.
+
+### It is the first Python dependency this repo has ever had
+
+`wpa-reader` and `wpa-gate` run `python3 -m` against system Python with
+`dependencies = []`. The MCP SDK broke that, so `deploy/install.sh` builds
+`/opt/wpa/.venv` with:
+
+```bash
+uv sync --project /opt/wpa --no-dev --locked --python /usr/bin/python3
+```
+
+**`uv` is a prerequisite the installer checks for and does not install** — see runbook
+01. `--locked` rather than `pip install mcp` because the lock is what makes the box run
+what CI tested; `--python /usr/bin/python3` so a deploy cannot silently download a
+managed CPython. The reader and gate were left on system Python: they need nothing.
+
+The package is **not installed into the venv**. `PYTHONPATH=/opt/wpa/src` in the server
+entry reads it out of the deployed tree, mirroring `wpa-reader.service` and
+`wpa-gate.service`, so a `git pull` plus `install.sh` is the whole update.
+
+**Budget ~1.15 s and ~62 MB per spawn** (measured on this Pi: `import mcp.server` is
+1148 ms against 13–29 ms for bare `python3`, peak RSS 62 MB against 9 MB). No MCP child
+is kept alive between turns, so that is paid every time the tool is used. It was
+accepted knowingly in exchange for the SDK maintaining the protocol; a `git fetch` takes
+longer than the import.
+
+### `wpa__sync` never force-heals, and that is the whole design
+
+`sync-project-repo.sh` does `reset --hard` + `clean -qfd` every tick. That is right for
+the reviewer's mirror, which nobody writes to. `builder` **authors** in its checkout, so
+the same policy would be data loss on a 60-second timer.
+
+| Tree state | What happens |
+|---|---|
+| clean, behind | `merge --ff-only origin/main` |
+| clean, current | nothing; says so |
+| **uncommitted changes** | **nothing** — reported, left alone |
+| **local commits** | **nothing** — reported, left alone |
+
+The fetch always runs (it writes only to `.git`), so `behind` is a real number either
+way: the staleness ceiling became a reported number rather than an automatic reset.
+There is a test for the dirty case in `tests/test_wpa_mcp.py`; if it fails, read the
+docstring in `sync.py` before "fixing" it.
+
+**This checkout must never join `wpa-project-sync.timer`.** That timer would undo the
+entire property within the minute.
+
+### Verifying it
+
+Name the tool before pinning it anywhere — the §2 `tools/list` recipe works here too,
+and needs no credential:
+
+```bash
+sudo -u openclaw HOME=/var/lib/openclaw openclaw mcp probe wpa --json
+# expect: 1 tool, diagnostics: []
+```
+
+Same rule as the github server: **a grant is verified by tool count**, and the resolved
+name is read back rather than assumed. Then confirm the *agent* sees it by asking
+`builder` in the room, in neutral text — the config is not evidence about a session.
+
+Adding a tool here is **two config edits**, and one alone validates silently:
+`agents.list[builder].tools.alsoAllow` *and* the room's `tools.allow` ceiling. The
+agent-level list **replaces** the global one, so every global name must be repeated
+beside the new tool. See §1a and the `web_search` note.
+
 ## 3. The watcher
 
 `wpa-gh-watch.timer` → `/usr/local/bin/wpa-gh-watch`, every 60s.

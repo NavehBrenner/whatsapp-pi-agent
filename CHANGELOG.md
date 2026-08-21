@@ -11,6 +11,98 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added — the `wpa` MCP server, and `wpa__sync` (2026-08-21)
+
+Phase 2 of NVB-33 (NVB-35). Every MCP server on this box so far was installed; this one
+is ours. It arrives carrying its **least dangerous tool** so the transport is proven
+before phase 4 hangs an approval-gated deploy off it — `wpa__sync` takes no parameters
+and holds no credential, because it fetches a public repo over https.
+
+`builder` could not previously say which commit it was reasoning from. Now it can, and
+it can move its checkout forward without a request file and a 60-second wait.
+
+**`wpa__sync` never force-heals, and that is the design rather than an omission.**
+`sync-project-repo.sh` does `reset --hard` + `clean -qfd` every tick, which is right for
+the reviewer's mirror because nobody writes to it. `builder` *authors* in its checkout,
+so the same policy would be data loss on a 60-second timer. A dirty tree or one carrying
+local commits is reported and left untouched; the fetch still runs, so the staleness
+ceiling became a reported number rather than an automatic reset. Asserted in
+`tests/test_wpa_mcp.py`, including the case `clean -qfd` would spare and `reset --hard`
+would not. This checkout must never join `wpa-project-sync.timer`.
+
+**This is the first runtime dependency the repo has ever had**, and it changes the
+deploy. `dependencies = []` is why `wpa-reader` and `wpa-gate` can run `python3 -m`
+against system Python; the MCP SDK broke that, so `install.sh` now builds
+`/opt/wpa/.venv` via `uv sync --no-dev --locked --python /usr/bin/python3`. `--locked`
+rather than `pip install mcp` because the committed lock is what makes the box run what
+CI tested. `uv` is a prerequisite the installer **checks for and does not install** —
+that script has never fetched anything from the internet, and this was not the change to
+start with. Runbook 01 carries the one-time install. The reader and gate stay on system
+Python.
+
+Two SDK facts that each cost an hour and are now written down: the high-level class is
+**`MCPServer` in `mcp.server.mcpserver`** — `FastMCP` was removed in 2.0.0 and every
+tutorial still names it — and `ToolAnnotations` takes **snake_case** fields
+(`read_only_hint`) despite the spec and the wire format both spelling them camelCase.
+
+Measured on the Pi and accepted knowingly: **`import mcp.server` costs 1148 ms and
+62 MB**, against 13–29 ms and 9 MB for bare `python3`. No MCP child is kept alive
+between turns, so it is paid per spawn. 28 transitive packages, including an HTTP and
+JWT stack that stdio never uses.
+
+Live config gains three edits and **one alone would validate silently**: the
+`mcp.servers.wpa` entry, `builder`'s first-ever agent-level `tools.alsoAllow` (which
+*replaces* the global list, so every global name is repeated beside the new tool — the
+mistake that cost `code-invariants` its `MEMORY.md` write), and the room's `tools.allow`
+ceiling. The ceiling names `wpa__sync` explicitly rather than granting `group:plugins`
+as NVB-35's text proposed: the group would also admit whatever `wpa-approve` registers
+later, which is exactly what phase 4 is meant to gate.
+
+### Rejected — Plumbus, and the two objections against it that turned out to be wrong
+
+NVB-35 recorded a decision against [Plumbus](https://github.com/plumbus-framework/plumbus)
+on the grounds that it needs Fastify, pnpm and PostgreSQL, none of which are on this box.
+Re-opened 2026-08-21 on a fair challenge — this server is a foundation for later
+capability gating, not one tool, and the framework's deny-by-default authz is genuinely
+aligned with what this repo wants. It was then tested rather than re-argued, and **two of
+the original objections were wrong**:
+
+- **It does not need PostgreSQL for this.** Scaffolded an app, exposed a capability over
+  stdio with the DB pointed at a closed port: it boots and answers `tools/list` fine.
+  `postgres.js` connects lazily, so a capability touching no entity never reaches it.
+- **It fails closed**, and the tool surface it generates is clean.
+
+What it fails on is the feature it was being adopted *for*. At core `0.6.17` / mcp
+`0.5.1` the agent-token authz is **unreachable through the shipped CLI**:
+`dist/config/loader.js` builds `PlumbusConfig` from environment variables only and never
+populates the `mcp` key, and nothing reads `plumbus.config.ts`/`.json` into it —
+confirmed by running it (`cfg.mcp = undefined`). So the branch in
+`dist/cli/mcp-serve-context.js` that constructs `createMcpAuthAdapter({agents, envToken:
+PLUMBUS_MCP_TOKEN})` is dead code, and it always falls through to `createJwtAdapter`
+with a placeholder dev secret. Empirically, correct-scope, wrong-scope and no-token all
+returned byte-identical `{"code":"forbidden","message":"Authentication required"}` —
+not scopes being evaluated, but no subject to evaluate.
+
+The design is sound and `@plumbus/mcp` does export `createMcpAuthAdapter`, so it is
+reachable by writing a custom stdio entrypoint. That is an upstream wiring bug worth
+filing, not a design flaw — but adopting it today buys a hand-written entrypoint plus
+214 packages / 136 MB, including `playwright`, `drizzle-kit`, `postgres`, `vitest` and
+`xml-crypto` as **hard dependencies of core**, in the process phase 4 gives a `NOPASSWD`
+sudo right beside other people's messages.
+
+The MCP Python SDK has **no stdio authz at all** — its entire auth surface is OAuth 2.1
+bearer over HTTP (`RequireAuthMiddleware` is wired only into `streamable_http_app` and
+`sse.py`; `server/stdio.py` contains no auth code). So on that axis Plumbus is genuinely
+better and the SDK is not a substitute. The token/scope layer is deferred rather than
+dismissed: for a parameter-less fetch against a public repo, with one server process per
+principal (ADR 0013), an in-process scope check adds nothing over the existing boundary.
+It is ~40 lines on Plumbus's model when tool #2 arrives carrying something worth refusing.
+
+The SDK also type-checks clean under this repo's full strict config — `strict` plus
+`disallow_any_explicit`, `disallow_any_decorated`, `disallow_any_unimported` and
+`warn_unreachable` — with **no per-module override**, which NVB-35 had listed as a
+condition. It ships `py.typed`.
+
 ### Added — `builder`, the agent that works on this repo, holding nothing (2026-08-20)
 
 Phase 1 of NVB-33 (NVB-34): the agent exists and routes, and that is deliberately all

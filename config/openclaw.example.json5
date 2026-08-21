@@ -278,13 +278,23 @@
         // reason the ceiling exists here — the global `alsoAllow` grants them to
         // every agent, and a room about source code has no use for them.
         //
-        // `group:plugins` is absent too, so nothing plugin-backed reaches this room
-        // yet. Phase 2 adds it with the MCP server it is needed for, not before.
+        // NVB-35 added `wpa__sync` — THE SECOND OF TWO EDITS. The agent-level
+        // `alsoAllow` above grants it and this ceiling admits it; do either one
+        // alone and the config validates, the tool-policy log reports nothing
+        // unusual, and the tool is simply not there. `web_search` taught this on
+        // 2026-08-18 and it is the single most repeatable mistake in this file.
+        //
+        // ⚠️ NAMED EXPLICITLY, NOT `group:plugins`. NVB-35's text proposed the group,
+        // and the group is wrong here: it would also admit whatever the `wpa-approve`
+        // plugin registers, which is precisely what Phase 4's deploy endpoint is
+        // supposed to gate. `code-invariants` sets the precedent, listing its
+        // `github__*` tools one by one.
         // "<agents-management base64 groupId>": {
         //   requireMention: false,   // the room exists only to talk to the assistant
         //   tools: {
         //     allow: [
         //       "read", "write", "edit", "apply_patch", "session_status", "web_search",
+        //       "wpa__sync",
         //     ],
         //   },
         // },
@@ -713,15 +723,33 @@
       // reads the repo that defines every other agent on this box, so it gets its own
       // agent, its own workspace and its own MEMORY.md.
       //
-      // ⚠️ NO `tools` BLOCK, DELIBERATELY. The global `alsoAllow` already carries
-      // read/write/edit/apply_patch/web_search plus image_generate/video_generate, and
-      // an agent-level list REPLACES it rather than merging (see the code-invariants
-      // warning above). Narrowing happens in the room's `tools.allow` ceiling instead,
-      // which is the layer that can drop the two media tools without repeating — and
-      // re-auditing — the whole global set here.
+      // NVB-34 shipped this agent with NO `tools` block, on purpose: the global
+      // `alsoAllow` carried everything it needed, and narrowing happened in the
+      // room's ceiling — the layer that can drop the two media tools without
+      // repeating and re-auditing the whole global set here.
+      //
+      // ⚠️ NVB-35 FORCED ONE ANYWAY, and this is the trap that makes it dangerous.
+      // An agent-level `tools.alsoAllow` REPLACES the global one; it does not merge.
+      // So the moment `wpa__sync` needs to be named here, every global name has to
+      // be repeated beside it or it is REMOVED from this agent — silently, with the
+      // config still validating and the room's ceiling still listing it. That is
+      // exactly what happened to `code-invariants` (see its warning above), where it
+      // cost the agent its ability to write its own MEMORY.md.
+      //
+      // The alternative — putting `wpa__sync` in the GLOBAL `alsoAllow` — is worse:
+      // DMs have no room ceiling, so it would hand the tool to every 1:1 agent.
+      //
+      // `image_generate`/`video_generate` are still absent, and still dropped by the
+      // room ceiling rather than here.
       // {
       //   id: "builder",
       //   workspace: "~/.openclaw/workspaces/builder",
+      //   tools: {
+      //     alsoAllow: [
+      //       "read", "write", "edit", "apply_patch", "web_search",  // global set, repeated
+      //       "wpa__sync",   // NVB-35 — read the resolved name off `mcp probe wpa`
+      //     ],
+      //   },
       // },
 
       // ---------------------------------------------------------------------
@@ -1107,6 +1135,79 @@
     // `deploy/install.sh` populates it root-owned, and OpenClaw independently
     // refuses a plugin directory owned by anyone else ("suspicious ownership").
     load: { paths: ["/usr/local/lib/wpa/openclaw-plugins"] },
+  },
+
+  // -------------------------------------------------------------------------
+  // MCP servers. ONE SERVER PER PRINCIPAL, NEVER ONE SERVER WITH A PER-CALLER
+  // CREDENTIAL (ADR 0013) — separate processes, so there is nothing to bind per
+  // connection and no question of "which agent is calling" to answer.
+  //
+  // ⚠️ THE TOOL PREFIX IS DERIVED FROM THE KEY, NOT EQUAL TO IT. Non-`[A-Za-z0-9_-]`
+  // characters become `-`, keys not starting with a letter get an `mcp-` prefix, and
+  // LONG OR DUPLICATE PREFIXES MAY BE TRUNCATED OR SUFFIXED. That would silently
+  // rename the tool an allowlist is pinning, so keep keys short, ASCII and
+  // letter-initial — and READ THE RESOLVED NAME BACK from `openclaw mcp probe <key>
+  // --json` rather than assuming it matches.
+  //
+  // ⚠️ A GRANT IS VERIFIED BY TOOL COUNT. `mcp probe` returns tools and no
+  // diagnostics against a DEAD credential, because listing tools does not
+  // authenticate. Established twice on the github server (`create_issue`,
+  // `create_pull_request_review` — both advertised, neither registered).
+  //
+  // ⚠️ A ROTATED CREDENTIAL NEEDS A GATEWAY RESTART. `openclaw mcp reload` disposes
+  // cached runtimes but does not re-read a changed env, so the child keeps the old
+  // one while the file and the config both hold the new one.
+  //
+  // Both servers are stdio: no loopback port, so nothing to firewall — NVB-27's
+  // lesson applied before it could bite. See docs/runbooks/06-the-project-room.md.
+  // -------------------------------------------------------------------------
+  mcp: {
+    servers: {
+      // The GitHub PAT's home, and the shape ADR 0013 generalises from: the
+      // credential lives in this entry's `env` and in no auth store, so the refresh
+      // mirror has nothing to copy into `main`. Fine-grained, Issues read/write, one
+      // repo, no contents — the floor that holds if the two filters above it are
+      // wrong. Only `code-invariants` names `github__*` tools. Runbook 06 §2.
+      github: {
+        command: "/usr/local/bin/github-mcp-server",
+        args: ["stdio", "--tools=issue_write,add_issue_comment,issue_read,list_issues,actions_get,actions_list,get_job_logs,pull_request_review_write"],
+        env: { GITHUB_PERSONAL_ACCESS_TOKEN: "github_pat_REPLACE_ME" },
+        toolFilter: {
+          include: ["issue_write", "add_issue_comment", "issue_read", "list_issues",
+                    "actions_get", "actions_list", "get_job_logs", "pull_request_review_write"],
+        },
+      },
+
+      // Ours (NVB-35), and the first MCP server this repo writes rather than
+      // installs. Phase 2 of NVB-33: it arrives carrying its LEAST DANGEROUS tool so
+      // the server is proven before Phase 4 hangs an approval-gated deploy off it.
+      //
+      // NO CREDENTIAL, DELIBERATELY. `wpa__sync` fetches a public repo over https,
+      // so this entry's `env` holds no secret at all — which is exactly why it is
+      // the right tool to prove the transport with.
+      //
+      // The interpreter is the venv `deploy/install.sh` builds, not /usr/bin/python3:
+      // this is the first component in the repo with a runtime dependency (the MCP
+      // SDK). wpa-reader and wpa-gate still run system Python and need nothing.
+      //
+      // PYTHONPATH mirrors wpa-reader.service and wpa-gate.service — the package is
+      // not installed into the venv, it is read out of the deployed tree, so a
+      // `git pull` is the whole update. PYTHONDONTWRITEBYTECODE because the gateway
+      // spawns this as `openclaw` and /opt/wpa/src is root-owned.
+      //
+      // ⚠️ EXPECT ~1.15s AND ~62MB PER SPAWN on the Pi (measured). No MCP child is
+      // kept alive between turns, so `import mcp.server` is paid every time the tool
+      // is used. That is the price of the SDK and it was taken knowingly.
+      wpa: {
+        command: "/opt/wpa/.venv/bin/python",
+        args: ["-m", "wpa_mcp"],
+        env: {
+          PYTHONPATH: "/opt/wpa/src",
+          PYTHONDONTWRITEBYTECODE: "1",
+          WPA_REPO: "/var/lib/openclaw/.openclaw/workspace-builder/repo",
+        },
+      },
+    },
   },
 
   // -------------------------------------------------------------------------

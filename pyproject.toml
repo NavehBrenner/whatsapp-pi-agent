@@ -3,7 +3,9 @@ name = "whatsapp-pi-agent"
 version = "0.1.0"
 description = "Personal assistant that reads WhatsApp for context and is controlled over Signal"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "mcp>=2.0.0",
+]
 
 [dependency-groups]
 dev = ["mypy>=1.11", "pytest>=8.0"]

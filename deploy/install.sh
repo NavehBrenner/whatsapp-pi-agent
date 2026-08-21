@@ -46,6 +46,43 @@ echo "== code, config skeleton and unit files =="
 "$repo/deploy/install-reader.sh"
 
 # ---------------------------------------------------------------------------
+# The Python dependencies, which until NVB-35 did not exist. wpa-reader and wpa-gate
+# still run `python3 -m` against system Python and need nothing; the `wpa` MCP server
+# needs the `mcp` SDK, so /opt/wpa gets a venv and the gateway spawns that interpreter.
+#
+# WHY uv AND NOT pip. uv.lock is committed and CI runs --locked precisely so a stale
+# lock fails the build instead of quietly resolving a different dependency set. That
+# argument is stronger here than in CI: `pip install mcp` on the box would resolve ~28
+# packages that nothing tested, into the process Phase 4 gives a sudo right.
+#
+# WHY THIS SCRIPT DOES NOT INSTALL uv. It has never fetched anything from the internet,
+# and a deploy script that curls a binary into /usr/local/bin is a bigger change than
+# the feature asking for it. Runbook 01 carries the one-time install; this checks.
+#
+# --python /usr/bin/python3 pins the Pi's system 3.11 so a deploy cannot silently
+# download a managed CPython. --no-dev because the checks below are shell and node
+# only — pytest never runs on the box.
+#
+# Non-fatal, like the checks at the bottom: a failure here breaks one MCP server, and
+# aborting half way through leaves the box in a state nobody described.
+# ---------------------------------------------------------------------------
+echo
+echo "== python dependencies =="
+if ! command -v uv >/dev/null 2>&1; then
+	echo "  ! uv not installed — /opt/wpa/.venv cannot be built"
+	echo "    the wpa MCP server will fail to spawn; see docs/runbooks/01-pi-base-setup.md"
+elif uv sync --project /opt/wpa --no-dev --locked --python /usr/bin/python3 >/dev/null 2>&1; then
+	# The gateway spawns this interpreter as `openclaw`, so it has to be traversable
+	# by a user that owns none of it. Same reason the plugin install chmods a+rX.
+	chmod -R a+rX /opt/wpa/.venv
+	echo "  /opt/wpa/.venv  $("/opt/wpa/.venv/bin/python" -V 2>&1)"
+else
+	echo "  ! uv sync FAILED — rerun by hand to see why:"
+	echo "      sudo uv sync --project /opt/wpa --no-dev --locked --python /usr/bin/python3"
+	echo "    a stale uv.lock is the usual cause; --locked refuses to resolve around it"
+fi
+
+# ---------------------------------------------------------------------------
 # The privileged helpers. install-reader.sh handles wpa-config-backup because the
 # path unit it feeds is useless without it; the rest live here.
 #
