@@ -58,6 +58,65 @@ ceiling. The ceiling names `wpa__sync` explicitly rather than granting `group:pl
 as NVB-35's text proposed: the group would also admit whatever `wpa-approve` registers
 later, which is exactly what phase 4 is meant to gate.
 
+#### Verified on hardware (2026-08-21)
+
+`openclaw mcp probe wpa --json` → `"tools": ["wpa__sync"]`, `diagnostics: []`, resolved
+name read back rather than assumed. Only `builder` names any `wpa__*` tool, only its
+room ceiling admits one, and the global list every DM agent resolves does not carry it.
+The config diff against the pre-change backup is **three additions and nothing else**.
+
+`builder` called it from its own room session: returned `1c89a0b`, `advanced: true`,
+`fast-forwarded 1 commit(s)`, and the checkout really moved from `2e75a12`. Then, made
+both **behind and dirty**, the same call returned `advanced: false`, `dirty: true`,
+`behind: 1`, `reason: uncommitted changes — left untouched` — HEAD unmoved and the
+uncommitted file still there. That is the acceptance criterion, on hardware.
+
+#### Three traps the deploy found, none of which were in the plan
+
+**`PYTHONPATH` in an MCP server's `env` is silently dropped.** OpenClaw strips it "for
+stdio startup safety" and logs that once at debug volume; what the probe shows is
+`McpError: MCP error -32000: Connection closed`, which reads as a crashing server. Hence
+`/usr/local/bin/wpa-mcp`, a wrapper that sets it inside a process OpenClaw has already
+agreed to spawn. Unit files are unaffected — `wpa-reader.service` and
+`wpa-gate.service` still set `PYTHONPATH` directly, because systemd is not OpenClaw.
+
+**The server offered five tools, not one.** The Python SDK advertises `prompts` and
+`resources` capabilities whether or not any exist, and OpenClaw synthesises
+`wpa__prompts_get`, `wpa__prompts_list`, `wpa__resources_list` and `wpa__resources_read`
+over them. The probe said `"tools": 1` and `diagnostics: []` at the same time, because
+the count is of real tools — so here **the count does not describe the surface**, which
+is a sharper form of the rule this runbook already carries. Fixed with
+`toolFilter: { include: ["sync"] }`.
+
+**A room ceiling makes a tool visible; only `alsoAllow` makes it callable.** With just
+the ceiling edit, `tools.profile: "minimal"` still removed `wpa__sync` — and the agent
+*listed it among its tools anyway*, because the name had reached its prompt. Asked to
+call it, it said "Calling the sync tool now" and nothing happened. The log is what
+settles it: `removed 9 tool(s) via tools.profile (minimal): … wpa__sync` with one edit,
+back to 8 with both.
+
+That last one **qualifies NVB-34's verification technique**. Asking the agent in neutral
+text shows what the model *believes*, which is worth knowing, but it answers from the
+prompt and will name a tool policy has stripped. Confirm against
+`journalctl -u wpa-openclaw | grep "tool policy removed"`, or by making it actually call
+the thing.
+
+#### Found while verifying: `builder` cannot call `write`, and nobody noticed
+
+`write` is in the global `alsoAllow`, in `builder`'s own `alsoAllow`, in the room ceiling
+and in `tools.sandbox.tools.allow`, and appears in **no** tool-policy removal line — and
+`builder` still cannot call it. Asked to use it by name it replies `NO WRITE TOOL` and
+creates nothing. `owner`, which is not sandboxed, has it; `builder` runs
+`sandbox: {mode: "all", sandboxed: true}`.
+
+**This predates NVB-35** — reproduced with `builder` reverted to its exact NVB-34 entry
+(`{"id": "builder"}`, no tools block) — so it is not a regression from this change. It
+does contradict NVB-34's recorded acceptance evidence, which listed the surface as
+`apply_patch, edit, read, session_status, web_search, write`. That list came from asking
+the agent, which is precisely the technique the trap above shows to be unreliable: the
+most likely reading is that `write` was never callable and the self-report was believed.
+Unexplained and filed separately rather than fixed here.
+
 ### Rejected — Plumbus, and the two objections against it that turned out to be wrong
 
 NVB-35 recorded a decision against [Plumbus](https://github.com/plumbus-framework/plumbus)

@@ -100,6 +100,7 @@ done <<-'EOF'
 	push-opencode-auth.sh  wpa-oc-auth         0755
 	sync-project-repo.sh   wpa-project-sync    0755
 	backup-signal.sh       wpa-signal-backup   0755
+	mcp-server.sh          wpa-mcp             0755
 	outbox-notify.sh       wpa-outbox-notify   0700
 EOF
 # 0700 on the notifier is not a typo: it writes into an agent outbox owned by the

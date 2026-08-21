@@ -239,24 +239,73 @@ docstring in `sync.py` before "fixing" it.
 **This checkout must never join `wpa-project-sync.timer`.** That timer would undo the
 entire property within the minute.
 
-### Verifying it
+### `toolFilter` is not optional here — the server offers five tools, not one
 
-Name the tool before pinning it anywhere — the §2 `tools/list` recipe works here too,
-and needs no credential:
+The Python SDK advertises `prompts` and `resources` capabilities whether or not any are
+registered, and OpenClaw synthesises a meta-tool for each. Without a filter the probe
+returns:
+
+```
+"tools": ["wpa__prompts_get", "wpa__prompts_list",
+          "wpa__resources_list", "wpa__resources_read", "wpa__sync"]
+```
+
+while `"tools": 1` and `diagnostics: []` sit right above it, because the **count** is of
+real tools and the four extras are synthesised over them. So on this server the count
+does not describe the surface — **read the `tools` array**. That is a sharper version of
+§2's "a grant is verified by tool count", cutting the other way.
+
+`toolFilter: { include: ["sync"] }` on the server entry removes them. The allowlists
+would have contained them anyway, but ADR 0010 asks for absent rather than refused.
+
+### Verifying it — and why asking the agent is not enough
+
+Name the tool before pinning it anywhere; the §2 credential-free `tools/list` recipe
+works here too. Then:
 
 ```bash
 sudo -u openclaw HOME=/var/lib/openclaw openclaw mcp probe wpa --json
-# expect: 1 tool, diagnostics: []
+# expect: "tools": ["wpa__sync"], diagnostics: []
 ```
 
-Same rule as the github server: **a grant is verified by tool count**, and the resolved
-name is read back rather than assumed. Then confirm the *agent* sees it by asking
-`builder` in the room, in neutral text — the config is not evidence about a session.
+**Adding a tool is two config edits and one alone fails silently** — worse than
+silently, as it turns out:
 
-Adding a tool here is **two config edits**, and one alone validates silently:
-`agents.list[builder].tools.alsoAllow` *and* the room's `tools.allow` ceiling. The
-agent-level list **replaces** the global one, so every global name must be repeated
-beside the new tool. See §1a and the `web_search` note.
+| Edit | What it does on its own |
+|---|---|
+| the room's `tools.allow` ceiling | makes the tool **visible** to the model |
+| `agents.list[builder].tools.alsoAllow` | makes it **callable** |
+
+With only the ceiling, `tools.profile: "minimal"` still strips the tool — and the agent
+*lists it as available anyway*, because the name reached its prompt. Asked to call it,
+it announces that it is calling it and nothing happens. `alsoAllow` is the layer that
+widens against `minimal`; the ceiling only narrows. And because an agent-level
+`alsoAllow` **replaces** the global one rather than merging, every global name has to be
+repeated beside the new tool.
+
+**So the authoritative check is the tool-policy log, not the agent's self-report:**
+
+```bash
+sudo journalctl -u wpa-openclaw --since "2 min ago" | grep "tool policy removed"
+```
+
+The tool must **not** appear in any removal line. Verified 2026-08-21: with the ceiling
+alone the log read `removed 9 tool(s) via tools.profile (minimal): … wpa__sync`, while
+the agent cheerfully listed `wpa__sync` among its tools. With both edits the line drops
+back to 8 and the call works.
+
+This qualifies NVB-34's probe technique. Asking the agent in neutral text is still worth
+doing — it is the only thing that shows what the model *believes* — but it answers from
+the prompt, so it can name a tool that policy has removed. Confirm with the log, or by
+making the agent actually call the thing.
+
+**A live example of exactly that gap:** `write` appears in the global `alsoAllow`, in
+`builder`'s `alsoAllow`, in the room ceiling and in `tools.sandbox.tools.allow`, and in
+no removal line — and `builder` still cannot call it. Asked to use it, it replies
+`NO WRITE TOOL` and creates nothing; `owner`, which is not sandboxed, has it. This
+predates NVB-35 (reproduced with `builder` reverted to its NVB-34 config) and
+contradicts the surface recorded in NVB-34's acceptance evidence, which listed `write`.
+Unexplained; tracked separately.
 
 ## 3. The watcher
 

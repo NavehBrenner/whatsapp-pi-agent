@@ -1186,26 +1186,43 @@
       // so this entry's `env` holds no secret at all — which is exactly why it is
       // the right tool to prove the transport with.
       //
-      // The interpreter is the venv `deploy/install.sh` builds, not /usr/bin/python3:
-      // this is the first component in the repo with a runtime dependency (the MCP
-      // SDK). wpa-reader and wpa-gate still run system Python and need nothing.
+      // ⚠️ `PYTHONPATH` IN THIS `env` IS SILENTLY DROPPED, and the server then fails
+      // to start. OpenClaw strips it "for stdio startup safety" and logs that once at
+      // debug volume; what `mcp probe` reports is
       //
-      // PYTHONPATH mirrors wpa-reader.service and wpa-gate.service — the package is
-      // not installed into the venv, it is read out of the deployed tree, so a
-      // `git pull` is the whole update. PYTHONDONTWRITEBYTECODE because the gateway
-      // spawns this as `openclaw` and /opt/wpa/src is root-owned.
+      //     McpError: MCP error -32000: Connection closed
+      //
+      // which reads as a crashing server, not a stripped variable. Hence the wrapper:
+      // /usr/local/bin/wpa-mcp sets PYTHONPATH inside a process OpenClaw has already
+      // agreed to spawn, and runs the venv interpreter `deploy/install.sh` builds.
+      // Unit files are unaffected — wpa-reader.service and wpa-gate.service still set
+      // PYTHONPATH directly, because systemd is not OpenClaw.
       //
       // ⚠️ EXPECT ~1.15s AND ~62MB PER SPAWN on the Pi (measured). No MCP child is
       // kept alive between turns, so `import mcp.server` is paid every time the tool
       // is used. That is the price of the SDK and it was taken knowingly.
       wpa: {
-        command: "/opt/wpa/.venv/bin/python",
-        args: ["-m", "wpa_mcp"],
-        env: {
-          PYTHONPATH: "/opt/wpa/src",
-          PYTHONDONTWRITEBYTECODE: "1",
-          WPA_REPO: "/var/lib/openclaw/.openclaw/workspace-builder/repo",
-        },
+        command: "/usr/local/bin/wpa-mcp",
+        // WPA_REPO belongs here rather than in the wrapper: which checkout this
+        // server acts on is per-agent configuration, and ADR 0013 puts that in the
+        // server entry. Nothing secret — the fetch is unauthenticated.
+        env: { WPA_REPO: "/var/lib/openclaw/.openclaw/workspace-builder/repo" },
+        // ⚠️ WITHOUT THIS THE SERVER OFFERS FIVE TOOLS, NOT ONE. The Python SDK
+        // advertises `prompts` and `resources` capabilities whether or not any are
+        // registered, and OpenClaw turns each into a meta-tool — `wpa__prompts_get`,
+        // `wpa__prompts_list`, `wpa__resources_list`, `wpa__resources_read` — beside
+        // the one tool we wrote. Verified by probe on 2026-08-21.
+        //
+        // Note what the probe says while that is true: `"tools": 1` and
+        // `diagnostics: []`, because the COUNT is of real tools and the four extras
+        // are synthesised above it. So the count alone does not describe the surface
+        // here; read the `tools` ARRAY. That is a sharper version of runbook 06's
+        // "a grant is verified by tool count" and it cuts the other way.
+        //
+        // The allowlists would have contained them anyway — neither the agent list
+        // nor the room ceiling names them — but a tool nobody can reach is still a
+        // tool in the surface, and ADR 0010 asks for absent rather than refused.
+        toolFilter: { include: ["sync"] },
       },
     },
   },
