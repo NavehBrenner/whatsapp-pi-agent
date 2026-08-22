@@ -131,6 +131,23 @@ sudo apt install -y git sqlite3 python3 python3-venv rsync
 
 `sqlite3` is worth having on the box for poking at msgstore by hand during the spike.
 
+### `uv`, for the one component with dependencies
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sudo env UV_INSTALL_DIR=/usr/local/bin sh
+uv --version
+```
+
+`wpa-reader` and `wpa-gate` run `python3 -m` against system Python and need none of
+this. The `wpa` MCP server (NVB-35) needs the MCP SDK, so `deploy/install.sh` builds
+`/opt/wpa/.venv` with `uv sync --locked` — the committed lock is what makes the box run
+what CI tested, rather than whatever `pip` resolves on the day.
+
+**`install.sh` checks for `uv` and refuses to guess.** It has never fetched anything
+from the internet and a deploy script that curls a binary into `/usr/local/bin` is a
+bigger change than the feature asking for it — so this install is one-time and manual,
+here. Without it the deploy still completes and says which server will fail to spawn.
+
 ## 8. Get the repo on the box
 
 ```bash
@@ -149,6 +166,7 @@ cd ~/whatsapp-pi-agent
 - [ ] SSH key-only, password auth off, no inbound port forwards
 - [ ] `vcgencmd get_throttled` → `0x0`
 - [ ] `timedatectl` → synchronized
+- [ ] `uv --version` answers (needed by `install.sh` for `/opt/wpa/.venv`)
 - [ ] Rootfs on SSD, or Waydroid data on external storage
 - [ ] DHCP reservation set
 - [ ] Repo cloned, `bootstrap.sh` run clean
