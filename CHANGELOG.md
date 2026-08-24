@@ -11,6 +11,78 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — NVB-39 was never a tool-policy bug: the model mis-read its own tools (2026-08-24)
+
+`builder` can call `write`. It always could. NVB-39 recorded that it could not — `write`
+present in the global `alsoAllow`, in `builder`'s own list, in the room ceiling, in
+`tools.sandbox.tools.allow` and in no removal line, yet the agent answering `NO WRITE
+TOOL` and creating nothing — and named the sandbox tool-policy path as the suspect. The
+sandbox is innocent, and so is every other layer.
+
+**The evidence is the trajectory file**, which records what each turn was actually given:
+
+* `agents/builder/sessions/2cf9dff9-….trajectory.jsonl`, the session that failed on
+  2026-08-21, lists the registered tools at **every** turn as `apply_patch, edit, read,
+  session_status, web_search, wpa__sync, write`. The system prompt it was sent spells out
+  `write: Create or overwrite files`.
+* The **first** turn of that session was "list the exact names of every tool you have
+  available right now". It answered with six names and left `write` out. That answer then
+  sat in the history every later turn re-read, and the write probe 9 minutes later —
+  125 input tokens against 9216 read from cache — agreed with it.
+* Re-run 2026-08-24 in a fresh session, config unchanged, same prompt: a real `write`
+  toolCall with `{"path": "/workspace/nvb39-probe.txt", "content": "ok"}`, and the file on
+  disk at `workspace-builder/nvb39-probe.txt`.
+
+So the self-report rule gets stronger rather than being reaffirmed. NVB-35 established
+that an agent answers from its prompt, so it can name a tool policy has removed. This is
+the mirror image and the worse half: **an early self-report poisons the session**, and
+the model will then defend its own mistake against a prompt, a registered tool and a
+direct instruction. Asking twice does not correct it; only a fresh session does.
+
+**NVB-34's recorded tool surface was right after all** — `apply_patch, edit, read,
+session_status, web_search, write` is exactly what the trajectory shows was registered.
+The technique that produced it was luck rather than method, which is the part worth
+keeping.
+
+Two commands now carry the verification, both in runbook 06 §2a. `openclaw sandbox
+explain --agent <id> --json` prints the effective sandbox allow/deny with the config key
+each came from — it exonerated the sandbox in one call. Reading `context.compiled` events
+out of the trajectory gives the registered tool list per turn, which beats the removal log
+because it is positive: it says what the model was handed, not what was taken away. A
+`toolCall` block in the same file's `model.completed` events is proof of invocation, the
+one thing an agent's prose cannot fake.
+
+### Fixed — `--tools` fails in two different ways, and the earlier note conflated them (2026-08-24)
+
+Runbook 06 said a phantom name in `github-mcp-server --tools=` registers nothing. NVB-36
+sharpened that to "one unknown name registers **zero** tools, not the rest", and used
+`create_issue` as the example. Probed against v1.9.0, both statements are half right and
+the example is the wrong one:
+
+| `--tools=` | registers |
+|---|---|
+| `issue_write` | `issue_write` |
+| `create_issue` | *nothing* |
+| `issue_write,create_issue` | `issue_write` |
+| `issue_write,create_pull_request_review` | `issue_write` |
+| `issue_write,bogusxyz123` | *nothing* |
+| `issue_write,issues` | *nothing* |
+| `issue_write,pull_request_write` | *nothing* |
+
+`create_issue` and `create_pull_request_review` are **recognised and empty**: advertised
+by `list-scopes`, accepted, mapping to no tool, and *ignored* inside a longer list, which
+survives intact. A name the server does not recognise at all is the destructive one — it
+takes the whole list to zero, taking the correct names with it. Every **toolset** name
+lands in that second category, because `--tools` and `--toolsets` are different
+vocabularies: `issues`, `repos` and `pull_request_write` are toolsets, and to `--tools`
+they are indistinguishable from a typo. That is what `issue_write,pull_request_write`
+hit, not the `create_issue` class.
+
+The operational rule survives both corrections and gains a clause: verify a grant by tool
+count, and probe a candidate name **alone and beside a known-good name**, because the two
+failures look identical from the outside and only one of them costs you the rest of the
+list.
+
 ### Added — the `wpa` MCP server, and `wpa__sync` (2026-08-21)
 
 Phase 2 of NVB-33 (NVB-35). Every MCP server on this box so far was installed; this one
@@ -116,6 +188,8 @@ does contradict NVB-34's recorded acceptance evidence, which listed the surface 
 the agent, which is precisely the technique the trap above shows to be unreliable: the
 most likely reading is that `write` was never callable and the self-report was believed.
 Unexplained and filed separately rather than fixed here.
+
+> **Superseded 2026-08-24 — this finding was wrong, and instructively so.** Nothing stripped `write`; the trajectory shows it registered at every turn of that session. The agent's *first* turn had enumerated its tools and left `write` out, and it spent the rest of the session agreeing with itself. NVB-34's recorded surface was correct. See the NVB-39 entry at the top.
 
 ### Rejected — Plumbus, and the two objections against it that turned out to be wrong
 

@@ -99,17 +99,38 @@ sudo -u openclaw HOME=/var/lib/openclaw openclaw mcp probe github --json
 The eight are `issue_write`, `add_issue_comment`, `issue_read`, `list_issues`,
 `actions_get`, `actions_list`, `get_job_logs` and `pull_request_review_write`.
 
-### Half the names in `list-scopes` do not register
+### `--tools` has two silent failures, and they are not the same one
 
-`list-scopes` advertises `create_issue`; `--tools=create_issue` is accepted without
-complaint and **nothing registers**. The real tool is `issue_write`. The same thing
-happened again on 2026-08-17 with `create_pull_request_review`, also advertised, also
-accepted, also registering nothing — the real tool is `pull_request_review_write`.
+Measured against v1.9.0 on 2026-08-24, with the credential-free recipe below:
 
-Two instances make it a rule rather than an anecdote:
+| `--tools=` | registers |
+|---|---|
+| `issue_write` | `issue_write` |
+| `create_issue` | *nothing* |
+| `create_pull_request_review` | *nothing* |
+| `issue_write,create_issue` | `issue_write` |
+| `issue_write,create_pull_request_review` | `issue_write` |
+| `issue_write,bogusxyz123` | ***nothing*** |
+| `issue_write,issues` | ***nothing*** |
+| `issue_write,repos` | ***nothing*** |
+| `issue_write,pull_request_write` | ***nothing*** |
+
+Two different failures, neither of which prints anything:
+
+1. **Recognised but empty.** `create_issue` and `create_pull_request_review` are
+   advertised by `list-scopes`, accepted, and map to no tool — the real names are
+   `issue_write` and `pull_request_review_write`. Alone they register nothing; inside a
+   longer list they are ignored and their neighbours survive.
+2. **Unrecognised, which takes the whole list down.** Any name the server does not know
+   registers **zero** tools, not "the rest" — the known-good names go down with it.
+   Every **toolset** name behaves this way, because `--tools` and `--toolsets` are
+   different vocabularies: `issues`, `repos` and `pull_request_write` are toolsets, and
+   passing one to `--tools` is indistinguishable from a typo.
+
+So the rule, unchanged in force and sharper in scope:
 
 > **On this server, a grant is verified by tool count. The absence of an error proves
-> nothing.**
+> nothing — and a wrong name can cost you the tools you got right.**
 
 The cheapest way to check a name before touching the live config is to list the tools
 from a throwaway instance — `tools/list` does not authenticate, so no credential is
@@ -124,18 +145,15 @@ needed and nothing is spawned by the gateway:
 | tail -1 | jq -r '.result.tools[].name'
 ```
 
-Empty output means the name is a phantom. Keep the `sleep`: the server exits on stdin
-EOF and answers nothing if the pipe closes first.
+Empty output means the name is a phantom — or that one of the others is. Probe the
+candidate **alone and beside a known-good name** to tell the two failures apart. Keep the
+`sleep`: the server exits on stdin EOF and answers nothing if the pipe closes first.
 
 It also costs the narrow verb ADR 0010 asks for, twice. `issue_write` is a
 consolidated write that can close and relabel; `pull_request_review_write` carries
 `create`, `submit_pending`, `delete_pending`, `resolve_thread` and
 `unresolve_thread` in one tool. There is no create-only variant of either, so the
 containment falls back to the PAT's scope.
-
-**Put the tool count in the checklist, not just `config validate`.** `mcp probe`
-returns tools and no diagnostics against a *dead* credential, because listing tools
-does not authenticate.
 
 ### Formal reviews, and what the agent cannot review
 
@@ -299,13 +317,47 @@ doing — it is the only thing that shows what the model *believes* — but it a
 the prompt, so it can name a tool that policy has removed. Confirm with the log, or by
 making the agent actually call the thing.
 
-**A live example of exactly that gap:** `write` appears in the global `alsoAllow`, in
-`builder`'s `alsoAllow`, in the room ceiling and in `tools.sandbox.tools.allow`, and in
-no removal line — and `builder` still cannot call it. Asked to use it, it replies
-`NO WRITE TOOL` and creates nothing; `owner`, which is not sandboxed, has it. This
-predates NVB-35 (reproduced with `builder` reverted to its NVB-34 config) and
-contradicts the surface recorded in NVB-34's acceptance evidence, which listed `write`.
-Unexplained; tracked separately.
+**NVB-39 looked exactly like that gap and was not one.** On 2026-08-21 `builder`
+replied `NO WRITE TOOL` and created nothing, with `write` present in the global
+`alsoAllow`, in `builder`'s own list, in the room ceiling, in `tools.sandbox.tools.allow`
+and in no removal line. The trajectory for that same turn settles it: the registered
+tools were `apply_patch, edit, read, session_status, web_search, wpa__sync, write`, and
+the system prompt it was sent lists `write: Create or overwrite files`. Nothing had been
+removed.
+
+What happened is that the **first** turn of that session asked it to enumerate its tools
+and it answered with six names, omitting `write`. That answer stayed in the history every
+later turn re-read, so every subsequent probe was agreeing with its own earlier mistake.
+Re-run on 2026-08-24 in a fresh session against unchanged config, the same prompt
+produced a real `write` toolCall and a file on disk.
+
+So the rule is stronger than "the self-report answers from the prompt": **a self-report
+you ask for early poisons the session**, and asking again does not correct it. Probe in a
+throwaway session, or read the trajectory.
+
+### The trajectory is the ground truth
+
+Better than the removal log, because it is per turn and positive rather than negative —
+it says what the model was *given*, not what was taken away:
+
+```bash
+sudo python3 -c '
+import json, sys
+for line in open(sys.argv[1]):
+    e = json.loads(line)
+    if e.get("type") == "context.compiled":
+        print(e["ts"], [t["name"] for t in e["data"]["tools"]])
+' /var/lib/openclaw/.openclaw/agents/builder/sessions/<session-id>.trajectory.jsonl
+```
+
+`openclaw sessions list --agent <id> --json` gives the session id and the file path. The
+same file's `model.completed` events carry `messagesSnapshot`, where a `toolCall` block
+is proof the tool was *invoked* rather than described — the difference the agent's prose
+cannot express.
+
+For the sandbox layer specifically, `openclaw sandbox explain --agent <id> --json` prints
+the effective sandbox allow/deny and the config key each came from. It exonerated the
+sandbox here in one command.
 
 ## 3. The watcher
 
