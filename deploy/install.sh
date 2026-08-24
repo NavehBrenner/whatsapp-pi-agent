@@ -83,6 +83,38 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# A SECOND venv, and this box will never run what is in it (NVB-42).
+#
+# It exists to be bind-mounted into the agents' sandbox containers, read-only, at
+# this exact path. The sandbox image carries `git` and `python3` and nothing else —
+# no uv, no pytest, no node, no compiler — and `network: none` means a container can
+# never fetch them. Building on the host and mounting is cheaper than rebuilding the
+# image and moves with a deploy; the mount is in `agents.defaults.sandbox.docker.binds`.
+#
+# WHY THE PATH IS OUTSIDE /opt/wpa. A venv under the deploy checkout shows up as an
+# untracked directory in `git status` there, and a confusing git state in /opt/wpa has
+# already cost one session. Same absolute path inside the container as outside, because
+# a venv's interior paths are absolute.
+#
+# --group dev is the difference from the venv above: that one is the MCP server's
+# runtime and has no business carrying pytest.
+# ---------------------------------------------------------------------------
+if ! command -v uv >/dev/null 2>&1; then
+	: # already reported above
+elif UV_PROJECT_ENVIRONMENT=/opt/wpa-sandbox-venv \
+	uv sync --project /opt/wpa --group dev --locked --python /usr/bin/python3 >/dev/null 2>&1; then
+	# Readable by `openclaw`, which owns none of it — same reason as the venv above,
+	# and here it is the container's uid 0 mapping back to that user (NVB-25).
+	chmod -R a+rX /opt/wpa-sandbox-venv
+	echo "  /opt/wpa-sandbox-venv  $("/opt/wpa-sandbox-venv/bin/python" -V 2>&1)  (mounted into sandboxes)"
+else
+	echo "  ! uv sync FAILED for the sandbox venv — the agents lose their test loop,"
+	echo "    nothing else breaks. Rerun by hand to see why:"
+	echo "      sudo env UV_PROJECT_ENVIRONMENT=/opt/wpa-sandbox-venv \\"
+	echo "        uv sync --project /opt/wpa --group dev --locked --python /usr/bin/python3"
+fi
+
+# ---------------------------------------------------------------------------
 # The privileged helpers. install-reader.sh handles wpa-config-backup because the
 # path unit it feeds is useless without it; the rest live here.
 #
