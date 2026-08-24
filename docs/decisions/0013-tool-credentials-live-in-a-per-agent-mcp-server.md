@@ -77,7 +77,7 @@ nothing for the mirror to copy into `main`: **this design is immune to the mecha
 above rather than defended against it.**
 
 This is not new machinery. It is the shape the GitHub PAT already ships in —
-`mcp.servers.github.env`, with `code-invariants` the only agent naming `github__*` tools.
+`mcp.servers.github.env`, with `qualety` the only agent naming `github__*` tools.
 
 ## What this gives, and what it does not
 
@@ -129,7 +129,7 @@ boundary at all.
 
 Against the running gateway, 2026-08-17:
 
-- `code-invariants` holds `github__issue_write … github__pull_request_review_write`; no
+- `qualety` holds `github__issue_write … github__pull_request_review_write`; no
   other agent has any `github__*` tool, and `family`, `liron` and `aryeh` carry no
   `tools` key at all, so they resolve the global set. `main` is `deny: ["*"]`.
 - `openclaw mcp probe` reports the one server and its 8 tools; the credential is in that

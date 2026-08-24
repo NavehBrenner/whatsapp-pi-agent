@@ -23,9 +23,9 @@ the intended trade rather than a limitation to work around.
 | | |
 |---|---|
 | Signal group | `mKfSyvnnWHQHR1Au6FjN8CEAM/02Y2iBPkGnsUgalKo=`, two members: the owner and the assistant |
-| Gate conversation | `code-invariants`, agent `code-invariants`, profile `project` (`send_to` = `["self"]`) |
-| OpenClaw agent | `code-invariants`, workspace `~/.openclaw/workspace-code-invariants` |
-| Session key | `agent:code-invariants:signal:group:mKfSyvnn…` |
+| Gate conversation | `qualety`, agent `qualety`, profile `project` (`send_to` = `["self"]`) |
+| OpenClaw agent | `qualety`, workspace `~/.openclaw/workspace-qualety` |
+| Session key | `agent:qualety:signal:group:mKfSyvnn…` |
 
 `members` is two entries because **the assistant is a member of its own group**.
 Leave its ACI out and the room refuses everything forever, which reads exactly like
@@ -45,18 +45,35 @@ sudo -u openclaw HOME=/var/lib/openclaw openclaw config validate
 
 # 3. the workspace, with an IDENTITY.md — an agent without one answers
 #    "I don't have a name yet"
-sudo -u openclaw install -d -m 0700 /var/lib/openclaw/.openclaw/workspace-code-invariants
+sudo -u openclaw install -d -m 0700 /var/lib/openclaw/.openclaw/workspace-qualety
 
 # 4. ITS OWN auth profile. Without this it reads through to `main` and appears to
 #    work right up until `main` is actually empty.
-sudo -u openclaw HOME=/var/lib/openclaw openclaw models auth --agent code-invariants login
+sudo -u openclaw HOME=/var/lib/openclaw openclaw models auth --agent qualety login
 ```
 
 `--agent` is an option on the **parent** command: `openclaw models auth --agent X
 login`, never `… login --agent X`.
 
-Verify the fourth with `openclaw models --agent code-invariants status` and read the
+Verify the fourth with `openclaw models --agent qualety status` and read the
 `effective=` path. If it names `agents/main/...`, the login did not take.
+
+### Renaming the agent
+
+The agent was `code-invariants` until 2026-08-24 (NVB-43), when it took the name of
+the repo it serves. Renaming one is not an edit to `agents.list[].id`: **both the
+workspace and the auth profile are derived from that id**, at
+`workspace-<id>/` and `agents/<id>/agent/openclaw-agent.sqlite`. Change the id
+without moving both directories, with the gateway stopped, and the agent reads
+through to `main` — it works right up until `main` is the wrong answer (NVB-38).
+
+The name is worn by four things and they are not all the same thing: the OpenClaw
+agent id, the gate conversation `label`, the sender pair `name`, and the GitHub repo.
+The outbox directory follows the **agent**, not the label (`src/gate/signal.py`,
+`_prepare`). `GH_SESSION_KEY` in `/etc/wpa-project.env` goes last, after the renamed
+agent has taken one turn, because it must name a session that already exists — and
+`wpa-gh-watch.timer` stays stopped until it does, or a tick fails the wake and sends
+an `OnFailure` alert about nothing.
 
 ## 1a. The second room, and the one thing it must not inherit
 
@@ -451,9 +468,9 @@ to sandboxed runs and would otherwise strip it after everything above passed.
 
 **But three global edits are not enough, and the way they fall short is backwards.** An
 agent-level `tools.alsoAllow` **replaces** the global list rather than merging — the same
-trap that cost `code-invariants` its `MEMORY.md`. So the global grant reached only the four
+trap that cost `qualety` its `MEMORY.md`. So the global grant reached only the four
 family DM agents, which have no agent entry of their own, while `builder`, `owner` and
-`code-invariants` carry their own lists and got nothing. The agent the whole change was for
+`qualety` carry their own lists and got nothing. The agent the whole change was for
 was the one agent that did not get it, and the tool-policy log said
 `removed 25 tool(s) via tools.profile (minimal): … exec …` while `exec` sat in the global
 `alsoAllow`, the room ceiling and the sandbox allowlist.
@@ -729,7 +746,7 @@ timeout rather than NXDOMAIN.
 ## Operational notes
 
 - **An agent-level `tools.alsoAllow` REPLACES the global one; it does not merge.**
-  Granting the GitHub tools to `code-invariants` therefore removed `read`, `write`,
+  Granting the GitHub tools to `qualety` therefore removed `read`, `write`,
   `edit` and `apply_patch` from it — including its ability to maintain its own
   `MEMORY.md` — and nothing said so. `config validate` passed, the room ceiling still
   listed those tools, and the only symptom was the agent reporting a shorter tool
@@ -759,7 +776,7 @@ timeout rather than NXDOMAIN.
   `--agent` CLI probe gets a narrower list than one spawned in the room or DM,
   because those sessions have different effective policy. Check in the session you
   actually use.
-- **The MCP server is gateway-global, not agent-bound.** Only `code-invariants` is
+- **The MCP server is gateway-global, not agent-bound.** Only `qualety` is
   granted the tools, but that is tool *policy*, not an absent credential — the
   distinction ADR 0010 exists to make. If policy ever fails open the blast radius is
   issues and comments on one repo, which is why the PAT's scope matters more than it
