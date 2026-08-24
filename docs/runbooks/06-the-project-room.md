@@ -359,6 +359,132 @@ For the sandbox layer specifically, `openclaw sandbox explain --agent <id> --jso
 the effective sandbox allow/deny and the config key each came from. It exonerated the
 sandbox here in one command.
 
+## 2b. `exec`, and the test loop it exists for
+
+NVB-42. Every agent can run a shell, and it runs inside that agent's own container. The
+point is not the shell — it is that `builder` can now run the tests it writes instead of
+proposing into CI and finding out later.
+
+### The image is nearly empty, and that is fine
+
+```
+git      /usr/bin/git
+python3  /usr/bin/python3
+uv       MISSING
+pytest   MISSING
+node     MISSING
+gcc      MISSING
+```
+
+`network: none` means a container can never fetch the missing ones. So `deploy/install.sh`
+builds a dev venv **inside the agent's workspace**, at `.venv-sandbox`, and it appears in
+the container at `/workspace/.venv-sandbox`. No mount, no config key — the workspace is
+already mounted.
+
+Two things make that work, and one of them is not obvious:
+
+- **A venv survives being read at a different absolute path**, because `sys.prefix` is
+  computed from the runtime executable. It is built at
+  `/var/lib/openclaw/.openclaw/workspace-builder/.venv-sandbox` and read at
+  `/workspace/.venv-sandbox`. Invoke it as `bin/python -m pytest`: the console scripts in
+  `bin/` carry the build path in their shebangs and do **not** survive the move.
+- **It is writable by the agent, and that costs nothing.** The workspace is mounted `rw`,
+  so the agent can modify its own venv — but it has `exec`, so it could run anything it
+  wanted regardless. Read-only would have defended against nothing.
+
+### ⛔ `docker.binds` is the obvious way to do this, and it cannot be
+
+It was tried in NVB-42. `createSandboxContainer` passes
+`bindSourceRoots: [workspaceDir, agentWorkspaceDir]` — **hardcoded, with no config key
+that widens it** — and `validate-sandbox-security` rejects any bind whose source falls
+outside them:
+
+```
+Sandbox security: bind mount "/opt/wpa-sandbox-venv:/opt/wpa-sandbox-venv:ro"
+source "/opt/wpa-sandbox-venv" is outside allowed roots
+(/var/lib/openclaw/.openclaw/workspace-builder).
+```
+
+**⚠️ And it is an outage, not a refusal.** The check runs at *container creation*, so one
+bad bind under `agents.defaults` fails every sandboxed turn for **every agent** — not just
+the one being configured. On 2026-08-24 it ran nineteen minutes and took twelve turns with
+it: six in the project room, three in the owner's DM, four probes. Those turns fail *after*
+the gate hands them off, so nothing retries them.
+
+```bash
+sudo -u openclaw HOME=/var/lib/openclaw openclaw config unset agents.defaults.sandbox.docker.binds
+sudo systemctl restart wpa-openclaw    # ← NOT optional, despite what the unset says
+```
+
+**`config unset` prints "No gateway restart needed" and it is wrong here.** The unset fixes
+the file; the running gateway keeps the bind in memory and goes on failing until restarted.
+
+**And do not verify with an agent that has already answered today.** The check runs at
+container creation, so an agent whose container is warm cannot fail — it will answer happily
+while the box is still broken for everyone else. That is exactly how the 2026-08-24 outage
+was declared over eight minutes into its nineteen. Verify with an agent that has been idle,
+or restart first and then probe several.
+
+The invocation, which belongs in the agent's `TOOLS.md` because it will not guess the
+`PYTHONPATH`:
+
+```bash
+cd /workspace/repo
+PYTHONPATH=/workspace/repo/src /opt/wpa-sandbox-venv/bin/python -m pytest -q
+PYTHONPATH=/workspace/repo/src /opt/wpa-sandbox-venv/bin/python -m mypy
+```
+
+Measured in the real image, network off: **103 tests in 3670 ms**, mypy 11144 ms cold and
+**403 ms warm**. Fast enough to iterate against, which was the whole question.
+
+### Why every agent got it, when only one needed it
+
+`collectExplicitDenylist` in `dist/tool-resolution-*.js` **concatenates** deny entries from
+every layer — profile, global, agent, room, subagent, gateway — and no layer subtracts. A
+name in the global `tools.deny` is denied to everyone, full stop. Granting `builder` alone
+would have meant deleting `exec` there and re-denying it on seven other agent entries:
+seven edits, silent when one is missed, and a miss hands a family DM agent a shell.
+
+Granting it globally removes that hazard — `tools.deny` loses it, `tools.alsoAllow` gains
+it, and `tools.sandbox.tools.allow` gains it too, because that second allowlist applies only
+to sandboxed runs and would otherwise strip it after everything above passed.
+
+**But three global edits are not enough, and the way they fall short is backwards.** An
+agent-level `tools.alsoAllow` **replaces** the global list rather than merging — the same
+trap that cost `code-invariants` its `MEMORY.md`. So the global grant reached only the four
+family DM agents, which have no agent entry of their own, while `builder`, `owner` and
+`code-invariants` carry their own lists and got nothing. The agent the whole change was for
+was the one agent that did not get it, and the tool-policy log said
+`removed 25 tool(s) via tools.profile (minimal): … exec …` while `exec` sat in the global
+`alsoAllow`, the room ceiling and the sandbox allowlist.
+
+Every agent-level `alsoAllow` has to name `exec` as well. That is seven live edits in total,
+not three.
+
+The room ceilings are the separate question, and they only narrow: `exec` is in this room's
+and the project room's, and deliberately **not** in the family room's. Every DM session has
+it regardless, because a DM has no ceiling to narrow it.
+
+### ⚠️ `tools.elevated.enabled` must stay `false`
+
+It runs `exec` **outside** the sandbox — on the host, as uid 991, the gateway's own user,
+which holds every credential on this box. While exec was denied outright this key gated
+nothing. It is now the difference between a shell in a box and a shell on the Pi, and it is
+written up in [the threat model](../threat-model.md) as a control rather than a default.
+
+### Verifying it
+
+The sandbox layer, in one command:
+
+```bash
+sudo -u openclaw HOME=/var/lib/openclaw openclaw sandbox explain --agent builder --json
+# expect: "exec" in .sandbox.tools.allow, and the venv in .sandbox.workspaceMounts
+```
+
+Then the registered surface — from the trajectory, per §2a, never from the agent. And then
+the only check that actually proves it: make the agent run the suite, and confirm the
+`toolCall` block exists rather than believing the report of it.
+
 ## 3. The watcher
 
 `wpa-gh-watch.timer` → `/usr/local/bin/wpa-gh-watch`, every 60s.

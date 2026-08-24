@@ -295,9 +295,16 @@
         //     allow: [
         //       "read", "write", "edit", "apply_patch", "session_status", "web_search",
         //       "wpa__sync",
+        //       "exec",   // NVB-42 — THE SECOND OF TWO EDITS again, same as wpa__sync
         //     ],
         //   },
         // },
+        //
+        // NVB-42 put `exec` in this ceiling and in the project room's, and
+        // deliberately NOT in the family room's above. A ceiling only narrows, so
+        // this is not what grants the shell — the global policy does that, and every
+        // DM session has it. It is what decides which GROUP rooms can reach one, and
+        // the two rooms that can are the two whose whole subject is source code.
       },
 
       dms: {
@@ -624,6 +631,32 @@
           memory: "512m",
           // readOnlyRoot needs somewhere writable that is not the workspace.
           tmpfs: ["/tmp"],
+
+          // ⛔ NO `binds` HERE, AND NVB-42 TRIED. The obvious way to give a sandboxed
+          // agent a toolchain is to mount one; it cannot be done from outside the
+          // agent's own workspace, and the failure is worse than a refusal.
+          //
+          // `createSandboxContainer` passes `bindSourceRoots: [workspaceDir,
+          // agentWorkspaceDir]` — HARDCODED, with no config key that widens it — and
+          // `validate-sandbox-security` rejects any bind whose source is outside
+          // them. Mounting /opt/wpa-sandbox-venv produced:
+          //
+          //   Sandbox security: bind mount "…" source "…" is outside allowed roots
+          //   (/var/lib/openclaw/.openclaw/workspace-builder).
+          //
+          // ⚠️ AND IT IS GLOBAL, SO IT TOOK EVERY AGENT DOWN. The check runs at
+          // CONTAINER CREATION, so one bad bind under `agents.defaults` fails every
+          // sandboxed turn for every agent until the key is removed — not just the
+          // agent you were configuring. `openclaw config unset` fixes it live, with
+          // no restart.
+          //
+          // What works instead needs no config at all: the workspace is ALREADY
+          // mounted, so the venv lives in it (`.venv-sandbox`, built by
+          // deploy/install.sh) and appears at /workspace/.venv-sandbox. A venv
+          // survives being reached at a different absolute path as long as it is
+          // invoked as `bin/python -m pytest` — sys.prefix is computed from the
+          // runtime executable path. The console scripts in `bin/`, whose shebangs
+          // carry the build path, do NOT survive it.
         },
       },
     },
@@ -748,6 +781,7 @@
       //     alsoAllow: [
       //       "read", "write", "edit", "apply_patch", "web_search",  // global set, repeated
       //       "wpa__sync",   // NVB-35 — read the resolved name off `mcp probe wpa`
+      //       "exec",        // NVB-42 — AND IT HAD TO BE ADDED HERE, not just globally
       //     ],
       //   },
       // },
@@ -963,13 +997,28 @@
     // So `message`, `gateway`, `nodes`, `cron`, `subagents` and the web tools need no
     // explicit deny — the ones below are the residue that `minimal` leaves behind.
     profile: "minimal",
+
+    // ⚠️ `exec` LEFT THIS LIST IN NVB-42, AND IT COULD NOT HAVE BEEN LEFT OUT FOR
+    // ONE AGENT ONLY. `collectExplicitDenylist` (dist/tool-resolution-*.js)
+    // CONCATENATES deny entries from every layer — profile, global, agent, room,
+    // subagent, gateway — and no layer subtracts. A name here is denied to everyone,
+    // so granting it to `builder` alone would have meant deleting it here and
+    // re-denying it on the other seven agent entries: seven edits, silent when one
+    // is missed, and the miss hands a family DM agent a shell. Granting it to
+    // everybody is the version with no per-agent exception to get wrong.
+    //
+    // What makes that acceptable is the sandbox above, not this list. See the
+    // `elevated` note below, which is now the load-bearing one.
     deny: [
-      "exec", // no shell. Denying write/edit does NOT make exec read-only.
       "process",
       "terminal",
       // Denied even though ADR 0012 notes the xAI credential would power it for
       // free. Free is not the test; "what does a successful injection do with
       // this" is, and the answer for a code runner is the same as for a shell.
+      //
+      // Honest note since NVB-42: with `exec` granted, neither of these PREVENTS
+      // running code any more. They stay denied to keep the surface small, which is
+      // a smaller claim than the one this comment used to make.
       "code_execution",
       "browser",
       "screen",
@@ -995,6 +1044,19 @@
       // NVB-27. Both are gateway-side, like web_search — the sandbox has no network
       // and never needed one for these.
       "image_generate", "video_generate",
+      // NVB-42. The agent that writes code can now run it, inside the container,
+      // where `git`, `python3` and its workspace venv are. Measured there: 103 tests
+      // in 3.7s, a warm typecheck in 0.4s — fast enough to be a real edit→test→fix
+      // loop rather than a gesture. Nothing outside the container becomes reachable:
+      // it has no network and holds no credential.
+      //
+      // ⚠️ THIS LINE ALONE GRANTS IT TO ALMOST NOBODY, and the way it fails is
+      // backwards. An agent-level `alsoAllow` REPLACES this list, so on the live box
+      // this reached only the four family DM agents — the ones with no agent entry of
+      // their own — while `builder`, `owner` and `code-invariants`, which carry their
+      // own lists, got nothing. The agent that needed the shell was the one that did
+      // not get it. Every agent-level list has to name `exec` too.
+      "exec",
     ],
 
     // ⚠️ AND THEY ARE NOT DENIED, ON PURPOSE.
@@ -1016,7 +1078,12 @@
     // So: if sandbox.mode ever goes back to "off", these must be denied again in
     // the same commit. The two settings are one decision.
 
-    elevated: { enabled: false }, // WHY: exec is denied; this closes the escape hatch
+    // ⚠️ SINCE NVB-42 THIS KEY IS THE LINE BETWEEN A SHELL IN A BOX AND A SHELL ON
+    // THE PI. `elevated` runs `exec` OUTSIDE the sandbox — on the host, as uid 991,
+    // the gateway's own user, which does hold every credential on this box. While
+    // exec was denied outright this gated nothing; now it is the whole control, and
+    // it is written up as one in docs/threat-model.md rather than left as a default.
+    elevated: { enabled: false },
 
     // Provider-side search on the agent's own xAI OAuth — no separate key. `grok` is
     // a `web_search` provider that reuses an existing xAI OAuth sign-in.
@@ -1056,6 +1123,15 @@
           "group:plugins",
           "web_search",
           "image_generate", "video_generate",
+          // NVB-42, and this list is where it actually has to be: the entry above in
+          // `tools.alsoAllow` widens the global policy, and this one is the separate
+          // allowlist that applies only to sandboxed runs. Both, or the tool is
+          // stripped here after surviving everything above.
+          //
+          // Checked in `dist` before relying on it: the built-in sandbox default
+          // deny (browser, canvas, nodes, cron, gateway, and every channel tool)
+          // does NOT contain `exec`, so nothing upstream re-denies it.
+          "exec",
         ],
       },
     },

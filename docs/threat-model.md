@@ -167,6 +167,34 @@ Corollary, and the rule to hold the line on: **every new tool must be evaluated 
 because drafting got tedious, controls 1–3 are load-bearing on their own and they are not
 strong enough for that.
 
+#### Amended 2026-08-24 (NVB-42) — the fence moved, and the rule survived it
+
+The table above describes this control as designed, when every tool was gateway-side and
+"filesystem write — none" was simply true. Two changes have overtaken it. ADR 0012 moved
+the runtime into a sandbox and gave the agents `write`, `edit` and `apply_patch` *inside*
+it. NVB-42 gave them `exec`.
+
+The capability-shaping argument still holds, but it now rests on something different: not
+the absence of the tool, but the emptiness of the place it runs.
+
+| A shell in one of these containers reaches | It does not reach |
+|---|---|
+| the agent's own workspace, bind-mounted `rw` | any credential — auth profiles, PATs and the signal-cli socket are on the host, unmounted |
+| the read-only skills dir | the network — `network: none`, rootless daemon in its own netns |
+| `git`, `python3`, a read-only dev venv | the host filesystem — `readOnlyRoot`, `capDrop: ALL` |
+| 512m of memory and 256 pids | any other agent's container — `scope: agent`, one each |
+
+So the corollary is unchanged and gets sharper. "What does a successful injection do with
+this" is now answered by the container's contents rather than by the tool list — which is
+a *weaker* guarantee than a tool that does not exist, and is why it is written down here
+rather than left in a config comment.
+
+**One key changes that answer entirely: `tools.elevated.enabled`.** It runs `exec` outside
+the sandbox, on the host, as uid 991 — the gateway's own user, which holds everything in
+the right-hand column. While `exec` was denied outright, that key gated nothing. It is now
+the control, it is `false`, and flipping it is not a configuration change but a change to
+this document.
+
 ### Control 5 — confirmation gate
 
 A hook intercepts every outbound action, sends me a Signal message ("about to do X — reply
@@ -209,6 +237,15 @@ excerpts I requested, no message content in logs, no message content in git (see
 
 **R5 — WhatsApp account ban.** Covered separately in [detection-model.md](detection-model.md).
 Consequence is loss of function, not loss of data.
+
+**R7 — sandbox escape.** Since NVB-42 every agent has a shell inside its own container, so
+the container is the whole boundary — and four of these agents take messages from people
+who are not me. What stands there is rootless Docker (container uid 0 maps to the
+unprivileged `openclaw` uid), `capDrop: ALL`, `readOnlyRoot`, `network: none`, and the
+memory and pid limits. What an escape would reach is the gateway's own uid: the credentials
+under `~openclaw/.openclaw` and the signal-cli socket. Accepted knowingly, and accepted
+*ahead of* NVB-14 (per-agent isolation the kernel enforces) rather than after it — NVB-42
+is what turns that issue from a good idea into the mitigation for this row.
 
 **R6 — Waydroid container escape.** The reader already reads the container's filesystem as
 a privileged host process, so the container is not a security boundary *for us* — it's a

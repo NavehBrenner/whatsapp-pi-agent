@@ -11,6 +11,143 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added — `exec` for every agent, inside the sandbox (2026-08-24)
+
+NVB-42. `builder` wrote code it could not run: no test, no typecheck, no iteration, just a
+proposal into CI and an answer that arrived later if anything carried it back. That was the
+ceiling on the whole NVB-33 chain, and it is gone.
+
+Measured in the real sandbox image before granting anything — `--network none`,
+`--read-only`, `capDrop ALL`, 512m, 256 pids:
+
+```
+103 tests passed        pytest (cold)  3670 ms
+                        mypy  (cold) 11144 ms   mypy (warm) 403 ms
+git 2.39.5 — switch -c / add / commit all work
+git push → no route (correct)     getent hosts github.com → nothing
+```
+
+An edit→test→fix loop at four-second granularity, offline, on a Pi.
+
+**The image is nearly empty and stays that way.** `git` and `python3` are in it; `uv`,
+`pytest`, `node` and a compiler are not, and `network: none` means a container can never
+fetch them. So `install.sh` builds a dev venv **inside the agent's workspace** at
+`.venv-sandbox`, where it appears as `/workspace/.venv-sandbox` with no mount and no config
+key — the workspace was already mounted.
+
+A venv survives being read at a different absolute path than it was built at, because
+`sys.prefix` follows the runtime executable. Invoke it as `bin/python -m pytest`: the
+console scripts in `bin/` carry the build path in their shebangs and do not survive the
+move. It is writable by the agent, and that costs nothing — an agent with `exec` could run
+anything regardless, so read-only would have defended against nothing.
+
+#### `docker.binds` is the obvious way to do this, and it is an outage
+
+The plan said mount a shared venv from `/opt/wpa-sandbox-venv`. That cannot work:
+`createSandboxContainer` passes `bindSourceRoots: [workspaceDir, agentWorkspaceDir]`,
+hardcoded, with no config key that widens it, and `validate-sandbox-security` rejects any
+bind whose source is outside them.
+
+The important part is the failure mode. The check runs at **container creation**, so one bad
+bind under `agents.defaults` fails every sandboxed turn for **every agent**, not just the one
+being configured.
+
+**It was a nineteen-minute outage across three agents, and the first account of it in this
+changelog said two minutes and one probe.** The real numbers, from the journal: 18:53 to
+19:12 on 2026-08-24, twelve failures — six in the project room, three in the owner's own DM,
+four from the probes. Real traffic, and those turns failed *after* the gate handed them off,
+so they were never retried.
+
+**`openclaw config unset` reports "No gateway restart needed", and for the sandbox path that
+is false.** The unset corrected the file; the running gateway kept the bind in memory and
+went on failing. Only a restart cleared it.
+
+What made the wrong account worse than a wrong number is *why* it was believed. After the
+unset, `builder` was probed, it answered, and the fix was called done — but the check runs at
+container creation and **builder's container was already warm**, so that probe could not have
+failed whatever the config said. A verification that cannot fail is not a verification. The
+agents that kept breaking were the ones whose containers had to be created: `code-invariants`
+and `owner`.
+
+If a bind ever looks like the answer again: it is not, it is not a refusal you can ignore,
+and testing one warm agent afterwards proves nothing.
+
+#### Granting it to everyone was the safer change, which is not the obvious result
+
+`collectExplicitDenylist` in `dist/tool-resolution-*.js` **concatenates** deny entries from
+every layer — profile, global, agent, room, subagent, gateway — and no layer subtracts. So a
+name in the global `tools.deny` is denied to everyone, and there is no allow, ceiling or
+sandbox policy anywhere that lifts it for one agent.
+
+Granting `builder` alone would therefore have meant deleting `exec` globally and re-denying
+it on seven other agent entries: seven edits whose failure mode is silent and whose blast
+radius is a family member's DM agent holding a shell. Granting it to everybody removes that
+hazard, and the narrower-sounding change was the more dangerous one.
+
+**Three global edits were not enough, though, and the shortfall is backwards.** An
+agent-level `tools.alsoAllow` **replaces** the global list rather than merging — the trap
+that cost `code-invariants` its `MEMORY.md`, sprung again. The global grant reached exactly
+the four family DM agents, which carry no agent entry of their own, while `builder`, `owner`
+and `code-invariants` carry their own lists and got nothing at all. **The agent the entire
+change existed for was the one agent that did not get it**, with `exec` sitting in the global
+`alsoAllow`, in its room ceiling and in the sandbox allowlist, while the log read
+`removed 25 tool(s) via tools.profile (minimal): … exec …`.
+
+Seven live edits, not three. The net config diff is seven `exec` additions and one removal
+from `tools.deny`.
+
+Room ceilings only narrow, so they are a separate question: `exec` is in `builder`'s room
+ceiling and the project room's, and deliberately not in the family room's. DM sessions have
+no ceiling and hold it regardless.
+
+#### What makes it acceptable, checked rather than assumed
+
+#### Verified on hardware (2026-08-24)
+
+`builder` ran `pytest` against its own checkout from its own session — 103 passing, and
+three `exec` `toolCall` blocks in the trajectory rather than one, because it iterated on its
+own output (`tail -5`, then `tail -20`, then `--tb=no; echo EXIT:$?`). That is the loop
+working, not a tool firing once.
+
+What a shell in there reaches, asked of the agent and answered by the container:
+
+```
+id                                        uid=0(root) gid=0(root)
+head -c 60 …/.openclaw/openclaw.json      No such file or directory
+getent hosts github.com                   dns-exit:2
+ls /workspace                             AGENTS.md HEARTBEAT.md IDENTITY.md …
+```
+
+`tools.elevated.enabled` reads `false`, and `sandbox explain` reports the refusal path
+explicitly: `failures: [{gate: "enabled", key: "tools.elevated.enabled"}]`.
+
+Per-agent surfaces read from the trajectory, never from the agent: `builder`,
+`code-invariants`, `family` and `aryeh` all carry `exec`. `aryeh` read `false` at first and
+that was the session-creation trap rather than a policy difference — its newest trajectory
+predated the change, and a fresh session key flipped it to `true`. Tool policy binds at
+session creation; verifying in an old session measures the old config.
+
+All eight agents are sandboxed — read per agent, not off the defaults: `mode=all`,
+`scope=agent`, one container each. The only mounts are the agent's own workspace and the
+read-only skills dir, so **no credential is inside any container**, and there is no network
+to carry anything out of one. The built-in sandbox default deny (`browser, canvas, nodes,
+cron, gateway` and every channel tool) was checked in `dist` and does **not** contain
+`exec`, so nothing upstream re-denies it.
+
+This also corrects NVB-39's write-up a second time: it recorded `owner` as unsandboxed. It
+is not, and it never was.
+
+**`tools.elevated.enabled` is now a control rather than a default.** It runs `exec` outside
+the sandbox, on the host, as uid 991 — the gateway's own user, which holds every credential
+on this box. While `exec` was denied outright that key gated nothing. It is `false`, and
+`docs/threat-model.md` says so under Control 4 rather than leaving it in a config comment.
+
+The threat model gains a residual risk to match: **R7 — sandbox escape**, accepted knowingly
+and accepted *ahead of* NVB-14 rather than after it. Four of these agents take messages from
+people who are not the owner, and for them the container is now the entire fence rather than
+defence in depth behind tool policy. NVB-42 is what turns NVB-14 from a good idea into the
+mitigation for a row in the table.
+
 ### Fixed — NVB-39 was never a tool-policy bug: the model mis-read its own tools (2026-08-24)
 
 `builder` can call `write`. It always could. NVB-39 recorded that it could not — `write`
