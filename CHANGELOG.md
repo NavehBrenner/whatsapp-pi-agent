@@ -11,6 +11,73 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added — `exec` for every agent, inside the sandbox (2026-08-24)
+
+NVB-42. `builder` wrote code it could not run: no test, no typecheck, no iteration, just a
+proposal into CI and an answer that arrived later if anything carried it back. That was the
+ceiling on the whole NVB-33 chain, and it is gone.
+
+Measured in the real sandbox image before granting anything — `--network none`,
+`--read-only`, `capDrop ALL`, 512m, 256 pids:
+
+```
+103 tests passed        pytest (cold)  3670 ms
+                        mypy  (cold) 11144 ms   mypy (warm) 403 ms
+git 2.39.5 — switch -c / add / commit all work
+git push → no route (correct)     getent hosts github.com → nothing
+```
+
+An edit→test→fix loop at four-second granularity, offline, on a Pi.
+
+**The image is nearly empty and stays that way.** `git` and `python3` are in it; `uv`,
+`pytest`, `node` and a compiler are not, and `network: none` means a container can never
+fetch them. So `install.sh` now builds a second venv at **`/opt/wpa-sandbox-venv`** with
+`--group dev`, and `docker.binds` mounts it read-only at the same absolute path — a venv's
+interior paths are absolute, so same-path is what makes it work. Cheaper than rebuilding
+the image, and it moves with a deploy. The path is outside `/opt/wpa` on purpose: a venv
+under the deploy checkout shows up as an untracked directory in `git status` there, and a
+confusing git state in `/opt/wpa` has already cost one session this month.
+
+#### Granting it to everyone was the safer change, which is not the obvious result
+
+`collectExplicitDenylist` in `dist/tool-resolution-*.js` **concatenates** deny entries from
+every layer — profile, global, agent, room, subagent, gateway — and no layer subtracts. So a
+name in the global `tools.deny` is denied to everyone, and there is no allow, ceiling or
+sandbox policy anywhere that lifts it for one agent.
+
+Granting `builder` alone would therefore have meant deleting `exec` globally and re-denying
+it on seven other agent entries: seven edits whose failure mode is silent and whose blast
+radius is a family member's DM agent holding a shell. Granting it to everybody is three
+additive global edits with no per-agent exception to get wrong. The narrower-sounding change
+was the more dangerous one.
+
+Room ceilings only narrow, so they are a separate question: `exec` is in `builder`'s room
+ceiling and the project room's, and deliberately not in the family room's. DM sessions have
+no ceiling and hold it regardless.
+
+#### What makes it acceptable, checked rather than assumed
+
+All eight agents are sandboxed — read per agent, not off the defaults: `mode=all`,
+`scope=agent`, one container each. The only mounts are the agent's own workspace and the
+read-only skills dir, so **no credential is inside any container**, and there is no network
+to carry anything out of one. The built-in sandbox default deny (`browser, canvas, nodes,
+cron, gateway` and every channel tool) was checked in `dist` and does **not** contain
+`exec`, so nothing upstream re-denies it.
+
+This also corrects NVB-39's write-up a second time: it recorded `owner` as unsandboxed. It
+is not, and it never was.
+
+**`tools.elevated.enabled` is now a control rather than a default.** It runs `exec` outside
+the sandbox, on the host, as uid 991 — the gateway's own user, which holds every credential
+on this box. While `exec` was denied outright that key gated nothing. It is `false`, and
+`docs/threat-model.md` says so under Control 4 rather than leaving it in a config comment.
+
+The threat model gains a residual risk to match: **R7 — sandbox escape**, accepted knowingly
+and accepted *ahead of* NVB-14 rather than after it. Four of these agents take messages from
+people who are not the owner, and for them the container is now the entire fence rather than
+defence in depth behind tool policy. NVB-42 is what turns NVB-14 from a good idea into the
+mitigation for a row in the table.
+
 ### Fixed — NVB-39 was never a tool-policy bug: the model mis-read its own tools (2026-08-24)
 
 `builder` can call `write`. It always could. NVB-39 recorded that it could not — `write`
