@@ -124,15 +124,15 @@ name = "owner"                                     # the pair name: unique every
 # outbound as well as inbound (see `drain`).
 #
 # [[signal.conversations]]
-# label   = "code-invariants"
+# label   = "qualety"
 # id      = "<group id>"                        # deploy/pin-group.py prints both lines
 # members = ["<assistant uuid>", "<owner uuid>"]  # TWO: the assistant is a member too
-# agent   = "code-invariants"
+# agent   = "qualety"
 # profile = "project"
-# purpose = "the code-invariants repo: plans, PRs, CI"
+# purpose = "the qualety repo: plans, PRs, CI"
 # [[signal.conversations.senders]]
 # uuid = "<owner uuid>"
-# name = "owner-code-invariants"                # the pair name: unique everywhere
+# name = "owner-qualety"                        # the pair name: unique everywhere
 
 # The room where this repo is worked on (NVB-34). Same shape as the project room
 # above, one step closer to home: it reads the source that defines every agent on the

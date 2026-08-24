@@ -11,6 +11,51 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Changed — the `code-invariants` agent is now `qualety` (2026-08-24)
+
+NVB-43. The GitHub repo was renamed to `qualety` on 2026-08-22 — that spelling — and the
+agent has taken the repo's name verbatim rather than a corrected one. `/etc/wpa-project.env`
+had been half-migrated since: `GH_REPO` already read `NavehBrenner/qualety` while
+`GH_SESSION_KEY` and `GH_WORKSPACE` still named `code-invariants`, so the one file that
+exists to give the repo slug a single home disagreed with itself.
+
+**The name wore four hats and they are not one thing.** OpenClaw agent id, the gate
+conversation `label`, the sender pair `name` (`owner-code-invariants`), and the repo. Every
+reference was classified before it was touched. This file and ADR 0011's dated deploy line
+are the historical record and keep the old name; ADR 0013's two current-state lines, both
+example configs and runbooks 05 and 06 change.
+
+**Renaming an agent moves its credential.** The workspace and the auth profile are both
+*derived* from the agent id — `workspace-<id>/` and
+`agents/<id>/agent/openclaw-agent.sqlite`, with no `workspace` key in the live config to
+pin either. Editing `agents.list[].id` without moving both directories, gateway stopped,
+gives an agent that reads through to `main`: the NVB-38 failure, which works right up until
+`main` is the wrong answer.
+
+**`GH_SESSION_KEY` was written last, and read rather than typed.** It must name a session
+that already exists, and the new one does not exist until the renamed agent has taken a
+turn. `wpa-gh-watch.timer` stayed stopped across the gap — a tick in between would have
+failed the wake, exited non-zero and fired an `OnFailure` Signal alert about nothing.
+
+Four things found on the box that the plan had wrong or had not seen:
+
+- **The outbox is keyed by the agent, not by the conversation label.** `src/gate/signal.py`
+  builds `outbox / agent` and `_prepare()` makes one directory per configured agent at
+  startup. Both names matched here so the action was the same, but rename only the label
+  and the mailbox follows the agent.
+- **`IDENTITY.md` never named the agent.** The plan said it did and would make the agent
+  introduce itself by the old name; it is the unfilled OpenClaw template, `Name: Pi`. The
+  self-reference that actually mattered was in the agent's own `MEMORY.md` and `WORKPLAN.md`.
+- **The mirror's git remote still pointed at `code-invariants`, and nothing had noticed for
+  two days.** GitHub's rename redirect is why `wpa-project-sync` stayed green — a redirect
+  is a working fetch, so a stale remote is invisible from the outcome. Needed
+  `git remote set-url`. `/etc/wpa-oc.env` carried the same stale slug in `OC_REPOS`.
+- **`sessions.json` stores absolute paths** in every entry's `sessionFile` and
+  `systemPromptReport.workspaceDir`, all of which go stale on the move. Harmless only
+  because the rename abandons every `agent:code-invariants:*` key, so nothing looks them
+  up again — the fresh session key is the point rather than a side effect, and after
+  NVB-39 losing that history is a feature.
+
 ### Added — `exec` for every agent, inside the sandbox (2026-08-24)
 
 NVB-42. `builder` wrote code it could not run: no test, no typecheck, no iteration, just a

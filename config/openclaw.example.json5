@@ -287,7 +287,7 @@
         // ⚠️ NAMED EXPLICITLY, NOT `group:plugins`. NVB-35's text proposed the group,
         // and the group is wrong here: it would also admit whatever the `wpa-approve`
         // plugin registers, which is precisely what Phase 4's deploy endpoint is
-        // supposed to gate. `code-invariants` sets the precedent, listing its
+        // supposed to gate. `qualety` sets the precedent, listing its
         // `github__*` tools one by one.
         // "<agents-management base64 groupId>": {
         //   requireMention: false,   // the room exists only to talk to the assistant
@@ -706,7 +706,7 @@
       // with durable memory. A shared session would carry a poisoned issue into the
       // private chat; a shared workspace would persist it in the same MEMORY.md.
       //
-      // Needs its OWN `openclaw models auth --agent code-invariants login`, and its
+      // Needs its OWN `openclaw models auth --agent qualety login`, and its
       // own IDENTITY.md written into the workspace. Skipping either is the `carol`
       // failure: it will appear to work by reading through to `main`, right up until
       // the day `main` is actually empty.
@@ -718,8 +718,8 @@
       // tool-policy log reports removals per layer without reporting that a layer
       // was overridden. Repeat the global names in every per-agent list.
       // {
-      //   id: "code-invariants",
-      //   workspace: "~/.openclaw/workspaces/code-invariants",
+      //   id: "qualety",
+      //   workspace: "~/.openclaw/workspaces/qualety",
       //   tools: {
       //     alsoAllow: [
       //       "read", "write", "edit", "apply_patch", "web_search",  // global set, repeated
@@ -752,7 +752,7 @@
       // not only in the family room.
 
       // The builder room (NVB-34): the repo this assistant is itself built from.
-      // Same containment argument as `code-invariants` one step closer to home — it
+      // Same containment argument as `qualety` one step closer to home — it
       // reads the repo that defines every other agent on this box, so it gets its own
       // agent, its own workspace and its own MEMORY.md.
       //
@@ -766,7 +766,7 @@
       // So the moment `wpa__sync` needs to be named here, every global name has to
       // be repeated beside it or it is REMOVED from this agent — silently, with the
       // config still validating and the room's ceiling still listing it. That is
-      // exactly what happened to `code-invariants` (see its warning above), where it
+      // exactly what happened to `qualety` (see its warning above), where it
       // cost the agent its ability to write its own MEMORY.md.
       //
       // The alternative — putting `wpa__sync` in the GLOBAL `alsoAllow` — is worse:
@@ -925,12 +925,12 @@
     // The project room. A GROUP id, so NO `uuid:` prefix — getting that wrong routes
     // the room to `main` in silence, which is the failure this file warns about above.
     // {
-    //   agentId: "code-invariants",
+    //   agentId: "qualety",
     //   match: {
     //     channel: "signal",
-    //     peer: { kind: "group", id: "<code-invariants base64 groupId>" },
+    //     peer: { kind: "group", id: "<qualety base64 groupId>" },
     //   },
-    //   comment: "code-invariants project room — owner only",
+    //   comment: "qualety project room — owner only",
     // },
     // The builder room. Also a GROUP id, also no prefix.
     // {
@@ -1053,7 +1053,7 @@
       // ⚠️ THIS LINE ALONE GRANTS IT TO ALMOST NOBODY, and the way it fails is
       // backwards. An agent-level `alsoAllow` REPLACES this list, so on the live box
       // this reached only the four family DM agents — the ones with no agent entry of
-      // their own — while `builder`, `owner` and `code-invariants`, which carry their
+      // their own — while `builder`, `owner` and `qualety`, which carry their
       // own lists, got nothing. The agent that needed the shell was the one that did
       // not get it. Every agent-level list has to name `exec` too.
       "exec",
@@ -1243,7 +1243,7 @@
       // credential lives in this entry's `env` and in no auth store, so the refresh
       // mirror has nothing to copy into `main`. Fine-grained, Issues read/write, one
       // repo, no contents — the floor that holds if the two filters above it are
-      // wrong. Only `code-invariants` names `github__*` tools. Runbook 06 §2.
+      // wrong. Only `qualety` names `github__*` tools. Runbook 06 §2.
       github: {
         command: "/usr/local/bin/github-mcp-server",
         args: ["stdio", "--tools=issue_write,add_issue_comment,issue_read,list_issues,actions_get,actions_list,get_job_logs,pull_request_review_write"],

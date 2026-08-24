@@ -90,7 +90,7 @@ GH_TOKEN=github_pat_...
 OC_MODEL=xai/grok-4.6
 
 # Space-separated. Every repo that should be able to run /oc.
-OC_REPOS="navehbrenner/code-invariants"
+OC_REPOS="navehbrenner/qualety"
 ```
 
 Adding a repo is two edits and they must both happen: `OC_REPOS` here, and the
