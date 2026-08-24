@@ -376,18 +376,43 @@ node     MISSING
 gcc      MISSING
 ```
 
-`network: none` means a container can never fetch the missing ones. So the dependencies
-are built **on the host** by `deploy/install.sh` into `/opt/wpa-sandbox-venv`, and mounted
-read-only at the same absolute path:
+`network: none` means a container can never fetch the missing ones. So `deploy/install.sh`
+builds a dev venv **inside the agent's workspace**, at `.venv-sandbox`, and it appears in
+the container at `/workspace/.venv-sandbox`. No mount, no config key — the workspace is
+already mounted.
 
-```json5
-binds: ["/opt/wpa-sandbox-venv:/opt/wpa-sandbox-venv:ro"]
+Two things make that work, and one of them is not obvious:
+
+- **A venv survives being read at a different absolute path**, because `sys.prefix` is
+  computed from the runtime executable. It is built at
+  `/var/lib/openclaw/.openclaw/workspace-builder/.venv-sandbox` and read at
+  `/workspace/.venv-sandbox`. Invoke it as `bin/python -m pytest`: the console scripts in
+  `bin/` carry the build path in their shebangs and do **not** survive the move.
+- **It is writable by the agent, and that costs nothing.** The workspace is mounted `rw`,
+  so the agent can modify its own venv — but it has `exec`, so it could run anything it
+  wanted regardless. Read-only would have defended against nothing.
+
+### ⛔ `docker.binds` is the obvious way to do this, and it cannot be
+
+It was tried in NVB-42. `createSandboxContainer` passes
+`bindSourceRoots: [workspaceDir, agentWorkspaceDir]` — **hardcoded, with no config key
+that widens it** — and `validate-sandbox-security` rejects any bind whose source falls
+outside them:
+
+```
+Sandbox security: bind mount "/opt/wpa-sandbox-venv:/opt/wpa-sandbox-venv:ro"
+source "/opt/wpa-sandbox-venv" is outside allowed roots
+(/var/lib/openclaw/.openclaw/workspace-builder).
 ```
 
-Same path inside as outside, because a venv's interior paths are absolute. This is cheaper
-than rebuilding the image and it moves with a deploy. Two details worth keeping: `binds`
-takes `host:container:mode`, and — unlike `tools.alsoAllow`, which replaces — global and
-per-agent binds **merge**.
+**⚠️ And it is an outage, not a refusal.** The check runs at *container creation*, so one
+bad bind under `agents.defaults` fails every sandboxed turn for **every agent** — not just
+the one being configured. On 2026-08-24 that took the whole box down for about two minutes.
+The fix is live and needs no restart:
+
+```bash
+sudo -u openclaw HOME=/var/lib/openclaw openclaw config unset agents.defaults.sandbox.docker.binds
+```
 
 The invocation, which belongs in the agent's `TOOLS.md` because it will not guess the
 `PYTHONPATH`:
@@ -409,10 +434,21 @@ name in the global `tools.deny` is denied to everyone, full stop. Granting `buil
 would have meant deleting `exec` there and re-denying it on seven other agent entries:
 seven edits, silent when one is missed, and a miss hands a family DM agent a shell.
 
-Granting it globally is three additive edits with no per-agent exception to get wrong —
-`tools.deny` loses it, `tools.alsoAllow` gains it, and `tools.sandbox.tools.allow` gains it
-too, because that second allowlist applies only to sandboxed runs and would otherwise strip
-it after everything above passed.
+Granting it globally removes that hazard — `tools.deny` loses it, `tools.alsoAllow` gains
+it, and `tools.sandbox.tools.allow` gains it too, because that second allowlist applies only
+to sandboxed runs and would otherwise strip it after everything above passed.
+
+**But three global edits are not enough, and the way they fall short is backwards.** An
+agent-level `tools.alsoAllow` **replaces** the global list rather than merging — the same
+trap that cost `code-invariants` its `MEMORY.md`. So the global grant reached only the four
+family DM agents, which have no agent entry of their own, while `builder`, `owner` and
+`code-invariants` carry their own lists and got nothing. The agent the whole change was for
+was the one agent that did not get it, and the tool-policy log said
+`removed 25 tool(s) via tools.profile (minimal): … exec …` while `exec` sat in the global
+`alsoAllow`, the room ceiling and the sandbox allowlist.
+
+Every agent-level `alsoAllow` has to name `exec` as well. That is seven live edits in total,
+not three.
 
 The room ceilings are the separate question, and they only narrow: `exec` is in this room's
 and the project room's, and deliberately **not** in the family room's. Every DM session has
