@@ -50,10 +50,27 @@ bind whose source is outside them.
 
 The important part is the failure mode. The check runs at **container creation**, so one bad
 bind under `agents.defaults` fails every sandboxed turn for **every agent**, not just the one
-being configured — the family agents included. It took the box down for about two minutes
-before `openclaw config unset agents.defaults.sandbox.docker.binds` restored it, live and
-without a restart. If a bind ever looks like the answer again: it is not, and it is not a
-refusal you can ignore.
+being configured.
+
+**It was a nineteen-minute outage across three agents, and the first account of it in this
+changelog said two minutes and one probe.** The real numbers, from the journal: 18:53 to
+19:12 on 2026-08-24, twelve failures — six in the project room, three in the owner's own DM,
+four from the probes. Real traffic, and those turns failed *after* the gate handed them off,
+so they were never retried.
+
+**`openclaw config unset` reports "No gateway restart needed", and for the sandbox path that
+is false.** The unset corrected the file; the running gateway kept the bind in memory and
+went on failing. Only a restart cleared it.
+
+What made the wrong account worse than a wrong number is *why* it was believed. After the
+unset, `builder` was probed, it answered, and the fix was called done — but the check runs at
+container creation and **builder's container was already warm**, so that probe could not have
+failed whatever the config said. A verification that cannot fail is not a verification. The
+agents that kept breaking were the ones whose containers had to be created: `code-invariants`
+and `owner`.
+
+If a bind ever looks like the answer again: it is not, it is not a refusal you can ignore,
+and testing one warm agent afterwards proves nothing.
 
 #### Granting it to everyone was the safer change, which is not the obvious result
 

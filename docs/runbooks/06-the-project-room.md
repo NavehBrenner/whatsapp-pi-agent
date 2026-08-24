@@ -407,12 +407,23 @@ source "/opt/wpa-sandbox-venv" is outside allowed roots
 
 **⚠️ And it is an outage, not a refusal.** The check runs at *container creation*, so one
 bad bind under `agents.defaults` fails every sandboxed turn for **every agent** — not just
-the one being configured. On 2026-08-24 that took the whole box down for about two minutes.
-The fix is live and needs no restart:
+the one being configured. On 2026-08-24 it ran nineteen minutes and took twelve turns with
+it: six in the project room, three in the owner's DM, four probes. Those turns fail *after*
+the gate hands them off, so nothing retries them.
 
 ```bash
 sudo -u openclaw HOME=/var/lib/openclaw openclaw config unset agents.defaults.sandbox.docker.binds
+sudo systemctl restart wpa-openclaw    # ← NOT optional, despite what the unset says
 ```
+
+**`config unset` prints "No gateway restart needed" and it is wrong here.** The unset fixes
+the file; the running gateway keeps the bind in memory and goes on failing until restarted.
+
+**And do not verify with an agent that has already answered today.** The check runs at
+container creation, so an agent whose container is warm cannot fail — it will answer happily
+while the box is still broken for everyone else. That is exactly how the 2026-08-24 outage
+was declared over eight minutes into its nineteen. Verify with an agent that has been idle,
+or restart first and then probe several.
 
 The invocation, which belongs in the agent's `TOOLS.md` because it will not guess the
 `PYTHONPATH`:
