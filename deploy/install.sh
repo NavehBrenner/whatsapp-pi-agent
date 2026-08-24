@@ -83,6 +83,52 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# A SECOND venv, and this box will never run what is in it (NVB-42).
+#
+# It exists so the sandboxed agent can run this repo's tests. The sandbox image
+# carries `git` and `python3` and nothing else — no uv, no pytest, no node, no
+# compiler — and `network: none` means a container can never fetch them.
+#
+# WHY IT LIVES IN THE AGENT'S WORKSPACE AND NOT SOMEWHERE TIDIER. The obvious
+# answer is `agents.defaults.sandbox.docker.binds`, and it cannot be done:
+# `createSandboxContainer` passes `bindSourceRoots: [workspaceDir,
+# agentWorkspaceDir]`, hardcoded, and the security validator rejects any bind
+# whose source is outside them. Worse, that check runs at container creation, so
+# one bad global bind fails every sandboxed turn for EVERY agent until it is
+# removed. The workspace is already mounted, so putting the venv inside it needs
+# no config at all — it simply appears at /workspace/.venv-sandbox.
+#
+# It must be invoked as `bin/python -m pytest`. The venv is built here at one
+# absolute path and read at another inside the container; sys.prefix follows the
+# runtime executable, but the console scripts in `bin/` carry the build path in
+# their shebangs and do not survive the move.
+#
+# --group dev is the difference from the venv above: that one is the MCP server's
+# runtime and has no business carrying pytest.
+# ---------------------------------------------------------------------------
+echo
+echo "== sandbox test venv =="
+builder_ws=/var/lib/openclaw/.openclaw/workspace-builder
+sandbox_venv="$builder_ws/.venv-sandbox"
+if [ ! -d "$builder_ws" ]; then
+	echo "  skipped — no builder workspace yet (deploy the agent first: runbook 06)"
+elif ! command -v uv >/dev/null 2>&1; then
+	echo "  ! uv not installed — the agent loses its test loop, nothing else breaks"
+elif UV_PROJECT_ENVIRONMENT="$sandbox_venv" \
+	uv sync --project /opt/wpa --group dev --locked --python /usr/bin/python3 >/dev/null 2>&1; then
+	# The agent reads it as `openclaw`, and the container's uid 0 maps back to that
+	# same user under the rootless daemon (NVB-25).
+	chown -R openclaw:openclaw "$sandbox_venv"
+	echo "  $sandbox_venv  $("$sandbox_venv/bin/python" -V 2>&1)"
+	echo "    in-container: /workspace/.venv-sandbox/bin/python -m pytest"
+else
+	echo "  ! uv sync FAILED for the sandbox venv — the agent loses its test loop,"
+	echo "    nothing else breaks. Rerun by hand to see why:"
+	echo "      sudo env UV_PROJECT_ENVIRONMENT=$sandbox_venv \\"
+	echo "        uv sync --project /opt/wpa --group dev --locked --python /usr/bin/python3"
+fi
+
+# ---------------------------------------------------------------------------
 # The privileged helpers. install-reader.sh handles wpa-config-backup because the
 # path unit it feeds is useless without it; the rest live here.
 #
