@@ -632,17 +632,31 @@
           // readOnlyRoot needs somewhere writable that is not the workspace.
           tmpfs: ["/tmp"],
 
-          // NVB-42. The image carries `git` and `python3` and NOTHING else — no uv,
-          // no pytest, no node, no compiler — and `network: none` means it can never
-          // fetch them. So the test loop's dependencies are built on the HOST by
-          // deploy/install.sh and mounted read-only at the SAME absolute path, which
-          // is what keeps the venv's own interior paths valid inside the container.
-          // Cheaper than rebuilding the image, and it moves with a deploy.
+          // ⛔ NO `binds` HERE, AND NVB-42 TRIED. The obvious way to give a sandboxed
+          // agent a toolchain is to mount one; it cannot be done from outside the
+          // agent's own workspace, and the failure is worse than a refusal.
           //
-          // Format is `host:container:mode`. Note the asymmetry with tool policy:
-          // global and per-agent binds MERGE, where an agent-level `tools.alsoAllow`
-          // REPLACES. Same file, opposite rule.
-          binds: ["/opt/wpa-sandbox-venv:/opt/wpa-sandbox-venv:ro"],
+          // `createSandboxContainer` passes `bindSourceRoots: [workspaceDir,
+          // agentWorkspaceDir]` — HARDCODED, with no config key that widens it — and
+          // `validate-sandbox-security` rejects any bind whose source is outside
+          // them. Mounting /opt/wpa-sandbox-venv produced:
+          //
+          //   Sandbox security: bind mount "…" source "…" is outside allowed roots
+          //   (/var/lib/openclaw/.openclaw/workspace-builder).
+          //
+          // ⚠️ AND IT IS GLOBAL, SO IT TOOK EVERY AGENT DOWN. The check runs at
+          // CONTAINER CREATION, so one bad bind under `agents.defaults` fails every
+          // sandboxed turn for every agent until the key is removed — not just the
+          // agent you were configuring. `openclaw config unset` fixes it live, with
+          // no restart.
+          //
+          // What works instead needs no config at all: the workspace is ALREADY
+          // mounted, so the venv lives in it (`.venv-sandbox`, built by
+          // deploy/install.sh) and appears at /workspace/.venv-sandbox. A venv
+          // survives being reached at a different absolute path as long as it is
+          // invoked as `bin/python -m pytest` — sys.prefix is computed from the
+          // runtime executable path. The console scripts in `bin/`, whose shebangs
+          // carry the build path, do NOT survive it.
         },
       },
     },
@@ -767,6 +781,7 @@
       //     alsoAllow: [
       //       "read", "write", "edit", "apply_patch", "web_search",  // global set, repeated
       //       "wpa__sync",   // NVB-35 — read the resolved name off `mcp probe wpa`
+      //       "exec",        // NVB-42 — AND IT HAD TO BE ADDED HERE, not just globally
       //     ],
       //   },
       // },
@@ -1030,10 +1045,17 @@
       // and never needed one for these.
       "image_generate", "video_generate",
       // NVB-42. The agent that writes code can now run it, inside the container,
-      // where `git`, `python3` and the mounted dev venv are. Measured there: 103
-      // tests in 3.7s, a warm typecheck in 0.4s — fast enough to be a real
-      // edit→test→fix loop rather than a gesture. Nothing outside the container
-      // becomes reachable: it has no network and holds no credential.
+      // where `git`, `python3` and its workspace venv are. Measured there: 103 tests
+      // in 3.7s, a warm typecheck in 0.4s — fast enough to be a real edit→test→fix
+      // loop rather than a gesture. Nothing outside the container becomes reachable:
+      // it has no network and holds no credential.
+      //
+      // ⚠️ THIS LINE ALONE GRANTS IT TO ALMOST NOBODY, and the way it fails is
+      // backwards. An agent-level `alsoAllow` REPLACES this list, so on the live box
+      // this reached only the four family DM agents — the ones with no agent entry of
+      // their own — while `builder`, `owner` and `code-invariants`, which carry their
+      // own lists, got nothing. The agent that needed the shell was the one that did
+      // not get it. Every agent-level list has to name `exec` too.
       "exec",
     ],
 
