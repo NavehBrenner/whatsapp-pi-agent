@@ -11,6 +11,58 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added — `wpa__push`, and the `wpa` server stops being credential-free (2026-08-25)
+
+NVB-36, phase 3 of NVB-33. `builder` could write code (NVB-34), sync its checkout
+(NVB-35) and, since NVB-42, run it — but the branch it committed could not leave the Pi.
+Its checkout has an https remote and no credential, and the sandbox has `--network none`,
+so `git push` from inside is correctly impossible. `wpa__push(branch)` pushes a ref that
+already exists on disk; the agent then calls `create_pull_request` itself with its own
+title and body. Nothing is applied — `main` is protected, so the merge stays a human
+decision with a diff in front of it.
+
+**The unflattering half: `src/wpa_mcp/__main__.py` and runbook 06 §2a both said in bold
+that this server holds no credential, and that is now false.** It holds a GitHub push
+token in `WPA_PUSH_TOKEN`. There was nowhere else to put it — ADR 0013 puts a tool
+credential in its own MCP server entry's `env`, one entry per principal, and `builder` is
+the only agent naming `wpa__*`, so one entry is one principal and the rule holds. Both
+claims were rewritten rather than quietly dropped, because the old sentence is the kind of
+thing a future reader would cite.
+
+**Push output never reaches the model.** `sync.py` puts git's stderr in its exception
+message on purpose; `push.py` deliberately does the opposite. Every failure is one of a
+fixed set of strings written in that module, and git's real stderr goes to this process's
+stderr — the journal. Git prints the remote URL into its own error text and a credential
+helper can be made to print into it, so the transcript is the one place it must not go.
+
+**Fast-forward-only needed no code.** `git push` without `--force` already rejects a
+non-fast-forward for a branch ref, so the guarantee is that no option is ever added rather
+than that the right one is passed. There is no force path and no `--force-with-lease`
+path.
+
+**The branch name is validated by `git check-ref-format`, not by a regex here.** It is
+untrusted input — it comes from the model — and git's own rule set is what correctly
+rejects `..`, a `.lock` suffix, `~^:?*[`, control characters, `@{` and a trailing `/`. A
+regex would have been a worse copy of something git already does. Every invocation
+prefixes `refs/heads/`, including that validation call and both halves of the refspec, so
+a name beginning with `-` can never be read as an option.
+
+**The credential reaches git through an inline credential helper, not `GIT_ASKPASS`** —
+`-c credential.helper=` to reset the multi-valued key, then a `!f(){ … }` helper that
+echoes `$WPA_PUSH_TOKEN` out of the environment. Same properties the issue asked
+`GIT_ASKPASS` for — never in argv (readable by `ps`), never in `.git/config` (which
+outlives the process and lands in backups), never in the URL — for no new deploy file. The
+empty helper first is load-bearing: without it a system-level helper on the box would be
+consulted first and could answer with the wrong credential or block on a keyring prompt.
+
+A refusal is a `PushResult` with `pushed=False`, not an exception: "origin has commits
+this branch does not" is an answer the agent can act on by rebasing, and raising would
+have made it look like a fault. `PushError` is reserved for things that are.
+
+A box with no `WPA_PUSH_TOKEN` is a supported state — `push` fails at call time saying so,
+rather than failing at import and turning a missing optional credential into the
+gateway's `Connection closed`.
+
 ### Changed — the `code-invariants` agent is now `qualety` (2026-08-24)
 
 NVB-43. The GitHub repo was renamed to `qualety` on 2026-08-22 — that spelling — and the
