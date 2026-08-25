@@ -11,6 +11,41 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Finding — `main` is not as protected as this repo has been claiming (2026-08-25)
+
+Found by running NVB-36's own acceptance criterion, *"a direct push to `main` with this
+token is refused by branch protection — verified, not assumed"*. It was not refused. The
+`PATCH /git/refs/heads/main` returned **200**, `main` moved to the end-to-end test commit,
+and GitHub marked the open PR `merged` because its head had become `main`. An unreviewed
+merge, performed by moving a ref.
+
+**Nothing was bypassed — every configured rule was satisfied.** That is the uncomfortable
+part:
+
+| Rule on `main` | State at the moment of the push |
+|---|---|
+| `required_status_checks: ["check"]` | green on that exact sha, 64s earlier |
+| `required_approving_review_count` | **0** |
+| `required_linear_history` | held — a fast-forward |
+| `allow_force_pushes` | `false`, and irrelevant; this was not one |
+| `enforce_admins` | `true` |
+
+So [`AGENTS.md`](AGENTS.md)'s *"PR required; direct pushes are rejected"* does not describe
+what is configured. With **zero required approvals** the effective gate on `main` is "CI is
+green on this sha", which any credential holding `Contents: write` can satisfy and then
+move the ref. The fix is `required_approving_review_count: 1`; it is deliberately left to a
+human, since it changes how every future PR merges.
+
+**`builder` cannot reach this path today**, and the distinction matters: `wpa__push`
+refuses `main` before any network contact, `ghpr__create_pull_request` cannot merge, and
+the agent's sandbox is `--network none` so it cannot use the token directly. What is
+weakened is NVB-36's claim that *"the PAT is the floor if tool policy is ever
+misconfigured"* — the floor is higher than that sentence implies, because `Contents: write`
+on this repo is, in practice, `merge to main` on this repo.
+
+Recorded here rather than quietly fixed, because a plan that had *assumed* this rule would
+have been wrong in a way nothing else would have caught.
+
 ### Added — `wpa__push`, and the `wpa` server stops being credential-free (2026-08-25)
 
 NVB-36, phase 3 of NVB-33. `builder` could write code (NVB-34), sync its checkout
