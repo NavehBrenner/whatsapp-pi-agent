@@ -1,11 +1,19 @@
-"""The `wpa` MCP server — stdio, spawned by the gateway, one tool.
+"""The `wpa` MCP server — stdio, spawned by the gateway, two tools.
 
 Stdio deliberately: no loopback port, so nothing to firewall. That is runbook 06's
 rule and NVB-27's lesson, applied before it can bite.
 
-WHAT THIS PROCESS HOLDS: nothing. No credential, no token, no network reach beyond
-`git fetch` against a public repo. Phase 2 ships the least dangerous tool on purpose,
-so the server is proven before Phase 4 hangs an approval-gated deploy off it.
+⚠️ WHAT THIS PROCESS HOLDS, AND THIS CHANGED IN NVB-36: a GitHub push token, in
+`WPA_PUSH_TOKEN`. Through phase 2 this server held nothing at all — `wpa__sync` fetches
+a public repo — and that claim was printed in bold here and in runbook 06 §2a. It is no
+longer true. `wpa__push` needs a credential and there is nowhere else for it to live:
+ADR 0013 puts a tool credential in its own MCP server entry's `env`, one entry per
+principal, and `builder` is the only agent that names `wpa__*`.
+
+Two consequences worth carrying: this process is now worth compromising, so `push.py`
+scrubs git's output rather than passing it to the model; and a rotated token needs a
+**gateway restart**, not `openclaw mcp reload`, because the child is spawned per turn
+from in-memory config.
 
 ⚠️ THE CLASS IS `MCPServer`, NOT `FastMCP`. `mcp.server.fastmcp` was removed in the
 SDK's 2.0.0; every tutorial and most model memory still says FastMCP, and the failure
@@ -35,6 +43,8 @@ from mcp.types import ToolAnnotations
 # Imported under another name so the decorated function below can be called `sync`:
 # the SDK derives the input schema's title from the function name, and
 # `sync_toolArguments` is a Python detail the model has no use for.
+from wpa_mcp.push import PushError, PushResult
+from wpa_mcp.push import push as run_push
 from wpa_mcp.sync import SyncError, SyncResult
 from wpa_mcp.sync import sync as run_sync
 
@@ -42,6 +52,12 @@ from wpa_mcp.sync import sync as run_sync
 # in openclaw.json rather than from an argument. ADR 0009's shape: the host fixes the
 # target, the agent supplies nothing, so there is nothing to smuggle through.
 REPO = Path(os.environ.get("WPA_REPO", "/var/lib/openclaw/.openclaw/workspace-builder/repo"))
+
+# Read once at spawn, and absent is a supported state: a box with no push credential
+# still serves `wpa__sync`. `push` then fails at call time with a message that says so,
+# rather than taking the whole server down at import and turning a missing optional
+# credential into "Connection closed".
+PUSH_TOKEN = os.environ.get("WPA_PUSH_TOKEN") or None
 
 server: MCPServer[None] = MCPServer(
     name="wpa",
@@ -78,6 +94,34 @@ def sync() -> SyncResult:
         return run_sync(REPO)
     except SyncError as exc:
         print(f"wpa__sync: {exc}", file=sys.stderr, flush=True)
+        raise
+
+
+@server.tool(
+    name="push",
+    description=(
+        "Push a branch you have already committed in this workspace to origin, so you "
+        "can open a pull request for it. Fast-forward only and never forced: if origin "
+        "has commits your branch does not, it says so and changes nothing — rebase and "
+        "call it again. Refuses to push 'main'. Commit your work with git first; this "
+        "pushes an existing branch and creates nothing. Returns the branch, its sha, "
+        "the base to open the pull request against, and the repository — pass those to "
+        "create_pull_request."
+    ),
+    # Not read-only: it publishes. Not destructive: refusing to force is the guarantee.
+    # Idempotent because pushing a ref that is already there is a no-op at the remote.
+    annotations=ToolAnnotations(
+        read_only_hint=False, destructive_hint=False, idempotent_hint=True
+    ),
+)
+def push(branch: str) -> PushResult:
+    """`branch` is the only parameter, and the only untrusted input this server takes."""
+    try:
+        return run_push(REPO, branch, PUSH_TOKEN)
+    except PushError as exc:
+        # Already scrubbed — `push.py` builds these strings itself and logs git's own
+        # output separately. Logged here too so the journal shows which tool failed.
+        print(f"wpa__push: {exc}", file=sys.stderr, flush=True)
         raise
 
 

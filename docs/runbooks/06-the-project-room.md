@@ -208,14 +208,27 @@ Restart `wpa-openclaw` after any credential change.
 ## 2a. The `wpa` MCP server — the one we write
 
 `/opt/wpa/.venv/bin/python -m wpa_mcp`, stdio, spawned by the gateway. NVB-35, phase 2
-of NVB-33. Source in `src/wpa_mcp/`; the git logic is in `sync.py` and the protocol
-binding in `__main__.py`, split so the tests never import the SDK.
+of NVB-33. Source in `src/wpa_mcp/`; the git logic is in `sync.py` and `push.py`, the
+protocol binding in `__main__.py`, split so the tests never import the SDK.
 
-**It holds no credential.** `wpa__sync` fetches a public repo over https, so the server
-entry's `env` carries no secret — which is why this tool went first. The server is
-proven before phase 4 hangs an approval-gated deploy off it.
+**It held no credential until NVB-36, and now it holds a GitHub push token.** Through
+phase 2 that was the point — `wpa__sync` fetches a public repo, so the entry's `env`
+carried no secret and the server could be proven before anything dangerous hung off it.
+`wpa__push` ends that: it needs `Contents: write`, and ADR 0013 says a tool credential
+lives in its own server entry's `env`, one entry per principal. `builder` is the only
+agent naming `wpa__*`, so one entry is one principal and the rule holds — but **do not
+read this section's old claim anywhere else and assume it still stands.** Two things
+follow:
 
-Three things about it are load-bearing and easy to get wrong.
+- **This process is now worth compromising.** `push.py` therefore never passes git's
+  output back to the model: every failure is one of a fixed set of strings written in
+  that module, and git's real stderr goes to the journal. Git prints the remote URL into
+  its own error text and a credential helper can be made to print into it.
+- **A rotated token needs `systemctl restart wpa-openclaw`,** not `openclaw mcp reload`.
+  Same rule as the GitHub PAT in §2, same symptom: 401s from a child holding the old
+  value while the file and the config both hold the new one.
+
+Four things about it are load-bearing and easy to get wrong.
 
 ### The class is `MCPServer`, not `FastMCP`
 
@@ -274,6 +287,45 @@ docstring in `sync.py` before "fixing" it.
 **This checkout must never join `wpa-project-sync.timer`.** That timer would undo the
 entire property within the minute.
 
+### `wpa__push` pushes a branch; the agent opens the PR itself
+
+Two steps, and the split is the design. NVB-36, phase 3.
+
+```
+agent (in its container):  git checkout -b …, edit, commit, run the tests
+agent:                     wpa__push("branch")        → {branch, sha, base, repo}
+agent:                     ghpr__create_pull_request(…)  its own title and body
+```
+
+`wpa__push` **pushes an existing ref and does nothing else.** It does not name branches,
+does not commit, does not switch back to `main`. That version was designed when `builder`
+could not run git; NVB-42 gave every agent `exec` and removed the reason for it. The
+workspace is bind-mounted, so the host and the container share one `.git` — the agent
+commits inside, and the tool pushes the ref it is handed.
+
+| Asked to push | What happens |
+|---|---|
+| a branch that exists | `git push origin refs/heads/X:refs/heads/X`, no `--force` |
+| **`main`** | **refused before any network contact** |
+| a name git would reject | refused — `git check-ref-format` decides, not a regex here |
+| a branch with no local ref | refused; commit it first |
+| **a non-fast-forward** | **refused and reported** — rebase and call again |
+
+There is no force path and no `--force-with-lease` path. Fast-forward-only needs no flag:
+it is what `git push` already does to a branch ref, so the guarantee is that no option is
+ever added rather than that the right one is passed.
+
+**Why not GitHub MCP.** All 85 tools were enumerated on 2026-08-24 and there is no
+`publish_branch`. The absence is structural: REST can build a commit out of bytes you
+upload (`push_files`) or point a ref at a commit GitHub already has (`create_branch`),
+but nothing accepts a packfile of local objects, because `git push` speaks
+`git-receive-pack`. `push_files` would also round-trip every edited file through the
+model, so the workspace and the PR could silently disagree.
+
+**Two allowlist edits per tool, and one alone fails silently** — see the table below;
+`wpa__push` and `ghpr__create_pull_request` each need the room ceiling *and*
+`agents.list[builder].tools.alsoAllow`.
+
 ### `toolFilter` is not optional here — the server offers five tools, not one
 
 The Python SDK advertises `prompts` and `resources` capabilities whether or not any are
@@ -281,17 +333,20 @@ registered, and OpenClaw synthesises a meta-tool for each. Without a filter the 
 returns:
 
 ```
-"tools": ["wpa__prompts_get", "wpa__prompts_list",
+"tools": ["wpa__prompts_get", "wpa__prompts_list", "wpa__push",
           "wpa__resources_list", "wpa__resources_read", "wpa__sync"]
 ```
 
-while `"tools": 1` and `diagnostics: []` sit right above it, because the **count** is of
+while `"tools": 2` and `diagnostics: []` sit right above it, because the **count** is of
 real tools and the four extras are synthesised over them. So on this server the count
 does not describe the surface — **read the `tools` array**. That is a sharper version of
 §2's "a grant is verified by tool count", cutting the other way.
 
-`toolFilter: { include: ["sync"] }` on the server entry removes them. The allowlists
-would have contained them anyway, but ADR 0010 asks for absent rather than refused.
+`toolFilter: { include: ["sync", "push"] }` on the server entry removes them. The
+allowlists would have contained them anyway, but ADR 0010 asks for absent rather than
+refused. **The filter names the tool as the server registers it (`push`), not as the
+agent sees it (`wpa__push`)** — the prefix is added afterwards, and putting the prefixed
+name here filters everything out.
 
 ### Verifying it — and why asking the agent is not enough
 
@@ -300,7 +355,7 @@ works here too. Then:
 
 ```bash
 sudo -u openclaw HOME=/var/lib/openclaw openclaw mcp probe wpa --json
-# expect: "tools": ["wpa__sync"], diagnostics: []
+# expect: "tools": ["wpa__push", "wpa__sync"], diagnostics: []
 ```
 
 **Adding a tool is two config edits and one alone fails silently** — worse than
