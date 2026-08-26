@@ -59,6 +59,13 @@ Two fixes, because the second does not make the first unnecessary:
   *default* agent is unreadable the table stops there, because no row below it means
   anything.
 
+**The alert text had to follow.** `triage.sh`'s unreadable branch told the owner that
+*"the VIOLATION line above it is a CONSEQUENCE"* — written against output that no longer
+exists, since there is no VIOLATION line for an unreadable store any more. It now says
+those agents were **not checked**, and its NVB-49 note points at the idle-agent path
+instead of at an open bug. A stale explanation in an alert costs more than no explanation,
+because it is read as current.
+
 Verified on the box, on the unattended 19:40 timer tick rather than a hand-run: with
 `qualety`'s directory holding `openclaw-agent.sqlite` and no sidecar — the exact state
 that had failed every hour for a day — the run printed `qualety  1  ok` and finished

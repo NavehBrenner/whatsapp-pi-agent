@@ -180,15 +180,14 @@ wpa-agent-auth)
 		# This is the branch that actually fires on this box, so it gets the agent
 		# name too — it was the only one of the three without it, which made the
 		# most common alert the least useful one.
-		cause="The check could not READ some auth stores — this is not a clean bill of health, it is no reading at all. The VIOLATION line above it is a CONSEQUENCE: an unreadable store looks like an agent holding nothing."
+		cause="The check could not READ some auth stores — this is not a clean bill of health, it is no reading at all. Those agents were not checked; the verdict table says 'unreadable', which is neither ok nor a violation."
 		fix="$who_txt
 
-Usually the gateway is stopped: SQLite will not open a WAL database read-only once the -shm sidecar is gone.
+Usually the gateway is stopped: a read-only open of a WAL database still has to create its -shm sidecar, and that file is on disk only while some connection holds the database open.
   systemctl is-active wpa-openclaw.service
 If it is running, the check was not run as root — the stores are 0700, uid 991.
 
-If a manual run passes and only the TIMER fails, this is NVB-49 and not a real credential problem:
-  sudo /opt/wpa/deploy/check-agent-auth.sh"
+An agent the gateway is merely idle on has no sidecar either, and is read through immutable=1 instead — skipped while a non-empty -wal says a write is in flight, which clears itself on the next run (NVB-49)."
 	elif has 'A TOOL credential is in the auth profile store'; then
 		cause="A TOOL credential is sitting in the auth profile store. ADR 0013 says it must not be — anything with a profile id gets mirrored into \`main\` on its next refresh and inherited by every agent that lacks it."
 		fix="$who_txt

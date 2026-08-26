@@ -132,7 +132,7 @@ run wpa-agent-auth 'Could not read the auth store of: liron
 This is not a clean bill of health'
 ok "an unreadable store points at the gateway, not at isolation" "systemctl is-active wpa-openclaw.service"
 ok "an unreadable store names the agent too — the branch that actually fires here" "Affected: liron"
-ok "and says the VIOLATION line is a consequence, not a second finding" "CONSEQUENCE"
+ok "and says those agents were not checked, rather than cleared" "not checked"
 absent "and is not misreported as a violation" "login --provider"
 absent "and the header does not assert a leak the body denies" "Credential isolation is not holding"
 
