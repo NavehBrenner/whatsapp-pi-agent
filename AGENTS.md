@@ -59,6 +59,21 @@ verification is a step in it.
 Exceptions are fine when they are stated: a typo, a one-line fix, or an explicit
 "just do it". Silence is not an exception.
 
+## Move the Linear issue to In Progress before you touch anything
+
+**The first write of any task is the issue's status, not a file.** If work starts
+against an issue, move it to `In Progress` before the first edit — not at the PR,
+not when it is done.
+
+The status is what tells anyone else the issue is taken. An issue sitting in
+`Backlog` while a branch, a deploy and a PR exist for it is an invitation for
+someone to start the same work, and on this repo "someone" includes an agent that
+will happily redo it. Marking it late is the same failure as not marking it.
+
+Branch off the `gitBranchName` Linear gives the issue, and put its identifier in
+the commit subject and the PR title, so the issue, the branch and the PR are one
+thread. The PR link attaches itself to the issue once the identifier is there.
+
 ## Branch and PR flow
 
 `main` is protected. It applies to admins, so there is no bypass:
