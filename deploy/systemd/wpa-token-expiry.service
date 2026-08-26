@@ -1,0 +1,30 @@
+[Unit]
+Description=Warn in Signal before a GitHub PAT expires, while there is still time
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/runbooks/05-opencode-ci-token.md
+OnFailure=wpa-token-expiry-failed.service
+# The check itself needs the network. Ordering only, not Requires=: if the uplink is
+# down the script exits quietly by design rather than being skipped by systemd.
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Root for two reasons, and neither is convenience: /etc/wpa-push.token is 0600
+# root, and the outbox this ends up writing to is 0700 wpa-gate. Same shape as the
+# other notifiers.
+ExecStart=/usr/local/bin/wpa-token-expiry
+
+# Where the "already announced this threshold" marker lives. Without it the 14-day
+# warning is a 14-day daily nag, which is how a real alert gets muted.
+StateDirectory=wpa-token-expiry
+StateDirectoryMode=0700
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+# Read-only everywhere except the state directory systemd grants above. The script
+# reads two tokens and writes one marker file; if it ever tries to do more, this
+# makes it fail loudly instead of quietly succeeding.
+ProtectSystem=strict
+ReadOnlyPaths=/etc/wpa-push.token /var/lib/openclaw

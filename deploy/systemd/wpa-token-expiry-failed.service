@@ -1,0 +1,13 @@
+[Unit]
+Description=Tell the owner in Signal that the token expiry check itself failed
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/runbooks/05-opencode-ci-token.md
+
+[Service]
+Type=oneshot
+# Root, because the outbox is 0700 wpa-gate.
+#
+# A watchdog that dies quietly is worse than no watchdog: the PATs would then be
+# unwatched AND appear watched. Note that an unreachable GitHub is NOT a failure —
+# the script exits 0 on that path deliberately — so reaching here means something
+# structural, not a network blip.
+ExecStart=/usr/local/bin/wpa-triage wpa-token-expiry owner

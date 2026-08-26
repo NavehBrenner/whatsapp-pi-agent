@@ -7,4 +7,7 @@ Type=oneshot
 # Root, because the outbox is 0700 wpa-gate. To the OWNER's chat: a stale mirror is
 # exactly the failure the agent cannot notice on its own — the checkout still reads
 # fine, it is merely old, so nothing in the room looks wrong.
-ExecStart=/usr/local/bin/wpa-outbox-notify owner "⚠️ wpa-project-sync failed on the Pi — the qualety mirror is frozen. The agent will keep reading it and will not know it is stale. Check: journalctl -u wpa-project-sync -n 50"
+# The text is no longer inline here: wpa-triage reads this unit's journal and
+# composes a message naming the cause and the command that fixes it, falling
+# back to what this line used to say when nothing matches (NVB-41).
+ExecStart=/usr/local/bin/wpa-triage wpa-project-sync owner

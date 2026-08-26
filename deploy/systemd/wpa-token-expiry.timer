@@ -1,0 +1,20 @@
+[Unit]
+Description=Check daily how long the GitHub PATs have left
+Documentation=https://github.com/NavehBrenner/whatsapp-pi-agent/blob/main/docs/runbooks/05-opencode-ci-token.md
+
+[Timer]
+# Daily is the right granularity for a thing measured in days, and it is also the
+# rate limit: the thresholds are 14/7/1 and each is announced once, so the worst
+# case over a token's whole life is three messages.
+OnCalendar=daily
+# Honoured here, unlike the note in wpa-agent-auth.timer — systemd applies
+# Persistent= to OnCalendar= timers, so a Pi that was off at 00:00 still runs the
+# check when it comes back rather than silently skipping a day.
+Persistent=true
+# A whole hour of jitter. Nothing here is time-critical and it keeps the daily
+# wake from landing on the same second as every other cron-shaped thing on the box.
+RandomizedDelaySec=1h
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

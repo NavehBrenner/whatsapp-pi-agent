@@ -7,4 +7,7 @@ Type=oneshot
 # Root, because the outbox is 0700 wpa-gate. The script writes one entry and
 # hands ownership over; the gate unlinks before sending, so an entry still
 # sitting in that directory means the gate never picked it up.
-ExecStart=/usr/local/bin/wpa-outbox-notify owner "⚠️ opencode token refresh failed on the Pi. /oc runs on GitHub will start returning 401 once the published token expires (~6h). Check: journalctl -u wpa-oc-auth -n 50"
+# The text is no longer inline here: wpa-triage reads this unit's journal and
+# composes a message naming the cause and the command that fixes it, falling
+# back to what this line used to say when nothing matches (NVB-41).
+ExecStart=/usr/local/bin/wpa-triage wpa-oc-auth owner
