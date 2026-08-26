@@ -11,6 +11,29 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — a flaky test that only failed on the slower machine (2026-08-26)
+
+`token-expiry.test.sh` failed during a deploy on the Pi and passed on every direct
+run, there and locally. It is a race in the **test**, not the script.
+
+The helper wrote a header at exactly `now + N days`; `token-expiry.sh` then computes
+`days = (expiry - now) / 86400`. If even one second elapses between writing the header
+and reading it, `10d - 1s` truncates to **9** and the assertion expecting `10` fails. A
+fast box wins that race, a Pi mid-`install.sh` does not:
+
+```
+same second      : 10 days
+one second later : 9 days
+```
+
+The header now lands mid-day (`+N days 12 hours`), which makes the truncation stable
+whoever runs it. 20 consecutive runs, no failures.
+
+**The truncation itself was deliberately left alone.** Understating the time remaining is
+the safe direction for an expiry warning; rounding up would tell you a token has longer
+than it does.
+
+
 ### Fixed — the triage read journalctl's decorated output, so it never named the agent (2026-08-26)
 
 Found within minutes of deploying NVB-41, against a real violation on the box, and
