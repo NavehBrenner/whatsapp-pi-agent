@@ -59,8 +59,11 @@ Two fixes, because the second does not make the first unnecessary:
   *default* agent is unreadable the table stops there, because no row below it means
   anything.
 
-Verified on the box: `qualety  1  ok`, exit 0, no `OnFailure`. Both new assertions fail
-against the previous script and pass against this one.
+Verified on the box, on the unattended 19:40 timer tick rather than a hand-run: with
+`qualety`'s directory holding `openclaw-agent.sqlite` and no sidecar — the exact state
+that had failed every hour for a day — the run printed `qualety  1  ok` and finished
+`success`, no `OnFailure`. Both new assertions fail against the previous script and pass
+against this one.
 
 ### Fixed — the alert that actually fires was the one that could not name its agent (2026-08-26)
 
