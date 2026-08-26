@@ -63,8 +63,17 @@ has() { # has <description> <needle>
 	else printf '  FAIL %s — expected: %s\n' "$1" "$2"; fails=$((fails + 1)); fi
 }
 
+# The +12h is what makes this deterministic, and it is not padding. token-expiry.sh
+# truncates: days = (expiry - now) / 86400. A header written at exactly now+10d is
+# already now+10d-1s by the time the script reads it, so it truncates to 9 — on a
+# fast box the two `date` calls land in the same second and it truncates to 10.
+# That is a race, and it failed on the Pi during a deploy while passing locally.
+# Landing the expiry mid-day makes the truncation stable whoever runs it.
+#
+# The truncation itself is correct and deliberately not "fixed": understating the
+# time remaining is the safe direction for a warning.
 hdr() { printf 'HTTP/2 200\ngithub-authentication-token-expiration: %s\n' \
-	"$(date -u -d "+$1 days" '+%Y-%m-%d %H:%M:%S UTC')"; }
+	"$(date -u -d "+$1 days 12 hours" '+%Y-%m-%d %H:%M:%S UTC')"; }
 
 echo "token-expiry:"
 
