@@ -24,5 +24,11 @@ ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 # Read-only everywhere. The script opens every database with mode=ro and writes
 # nothing; if that ever stops being true, this makes it fail loudly.
+#
+# This is what made an idle agent unreadable and paged hourly for a day (NVB-49): a
+# read-only open of a WAL database still creates its -shm sidecar, and a read-only
+# MOUNT forbids that. Do not loosen it to fix that — root writing sidecars into a
+# store owned by uid 991 is the monitor breaking the thing it monitors. The read
+# falls back to immutable=1 instead, which needs no sidecar and no write.
 ProtectSystem=strict
 ReadOnlyPaths=/var/lib/openclaw

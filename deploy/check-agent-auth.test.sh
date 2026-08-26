@@ -76,7 +76,41 @@ else
 	echo "FAIL unreadable store should exit 2 and name bob (got $rc_run)"; rc=1
 fi
 
-# 5. Model providers other than the default one are not strays.
+# 4b. …and the VERDICT TABLE must say so too. It used to print VIOLATION for an agent
+#     it could not read — main's ids all look un-held when there are no ids to compare
+#     — which paged the owner hourly about a credential leak that was a read failure
+#     (NVB-49). The prose below the table was right; the table was not.
+case "$(printf '%s\n' "$out" | grep '^bob')" in
+	*VIOLATION*) echo "FAIL table printed VIOLATION for a store it could not read"; rc=1 ;;
+	*unreadable*) echo "ok   unreadable store reads 'unreadable' in the table, not VIOLATION" ;;
+	*) echo "FAIL table did not mark bob unreadable"; rc=1 ;;
+esac
+
+# 5. The NVB-49 shape end to end: an idle agent under the unit's own protections. Its
+#    database is in WAL mode with no -shm sidecar, because the sidecar exists only
+#    while some connection holds the database open and nothing is talking to it — and
+#    a read-only open still has to CREATE that sidecar.
+#
+#    It takes a read-only MOUNT to reproduce, which is why the first investigation
+#    missed it: an unwritable directory is not enough, SQLite opens a checkpointed WAL
+#    database fine through EACCES and only fails on EROFS. Hence `systemd-run`, the
+#    same ProtectSystem=strict the unit runs under, and hence sudo.
+rm -f "$fx/agents"/*/agent/openclaw-agent.sqlite
+seed main '"xai:a@b.com":{}'
+seed bob '"xai:a@b.com":{}'
+sqlite3 "$fx/agents/bob/agent/openclaw-agent.sqlite" "pragma journal_mode=wal;" >/dev/null
+rm -f "$fx/agents/bob/agent/"*-shm "$fx/agents/bob/agent/"*-wal
+if sudo -n true 2>/dev/null; then
+	sudo systemd-run --quiet --pipe --property=ProtectSystem=strict \
+		--setenv=OPENCLAW_CONFIG="$fx/openclaw.json" --setenv=OPENCLAW_AGENTS_DIR="$fx/agents" \
+		bash "$(cd "$(dirname "$script")" && pwd)/$(basename "$script")" >/dev/null 2>&1 \
+		&& echo "ok   an idle agent's WAL store is read under a read-only mount" \
+		|| { echo "FAIL idle WAL store under ProtectSystem=strict should still be read"; rc=1; }
+else
+	echo "SKIP read-only-mount case needs sudo (chmod does not reproduce it)"
+fi
+
+# 6. Model providers other than the default one are not strays.
 rm -f "$fx/agents"/*/agent/openclaw-agent.sqlite
 seed main '"anthropic:a@b.com":{}'
 seed bob '"anthropic:a@b.com":{}'

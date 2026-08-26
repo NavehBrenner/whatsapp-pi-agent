@@ -146,8 +146,21 @@ A violation sends the owner a Signal message through the outbox, the same path a
 asserts both directions:
 
 ```bash
-bash deploy/check-agent-auth.test.sh     # needs sqlite3, so run it on the Pi
+bash deploy/check-agent-auth.test.sh     # needs sqlite3 and sudo, so run it on the Pi
 ```
+
+**`unreadable` in the verdict column is not a violation and not a pass** — it means that
+agent was not checked, and the run exits 2 rather than 1. Read it as "the monitor is
+blind here", never as a credential leak. It used to print `VIOLATION` for exactly this,
+and paged the owner hourly for a day about a leak that was a read failure (NVB-49).
+
+The cause it usually names is the gateway being stopped: a read-only open of a WAL
+database still has to create its `-shm` sidecar, and the sidecar exists on disk only
+while some connection holds the database open. `systemctl is-active wpa-openclaw.service`
+is the first check. An **idle** agent — one the running gateway is not talking to — has no
+sidecar either, and is read through `immutable=1` instead, which needs no sidecar; that
+path is skipped when a non-empty `-wal` says a write is in flight, and resolves itself on
+the next run.
 
 **Adding an agent is the operation that breaks rule 2**, so re-run the check after any
 `openclaw models auth --agent <id> login` rather than waiting for the timer.

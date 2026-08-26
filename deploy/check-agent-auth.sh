@@ -81,26 +81,69 @@ print("\n".join(a["id"] for a in c.get("agents", {}).get("list", [])))
 # printed OK and exited 0 having read nothing at all. A monitor that cannot see is
 # not a monitor that is happy.
 #
-# This was found while chasing a failure mode that turned out not to exist. The
-# theory was that a WAL database cannot be opened read-only once its -shm sidecar
-# is gone, so the OnBootSec run would race the gateway. Tested against copies with
-# -shm and -wal removed AND the directory chmod a-w: SQLite reads them fine. The
-# restriction only applies to a non-empty WAL needing replay; a cleanly checkpointed
-# database opens read-only without shared memory. The guard stays anyway, because
-# "reads nothing, reports OK" is wrong for any cause — permissions, corruption, a
-# bad disk — and those do not need a theory to happen.
+# That guard is right for any cause — permissions, corruption, a bad disk — and it
+# caught a real one within a day (NVB-49): the unit paged hourly for `qualety`, the
+# one agent nothing talks to.
+#
+# **A read-only open of a WAL database still has to CREATE the -shm sidecar**, and
+# the unit runs under ProtectSystem=strict, so it cannot. Reproduced from scratch on
+# the box, on a database made for the purpose:
+#
+#   sqlite3 "file:$db?mode=ro"                       # writable fs: ok, creates -shm
+#   systemd-run -p ProtectSystem=strict sqlite3 …    # unable to open database file (14)
+#
+# The earlier note here said the opposite, and its test is worth knowing about: it
+# used `chmod a-w` on the directory, and **that does not reproduce it**. SQLite opens
+# a checkpointed WAL database through EACCES without shared memory and only fails on
+# EROFS. An unwritable directory is not a read-only filesystem, and the difference is
+# the whole bug.
+#
+# Only idle agents are hit: the gateway holds an open handle for every agent it is
+# talking to, so their -shm is already on disk and the read-only open maps it. Let
+# the last connection close and the sidecar is deleted with it. Hence one agent
+# failing hourly while a manual run — no read-only mount — always succeeds.
+#
+# `immutable=1` is the read that needs no sidecar. It is only sound when nothing is
+# writing, and it silently ignores the WAL, so it is the fallback rather than the
+# first try, and only when there is no WAL content to ignore.
 UNREADABLE='!unreadable'
 ids() {
 	local db="$AGENTS_DIR/$1/agent/openclaw-agent.sqlite"
+	local sql="SELECT key FROM auth_profile_store, json_each(json_extract(store_json, '\$.profiles'));"
 	[ -e "$db" ] || return 0
-	sqlite3 "file:$db?mode=ro" \
-		"SELECT key FROM auth_profile_store, json_each(json_extract(store_json, '\$.profiles'));" \
-		2>/dev/null || printf '%s\n' "$UNREADABLE"
+	sqlite3 "file:$db?mode=ro" "$sql" 2>/dev/null && return 0
+	# ponytail: a non-empty -wal means someone is mid-write; immutable=1 would read
+	# past it and report a stale store as fact. Report it unreadable instead.
+	[ ! -s "$db-wal" ] || { printf '%s\n' "$UNREADABLE"; return 0; }
+	sqlite3 "file:$db?mode=ro&immutable=1" "$sql" 2>/dev/null || printf '%s\n' "$UNREADABLE"
 }
 
 unreadable=""
 note_unreadable() {  # agent id, its ids
 	case "$2" in *"$UNREADABLE"*) unreadable="$unreadable $1" ;; esac
+}
+is_unreadable() { case "$1" in *"$UNREADABLE"*) return 0 ;; *) return 1 ;; esac; }
+
+report_unreadable() {
+	cat >&2 <<-EOF
+
+	Could not read the auth store of:$unreadable
+
+	This is not a clean bill of health — it is no reading at all. Those agents have NOT
+	been checked; the table says 'unreadable', not 'ok' and not 'VIOLATION'.
+
+	A read-only open of a WAL database has to create its -shm sidecar, and the sidecar
+	only exists on disk while some connection holds the database open. So the usual
+	cause is the gateway being stopped:
+
+	    systemctl is-active wpa-openclaw.service
+
+	Start the gateway and re-run. If it is already running, check that this is running
+	as root — the stores are 0700 and owned by uid 991. An agent the gateway is idle on
+	is read via immutable=1 instead, which is skipped when a non-empty -wal says a write
+	is in flight; that one resolves itself on the next run.
+	EOF
+	exit 2
 }
 
 # Profile ids on stdin that are NOT model-provider credentials (ADR 0013).
@@ -124,6 +167,13 @@ stray_report=""
 printf '%-16s %-9s %s\n' AGENT PROFILES VERDICT
 
 # The default agent first, for context. A non-empty main is never a fault on its own.
+# Unreadable, though, and no verdict below it means anything: every agent would look
+# like it inherits the token that stands in for main's ids.
+if is_unreadable "$main_ids"; then
+	printf '%-16s %-9s %s\n' "$default_agent" "?" "unreadable — nothing below it can be judged"
+	report_unreadable
+fi
+
 n=$(printf '%s' "$main_ids" | grep -c . || true)
 printf '%-16s %-9s %s\n' "$default_agent" "$n" \
 	"(default — mirrored credentials land here by design, NVB-32)"
@@ -140,6 +190,16 @@ while read -r id; do
 
 	agent_ids=$(ids "$id")
 	note_unreadable "$id" "$agent_ids"
+
+	# A store that could not be read holds no ids as far as this script can tell, so
+	# every one of main's looks un-held and the inheritance test fires. That printed
+	# VIOLATION — a credential leak — for a read failure, hourly, for a day (NVB-49).
+	# There is no verdict to give here. Say so, and let the exit-2 report be the news.
+	if is_unreadable "$agent_ids"; then
+		printf '%-16s %-9s %s\n' "$id" "?" "unreadable — not checked, see below"
+		continue
+	fi
+
 	n=$(printf '%s' "$agent_ids" | grep -c . || true)
 
 	# Anything main holds that this agent does not, it inherits.
@@ -170,22 +230,7 @@ while read -r id; do
 	printf '%-16s %-9s %s\n' "$id" "$n" "$verdict"
 done <<<"$all_agents"
 
-if [ -n "$unreadable" ]; then
-	cat >&2 <<-EOF
-
-	Could not read the auth store of:$unreadable
-
-	This is not a clean bill of health — it is no reading at all. The usual cause is
-	the gateway being stopped: SQLite will not open a WAL database read-only once the
-	-shm sidecar is gone, and that file disappears when the last connection closes.
-
-	    systemctl is-active wpa-openclaw.service
-
-	Start the gateway and re-run. If it is already running, check that this is running
-	as root — the stores are 0700 and owned by uid 991.
-	EOF
-	exit 2
-fi
+[ -z "$unreadable" ] || report_unreadable
 
 if [ -n "$stray_report" ]; then
 	cat >&2 <<-EOF

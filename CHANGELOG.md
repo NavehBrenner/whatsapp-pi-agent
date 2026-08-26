@@ -11,6 +11,57 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — an hourly page said "credential leak" and meant "I could not read the file" (2026-08-26)
+
+`wpa-agent-auth` had failed every hour for over a day, always on `qualety` and only on
+`qualety`, printing two lines whose order was the whole story:
+
+```
+qualety          1         VIOLATION: inherits from 'main': xai:navegerc@gmail.com
+Could not read the auth store of: qualety
+```
+
+The VIOLATION was a *consequence* of the unreadable store. `ids()` yields a placeholder
+when it cannot read an agent's database, so everything `main` holds looks un-held by that
+agent and the inheritance test fires. The owner was paged hourly about the leak ADR 0011
+exists to prevent, by a check that had read nothing at all.
+
+**The mechanism, reproduced from scratch rather than inferred.** A read-only open of a
+WAL database still has to *create* the `-shm` sidecar, and the unit runs under
+`ProtectSystem=strict`:
+
+```
+sqlite3 "file:$db?mode=ro"                      → ok, and creates -shm
+systemd-run -p ProtectSystem=strict sqlite3 …   → unable to open database file (14)
+```
+
+The sidecar exists on disk only while some connection holds the database open. The
+gateway holds one for every agent it is talking to; `qualety` is the agent nothing has
+talked to since its rename, so it alone had no sidecar to map — one agent failing hourly
+while a manual run, with no read-only mount, always succeeded.
+
+**The earlier note in the script said the opposite, and its test is why.** It had checked
+this theory with `chmod a-w` on the directory and found SQLite read the database fine —
+which is true. SQLite opens a checkpointed WAL database through `EACCES` without shared
+memory and fails only on `EROFS`. An unwritable directory is not a read-only filesystem,
+and that difference was the bug. A test that cannot produce the production condition
+returns a confident wrong answer, which is worse than no test; `check-agent-auth.test.sh`
+now reproduces it with `systemd-run -p ProtectSystem=strict`, the real thing.
+
+Two fixes, because the second does not make the first unnecessary:
+
+- The read falls back to `immutable=1`, which needs no sidecar and no write — guarded on
+  an empty `-wal`, since `immutable=1` ignores WAL content and would report a stale store
+  as fact. **Not** by loosening the mount: root writing sidecars into a store owned by
+  uid 991 is the monitor breaking the thing it monitors.
+- An unreadable store now prints `unreadable` in the verdict table instead of `VIOLATION`,
+  and is not tested for inheritance at all. It never had a verdict to give. If the
+  *default* agent is unreadable the table stops there, because no row below it means
+  anything.
+
+Verified on the box: `qualety  1  ok`, exit 0, no `OnFailure`. Both new assertions fail
+against the previous script and pass against this one.
+
 ### Fixed — the alert that actually fires was the one that could not name its agent (2026-08-26)
 
 Found by firing a real alert after deploying the `-o cat` fix and noticing the delivered
@@ -57,7 +108,6 @@ whoever runs it. 20 consecutive runs, no failures.
 **The truncation itself was deliberately left alone.** Understating the time remaining is
 the safe direction for an expiry warning; rounding up would tell you a token has longer
 than it does.
-
 
 ### Fixed — the triage read journalctl's decorated output, so it never named the agent (2026-08-26)
 
