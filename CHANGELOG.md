@@ -11,6 +11,31 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — the alert that actually fires was the one that could not name its agent (2026-08-26)
+
+Found by firing a real alert after deploying the `-o cat` fix and noticing the delivered
+message was **exactly the same length** as the one sent before that fix — 554 bytes both
+times. If the agent name had started appearing, it could not have been.
+
+`check-agent-auth.sh` names an agent in **three** line shapes, and `named_agents` knew two:
+
+```
+liron   0   VIOLATION: inherits from 'main': …     ← verdict table
+  owner: google:navegerc@gmail.com                 ← stray-credential report
+Could not read the auth store of: qualety          ← MISSED
+```
+
+The third is the one that fires on this box every time, so the most common alert was the
+only one that could not say which agent it was about. Worse, its branch never used the
+lookup at all. Both fixed, both now asserted.
+
+**The header no longer asserts a leak the body denies.** It said *"Credential isolation is
+not holding"* unconditionally, while the diagnosis underneath explained the store was
+merely unreadable. It now states what ran and failed, and the cause line carries the
+meaning. The message also says outright that the `VIOLATION` line is a *consequence* of the
+unreadable store rather than a second, independent finding — and that if a manual run
+passes while only the timer fails, this is NVB-49 and not a credential problem at all.
+
 ### Fixed — a flaky test that only failed on the slower machine (2026-08-26)
 
 `token-expiry.test.sh` failed during a deploy on the Pi and passed on every direct

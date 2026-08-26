@@ -82,11 +82,14 @@ has() { printf '%s' "$log" | grep -qiE "$1"; }
 named_agents() {
 	jq -r '.agents.list[]?.id // empty' "$CONFIG" 2>/dev/null | while read -r a; do
 		[ -n "$a" ] || continue
-		# check-agent-auth.sh names an agent in TWO shapes, and both matter:
+		# check-agent-auth.sh names an agent in THREE shapes, and all of them matter:
 		#   the verdict table   "liron   0   VIOLATION: inherits from 'main': …"
 		#   the stray report    "  owner: google:navegerc@gmail.com"
+		#   the unreadable list "Could not read the auth store of: liron qualety"
+		# The third was missed at first, which left the ONE branch that actually
+		# fires on this box as the only one that could not name its agent.
 		# `if` rather than `&&` so a non-match is a condition, not a failed command.
-		if printf '%s' "$log" | grep -qE "^$a[[:space:]]+[0-9]+[[:space:]]+(VIOLATION|warn)|^[[:space:]]+$a:[[:space:]]"; then
+		if printf '%s' "$log" | grep -qE "^$a[[:space:]]+[0-9]+[[:space:]]+(VIOLATION|warn)|^[[:space:]]+$a:[[:space:]]|Could not read the auth store of:.*[[:space:]]$a([[:space:]]|\$)"; then
 			printf '%s ' "$a"
 		fi
 	done || true
@@ -116,7 +119,12 @@ wpa-oc-auth)
 Then: sudo systemctl start wpa-oc-auth"
 	;;
 wpa-agent-auth)
-	what="Credential isolation is not holding (NVB-32). An agent is missing a profile that \`main\` holds, so it inherits main's copy. Emptying \`main\` will NOT fix it — it is re-mirrored on the next token refresh, by design."
+	# Deliberately NOT "credential isolation is not holding" any more. That was the
+	# old fixed string, and it pre-judges: the most common real cause on this box is
+	# an unreadable store, where asserting a leak in the first line contradicts the
+	# diagnosis in the second. The header states what ran and failed; the cause
+	# below says what it means.
+	what="wpa-agent-auth failed — the credential-isolation invariant (NVB-32) did not verify."
 	pat="an auth profile"
 	patfix="Check which agent: sudo /opt/wpa/deploy/check-agent-auth.sh"
 	;;
@@ -169,10 +177,18 @@ wpa-agent-auth)
 		fi
 	done
 	if has 'Could not read the auth store of'; then
-		cause="The check could not READ some auth stores — this is not a clean bill of health, it is no reading at all."
-		fix="Usually the gateway is stopped: SQLite will not open a WAL database read-only once the -shm sidecar is gone.
+		# This is the branch that actually fires on this box, so it gets the agent
+		# name too — it was the only one of the three without it, which made the
+		# most common alert the least useful one.
+		cause="The check could not READ some auth stores — this is not a clean bill of health, it is no reading at all. The VIOLATION line above it is a CONSEQUENCE: an unreadable store looks like an agent holding nothing."
+		fix="$who_txt
+
+Usually the gateway is stopped: SQLite will not open a WAL database read-only once the -shm sidecar is gone.
   systemctl is-active wpa-openclaw.service
-If it is running, the check was not run as root — the stores are 0700, uid 991."
+If it is running, the check was not run as root — the stores are 0700, uid 991.
+
+If a manual run passes and only the TIMER fails, this is NVB-49 and not a real credential problem:
+  sudo /opt/wpa/deploy/check-agent-auth.sh"
 	elif has 'A TOOL credential is in the auth profile store'; then
 		cause="A TOOL credential is sitting in the auth profile store. ADR 0013 says it must not be — anything with a profile id gets mirrored into \`main\` on its next refresh and inherited by every agent that lacks it."
 		fix="$who_txt
