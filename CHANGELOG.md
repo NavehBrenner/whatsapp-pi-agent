@@ -11,6 +11,35 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — the triage read journalctl's decorated output, so it never named the agent (2026-08-26)
+
+Found within minutes of deploying NVB-41, against a real violation on the box, and
+invisible to a suite of 34 passing assertions.
+
+`journalctl` prefixes every line with a timestamp, host and unit:
+
+```
+Aug 26 11:03:58 raspberrypi wpa-agent-auth[1778490]: qualety  1  VIOLATION: inherits from 'main': …
+```
+
+`named_agents` anchors on `^` — it reads the first column of the verdict table — so
+against real output it matched nothing at all. The alert still classified the failure
+correctly, but the line that makes it actionable, *"Affected: qualety"*, silently became
+*"Run the check to see which agent."* The best part of the message, quietly absent.
+
+**The tests could not have caught it**, and that is the lesson worth keeping: the stub
+emitted the script's raw stderr, not journald's rendering of it, so it was asserting
+against a format that never reaches production. The fix is `-o cat` on the read; the
+stub now emits the *prefixed* form unless it is given that flag, so deleting it fails
+`triage.test.sh` with "and names WHICH agent is broken" — verified by deleting it.
+
+Two smaller things the same run established: the expiry check reads both real tokens and
+correctly says nothing (`push: 89 days left`, `issues: 79 days left` — the issues PAT's
+expiry was not previously known to anyone), and `wpa-agent-auth` had genuinely reported
+`qualety` inheriting from `main` twice earlier that day, which is the failure NVB-38 is
+about.
+
+
 ### Added — alerts that name the cause, and PATs that warn before they die (2026-08-26)
 
 NVB-41 direction #1. Every `*-failed.service` sent the owner a fixed string ending in

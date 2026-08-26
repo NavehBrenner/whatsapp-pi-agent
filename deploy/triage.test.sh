@@ -38,9 +38,16 @@ SH
 chmod +x "$fx/bin/wpa-outbox-notify"
 
 # journalctl is stubbed by content, set per-case in JOURNAL.
+# Emits the raw text ONLY when asked for `-o cat`. Without that flag real
+# journalctl prefixes each line with a timestamp, host and unit, which defeats
+# every ^-anchored pattern in triage.sh — a production-only failure the first
+# version of this stub hid completely.
 cat >"$fx/bin/journalctl" <<'SH'
 #!/bin/sh
-printf '%s\n' "$JOURNAL"
+for a in "$@"; do
+  [ "$a" = "cat" ] && { printf '%s\n' "$JOURNAL"; exit 0; }
+done
+printf '%s\n' "$JOURNAL" | sed 's/^/Aug 26 12:00:00 pi unit[1]: /'
 SH
 chmod +x "$fx/bin/journalctl"
 

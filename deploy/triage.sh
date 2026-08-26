@@ -48,7 +48,17 @@ CONFIG=${WPA_OPENCLAW_CONFIG:-/var/lib/openclaw/.openclaw/openclaw.json}
 # exactly what a human following the old advice would have seen. Failure here must
 # not be fatal: an empty journal still gets the fallback message, which is strictly
 # better than sending nothing because journalctl was unhappy.
-log=$(journalctl -u "$unit" -n 50 --no-pager 2>/dev/null || true)
+#
+# ⚠️ `-o cat` IS NOT COSMETIC. Default journalctl output prefixes every line with
+#   Aug 26 11:03:58 raspberrypi wpa-agent-auth[1778490]: qualety  1  VIOLATION: …
+# so a `^`-anchored pattern matches NOTHING. named_agents anchors on purpose (to
+# read the verdict table's first column), and without this flag it silently found
+# no agent and the message degraded to "run the check yourself" — the single most
+# useful line, quietly missing. Not caught by the tests, whose stub emitted the
+# script's raw output; caught on the Pi against a real violation. The stub now
+# emits the prefixed form unless it is given `-o cat`, so removing this flag fails
+# the suite.
+log=$(journalctl -u "$unit" -n 50 --no-pager -o cat 2>/dev/null || true)
 
 has() { printf '%s' "$log" | grep -qiE "$1"; }
 
