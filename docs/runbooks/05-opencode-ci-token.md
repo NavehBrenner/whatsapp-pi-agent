@@ -244,6 +244,68 @@ place, because the runner then starts failing instead of working.
 | This box's own opencode login is dead | something else refreshed and rotated it | `opencode auth login` again, then find what refreshed — a runner should not be able to |
 | Unit fails with a read-only filesystem error | `ProtectSystem` too tight for a path opencode writes | it is deliberately `full`, not `strict`; do not tighten without checking what it touches |
 
+## 8. Alerts name the cause, and PATs warn before they die
+
+Both added by NVB-41, and the second exists because of a gap NVB-36 opened.
+
+### `wpa-triage` — every `*-failed.service` goes through it
+
+`ExecStart=/usr/local/bin/wpa-triage <unit> owner`. It reads the failed unit's
+journal, matches the signatures these scripts actually emit, and sends **one**
+message naming the cause and the exact command. An unmatched failure still sends
+what the alert always sent, so the floor never drops.
+
+⚠️ **Raw journal text never leaves that script.** Every message is a fixed string
+written in it; the journal is read only to *classify*. Two concrete reasons, not a
+principle: `push-opencode-auth.sh` deliberately keeps opencode's stderr, so a
+credential can be in that journal, and NVB-29 means the gateway writes outbound
+**message text** to journald. `deploy/triage.test.sh` asserts both — if
+`test_journal_text_never_leaks` fails, read the banner in `triage.sh` before
+"fixing" it.
+
+It runs three passes, and the order is the design: **the failed unit's own vocabulary
+first** (`check-agent-auth.sh`'s verdicts, `wpa-oc-auth`'s PATH and model errors, a failed
+wake in `wpa-gh-watch`), then cross-cutting causes (401, rate limit, DNS, a `jq` parse
+failure), then the message that unit sent before this existed. The rows for `wpa-oc-auth`
+are §7 of this runbook, encoded — **keep the two in step.**
+
+Adding a signature is one `elif` plus one test case. Put the more specific cause first: a
+rate limit also mentions `403`, and a dead token also fails to parse JSON.
+
+**The agent id and provider in the credential-isolation message are selected, not copied.**
+The vocabulary is `agents.list[].id` from the gateway config and `check-agent-auth.sh`'s
+`MODEL_PROFILE_PREFIXES`; an id present in the journal but absent from the config is never
+echoed. That is what keeps "name the broken agent" inside the no-raw-journal-text rule.
+
+### `wpa-token-expiry` — daily, and the only thing watching the push PAT
+
+GitHub reports expiry directly, which is what makes this cheap:
+
+```bash
+curl -sI -H "Authorization: Bearer $TOKEN" https://api.github.com/ | grep -i expiration
+# github-authentication-token-expiration: 2026-11-23 12:49:22 UTC
+```
+
+Two credentials, each read from where it already lives — `/etc/wpa-push.token` and
+`mcp.servers.github.env` — with no second copy to drift. Messages at **14, 7 and 1
+days**, each announced once, so a token's whole life costs at most three messages.
+A 401 (already dead) and a token with **no** expiry header both get one message too;
+the second is not a failure but a standing risk worth naming.
+
+**An unreachable GitHub is deliberately silent.** `wpa-gh-watch` has been fixed
+twice by paging *less*, and a daily check that alerts on every uplink blip is how a
+real expiry ends up muted.
+
+**Why it is its own unit** rather than folded into `wpa-gh-watch`: an expired PAT is
+exactly what breaks `wpa-gh-watch`, so a warning living there would die with the
+thing it warns about.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| No expiry warning ever arrives | the timer is not enabled | `systemctl list-timers wpa-token-expiry.timer` |
+| The same warning every day | the state directory is not persisting | `StateDirectory=wpa-token-expiry`; check `/var/lib/wpa-token-expiry` |
+| A warning for a token you already replaced | the marker is per threshold, and clears once the new token is >14 days out | run it once by hand: `sudo systemctl start wpa-token-expiry` |
+
 ## Operational notes
 
 - **The Pi holds a third xAI login.** `owner`, the family agents, and now

@@ -148,9 +148,13 @@ done <<-'EOF'
 	backup-signal.sh       wpa-signal-backup   0755
 	mcp-server.sh          wpa-mcp             0755
 	outbox-notify.sh       wpa-outbox-notify   0700
+	triage.sh              wpa-triage          0700
+	token-expiry.sh        wpa-token-expiry    0700
 EOF
 # 0700 on the notifier is not a typo: it writes into an agent outbox owned by the
-# gate, and nothing but root has any business invoking it.
+# gate, and nothing but root has any business invoking it. wpa-triage inherits
+# that for the same reason (it execs the notifier), and wpa-token-expiry because
+# it reads two PATs.
 
 # ---------------------------------------------------------------------------
 # OpenClaw plugins we own. These run INSIDE the gateway process, so they are the
@@ -186,7 +190,7 @@ echo "== timers =="
 # command rather than one command plus a memory of which timers exist.
 for t in wpa-reader.timer wpa-staleness.timer wpa-signal-backup.timer \
          wpa-oc-auth.timer wpa-project-sync.timer wpa-gh-watch.timer \
-         wpa-agent-auth.timer; do
+         wpa-agent-auth.timer wpa-token-expiry.timer; do
 	systemctl enable --now "$t" >/dev/null 2>&1 && printf '  %-26s enabled\n' "$t" \
 		|| printf '  %-26s FAILED — systemctl status %s\n' "$t" "$t"
 done
@@ -223,6 +227,8 @@ echo "== checks =="
 # not abort a deploy half way through and leave the box in a state nobody described.
 bash "$repo/deploy/check-agent-auth.test.sh" || echo "  ! check-agent-auth.test.sh FAILED"
 bash "$repo/deploy/gh-watch.test.sh"         || echo "  ! gh-watch.test.sh FAILED"
+bash "$repo/deploy/triage.test.sh"           || echo "  ! triage.test.sh FAILED"
+bash "$repo/deploy/token-expiry.test.sh"     || echo "  ! token-expiry.test.sh FAILED"
 # CI is mypy + pytest, which cannot see a JavaScript plugin, so its one check runs
 # here instead — the same reason the shell tests above do.
 for t in "$repo"/deploy/openclaw-plugins/*/*.test.mjs; do

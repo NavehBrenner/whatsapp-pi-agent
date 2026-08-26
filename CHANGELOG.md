@@ -11,6 +11,83 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added — alerts that name the cause, and PATs that warn before they die (2026-08-26)
+
+NVB-41 direction #1. Every `*-failed.service` sent the owner a fixed string ending in
+`Check: journalctl -u <unit> -n 50`, and that was the end of the help. The case that
+prompted it: a renamed repo answered `301`, `jq` got the redirect body, and the journal
+said `Cannot index string with string "number"`. Getting from there to *"edit `GH_REPO` in
+`/etc/wpa-project.env`"* took a laptop and an SSH session. The fix was one `sed`.
+
+The irony is that **the diagnosis was already written.** These scripts emit good stderr —
+`no GitHub token in the gateway config`, `xai token expires in under 1h`, `another sync
+holds the lock`. It just never reached Signal.
+
+**Every unit's own failure modes are covered, not just the credential ones.** The first
+pass matched only cross-cutting signatures (401, DNS, `jq`), which left
+`wpa-agent-auth` — the alert that actually fires here — falling through to
+`Check: journalctl…`, barely better than before. `check-agent-auth.sh` already prints
+the exact `openclaw models auth` command *including the flag order everyone gets
+wrong*; runbook 05 §7 is already a symptom/cause/fix table for `wpa-oc-auth`. Both are
+now encoded, so triage runs unit-specific rules first and falls back to cross-cutting
+ones. The credential-isolation alert now names **which agent** and fills the agent and
+provider into the command, instead of handing over a template with `<id>` in it.
+
+The agent id and provider are the one thing that reaches a message from the journal, and
+the rule still holds: nothing is *copied* out of the log. The log SELECTS from a
+vocabulary already on disk — `agents.list[].id` in the gateway config, and
+`check-agent-auth.sh`'s own `MODEL_PROFILE_PREFIXES`. An id that appears in the journal
+but not the config is never echoed, and there is a test for that.
+
+**A `set -e` bug that would have silently swallowed every credential-isolation alert.**
+`who=$(named_agents)` takes the function's exit status, and a `while` loop exits with the
+status of its last iteration — so whenever the last agent in the config was healthy
+(`builder`, on this box) the final `grep` returned 1, the function returned 1, and the
+script died before sending anything. No message, no error, exit 1. It only surfaced
+because the test's stub config happens to end with an agent that is not in the journal;
+the fix is `|| true` on the loop plus `if` instead of `&&` inside it, and the regression
+is now asserted by name.
+
+`deploy/triage.sh` sits between the failure and the notifier: it reads the unit's
+journal, matches the signatures those scripts actually emit, and sends one message naming
+the cause and the exact command. **An unmatched failure still sends what it always sent** —
+better for known causes, never worse for unknown ones.
+
+⚠️ **Raw journal text never leaves that script.** Every message is a fixed string written
+in it; the journal is read only to classify. Two concrete reasons rather than a principle:
+`push-opencode-auth.sh` deliberately does *not* discard opencode's stderr, so a credential
+can be sitting in that journal, and NVB-29 means the gateway writes outbound message text
+to journald. Same discipline `src/wpa_mcp/push.py` applies to git's stderr. Two tests
+assert it, one feeding a fake token through and one feeding a fake message.
+
+**The 401 message is per-unit, and that was a bug caught by reading the output.** The first
+version offered every credential's fix path at once, so a `wpa-gh-watch` 401 — the *issues*
+PAT — told you how to replace the *push* PAT. At 2am that is a wrong fix applied
+confidently. Each unit now names only its own credential, with a regression test.
+
+**`wpa-token-expiry` is new, and it closes a gap NVB-36 opened.** The push PAT is reachable
+only from agent-invoked tools, so **no timer touches it**: when it expires nothing fails,
+no `OnFailure=` runs, and nobody is paged — `builder` just starts saying "push failed".
+GitHub reports expiry in a response header, so a daily check warns at 14, 7 and 1 days,
+each once. A 401 and a token with no expiry header each get a message too.
+
+Three things that are load-bearing rather than decoration:
+
+- **An unreachable GitHub is silent.** `wpa-gh-watch` has twice been fixed by paging *less*
+  (CHANGELOG 2026-08-17, 2026-08-18), and a daily check that alerts on every uplink blip is
+  exactly how a real expiry ends up muted.
+- **It is its own unit.** Folding it into `wpa-gh-watch` would have been fewer files and
+  wrong: an expired PAT is precisely what breaks `wpa-gh-watch`, so the warning would die
+  with the thing it warns about.
+- **The thresholds iterate ascending, and that is not cosmetic.** Written descending first,
+  the loop matched 14 before 7, found that threshold already announced, and said nothing at
+  all — so a token at 5 days left would have gone quiet. Caught by
+  `token-expiry.test.sh`'s "crossing 7 days sends a second message", which is the whole
+  reason that test exists.
+
+No token is ever passed in argv: every `curl` reads its header from a `0600` config file
+built by streaming the token in. `ps` is world-readable and this box runs eight agents.
+
 ### Finding — `main` is not as protected as this repo has been claiming (2026-08-25)
 
 Found by running NVB-36's own acceptance criterion, *"a direct push to `main` with this
