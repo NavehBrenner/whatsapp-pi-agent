@@ -263,8 +263,19 @@ credential can be in that journal, and NVB-29 means the gateway writes outbound
 `test_journal_text_never_leaks` fails, read the banner in `triage.sh` before
 "fixing" it.
 
-Adding a signature is one `elif` plus one test case. Put the more specific cause
-first: a rate limit also mentions `403`, and a dead token also fails to parse JSON.
+It runs three passes, and the order is the design: **the failed unit's own vocabulary
+first** (`check-agent-auth.sh`'s verdicts, `wpa-oc-auth`'s PATH and model errors, a failed
+wake in `wpa-gh-watch`), then cross-cutting causes (401, rate limit, DNS, a `jq` parse
+failure), then the message that unit sent before this existed. The rows for `wpa-oc-auth`
+are §7 of this runbook, encoded — **keep the two in step.**
+
+Adding a signature is one `elif` plus one test case. Put the more specific cause first: a
+rate limit also mentions `403`, and a dead token also fails to parse JSON.
+
+**The agent id and provider in the credential-isolation message are selected, not copied.**
+The vocabulary is `agents.list[].id` from the gateway config and `check-agent-auth.sh`'s
+`MODEL_PROFILE_PREFIXES`; an id present in the journal but absent from the config is never
+echoed. That is what keeps "name the broken agent" inside the no-raw-journal-text rule.
 
 ### `wpa-token-expiry` — daily, and the only thing watching the push PAT
 

@@ -23,7 +23,32 @@ The irony is that **the diagnosis was already written.** These scripts emit good
 `no GitHub token in the gateway config`, `xai token expires in under 1h`, `another sync
 holds the lock`. It just never reached Signal.
 
-`deploy/triage.sh` now sits between the failure and the notifier: it reads the unit's
+**Every unit's own failure modes are covered, not just the credential ones.** The first
+pass matched only cross-cutting signatures (401, DNS, `jq`), which left
+`wpa-agent-auth` — the alert that actually fires here — falling through to
+`Check: journalctl…`, barely better than before. `check-agent-auth.sh` already prints
+the exact `openclaw models auth` command *including the flag order everyone gets
+wrong*; runbook 05 §7 is already a symptom/cause/fix table for `wpa-oc-auth`. Both are
+now encoded, so triage runs unit-specific rules first and falls back to cross-cutting
+ones. The credential-isolation alert now names **which agent** and fills the agent and
+provider into the command, instead of handing over a template with `<id>` in it.
+
+The agent id and provider are the one thing that reaches a message from the journal, and
+the rule still holds: nothing is *copied* out of the log. The log SELECTS from a
+vocabulary already on disk — `agents.list[].id` in the gateway config, and
+`check-agent-auth.sh`'s own `MODEL_PROFILE_PREFIXES`. An id that appears in the journal
+but not the config is never echoed, and there is a test for that.
+
+**A `set -e` bug that would have silently swallowed every credential-isolation alert.**
+`who=$(named_agents)` takes the function's exit status, and a `while` loop exits with the
+status of its last iteration — so whenever the last agent in the config was healthy
+(`builder`, on this box) the final `grep` returned 1, the function returned 1, and the
+script died before sending anything. No message, no error, exit 1. It only surfaced
+because the test's stub config happens to end with an agent that is not in the journal;
+the fix is `|| true` on the loop plus `if` instead of `&&` inside it, and the regression
+is now asserted by name.
+
+`deploy/triage.sh` sits between the failure and the notifier: it reads the unit's
 journal, matches the signatures those scripts actually emit, and sends one message naming
 the cause and the exact command. **An unmatched failure still sends what it always sent** —
 better for known causes, never worse for unknown ones.

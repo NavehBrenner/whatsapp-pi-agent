@@ -44,8 +44,13 @@ printf '%s\n' "$JOURNAL"
 SH
 chmod +x "$fx/bin/journalctl"
 
+cat >"$fx/openclaw.json" <<'JSON'
+{"agents":{"list":[{"id":"main"},{"id":"owner"},{"id":"liron"},{"id":"builder"}]}}
+JSON
+
 export PATH="$fx/bin:$PATH"
 export OUT="$fx/sent"
+export WPA_OPENCLAW_CONFIG="$fx/openclaw.json"
 
 fails=0
 run() { # run <unit> <journal>
@@ -55,14 +60,14 @@ run() { # run <unit> <journal>
 	sent=$(cat "$OUT" 2>/dev/null || echo "")
 }
 ok() { # ok <description> <needle>
-	if printf '%s' "$sent" | grep -qF "$2"; then
+	if printf '%s' "$sent" | grep -qF -- "$2"; then
 		printf '  ok   %s\n' "$1"
 	else
 		printf '  FAIL %s — expected to find: %s\n' "$1" "$2"; fails=$((fails + 1))
 	fi
 }
 absent() { # absent <description> <needle>
-	if printf '%s' "$sent" | grep -qF "$2"; then
+	if printf '%s' "$sent" | grep -qF -- "$2"; then
 		printf '  FAIL %s — should NOT contain: %s\n' "$1" "$2"; fails=$((fails + 1))
 	else
 		printf '  ok   %s\n' "$1"
@@ -93,8 +98,57 @@ ok "a missing auth store says how to log in" "opencode auth login"
 run wpa-gh-watch 'curl: (6) Could not resolve host: api.github.com'
 ok "DNS failure is not blamed on the token" "DNS or connectivity"
 
-run wpa-agent-auth 'agent liron is missing profile xai:navegerc@gmail.com'
-ok "an unmatched agent-auth failure keeps its own text" "Credential isolation is not holding"
+# --- wpa-agent-auth: the complaint that prompted this pass ---------------------
+# Before, all three of these produced the same sentence plus "Check: <script>".
+run wpa-agent-auth 'AGENT            PROFILES  VERDICT
+main             1         (default)
+liron            0         VIOLATION: inherits from '"'"'main'"'"': xai:navegerc@gmail.com
+Credential isolation is not holding.'
+ok "read-through names the actual remedy" "login --provider"
+ok "and warns about the flag order that catches everyone" "--agent belongs to 'models auth'"
+ok "and names WHICH agent is broken" "Affected: liron"
+absent "and does not just tell you to run the script" "Check: journalctl -u wpa-agent-auth"
+# Regression: named_agents used to inherit the exit status of its last loop
+# iteration, so whenever the config's LAST agent was healthy (builder, on the real
+# box) `set -e` killed the script before it sent anything. Silently. The stub config
+# above ends with "builder" precisely so this stays covered.
+if [ -n "$sent" ]; then printf '  ok   %s\n' "a message is sent at all when the last configured agent is healthy"
+else printf '  FAIL %s\n' "set -e regression: nothing was sent"; fails=$((fails + 1)); fi
+
+run wpa-agent-auth 'A TOOL credential is in the auth profile store:
+  owner: google:navegerc@gmail.com'
+ok "a stray tool credential is a different diagnosis" "ADR 0013"
+ok "with its own command" "logout --provider"
+ok "and names that agent too" "Affected: owner"
+
+run wpa-agent-auth 'Could not read the auth store of: liron
+This is not a clean bill of health'
+ok "an unreadable store points at the gateway, not at isolation" "systemctl is-active wpa-openclaw.service"
+absent "and is not misreported as a violation" "login --provider"
+
+# An agent id that is NOT in the config must never be echoed: the vocabulary comes
+# from agents.list, not from the journal.
+run wpa-agent-auth 'ghost-agent      0         VIOLATION: inherits from '"'"'main'"'"'
+Credential isolation is not holding.'
+absent "an unknown agent id from the journal is never echoed" "ghost-agent"
+ok "but the failure is still diagnosed" "login --provider"
+
+# --- wpa-oc-auth: runbook 05 §7, encoded ---------------------------------------
+run wpa-oc-auth 'opencode: command not found'
+ok "PATH failure is not blamed on the token" "systemd's PATH is minimal"
+
+run wpa-oc-auth 'model is a video model and is not available on this endpoint'
+ok "the video-model trap names OC_MODEL" "OC_MODEL"
+absent "and is explicitly not an auth problem" "auth login"
+
+run wpa-oc-auth 'dial tcp [2606:50c0::]:443: connect: network is unreachable'
+ok "the IPv6 trap names GODEBUG" "GODEBUG"
+
+# --- wpa-gh-watch: a detected event whose wake failed --------------------------
+run wpa-gh-watch 'waking agent:qualety:signal:group:abc: 1 PR
+Error: request timed out'
+ok "a failed wake is not read as a credential problem" "WAKING THE AGENT failed"
+ok "and points at the session key" "GH_SESSION_KEY"
 
 # --- the fallback, which must not be worse than what it replaced ---
 run wpa-gh-watch 'something nobody has ever seen before'

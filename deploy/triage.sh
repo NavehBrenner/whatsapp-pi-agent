@@ -25,13 +25,24 @@
 # gateway writes outbound message text to journald. The journal is read only to
 # CLASSIFY. Same discipline as src/wpa_mcp/push.py, and for the same reason.
 #
-# ponytail: a `case` over grep hits, not a rules engine. Nine signatures, first
-# match wins, and the fallback is what the alert said before this existed. Upgrade
-# path if it ever outgrows that: move the table to a file the script reads.
+# Three passes, in this order, because a specific cause beats a general one:
+#
+#   1. the failed unit's OWN vocabulary — check-agent-auth.sh's verdicts,
+#      wpa-oc-auth's PATH and model errors, a failed wake in wpa-gh-watch
+#   2. cross-cutting causes — 401, rate limit, DNS, a jq parse failure
+#   3. the message that unit sent before this script existed
+#
+# Pass 3 is why this is safe to extend: an unrecognised failure is never given a
+# worse message than it used to get, only an unimproved one.
+#
+# ponytail: a `case` over grep hits, not a rules engine. Upgrade path if it ever
+# outgrows that: move the table to a file the script reads.
 set -eu
 
 unit=${1:?usage: wpa-triage <unit> <agent>}
 agent=${2:?usage: wpa-triage <unit> <agent>}
+
+CONFIG=${WPA_OPENCLAW_CONFIG:-/var/lib/openclaw/.openclaw/openclaw.json}
 
 # -n 50 matches what the old messages told the owner to run, so the triage sees
 # exactly what a human following the old advice would have seen. Failure here must
@@ -40,6 +51,36 @@ agent=${2:?usage: wpa-triage <unit> <agent>}
 log=$(journalctl -u "$unit" -n 50 --no-pager 2>/dev/null || true)
 
 has() { printf '%s' "$log" | grep -qiE "$1"; }
+
+# Which agents the check named, matched against the ids in the gateway config.
+#
+# This is the ONE place anything journal-derived reaches a message, and it stays
+# inside the rule at the top of this file: nothing is copied out of the log. The
+# log is used to SELECT from a vocabulary we already hold — an agent id from
+# `agents.list[].id` — so the only strings that can ever be emitted are ones that
+# were already in the config. An id is not a secret; which agent is broken is the
+# whole difference between "go run the check" and "fix liron".
+#
+# ⚠️ THE `|| true` AND THE `if` ARE BOTH LOAD-BEARING, and this bit me. Under
+# `set -e`, `who=$(named_agents)` takes the FUNCTION's exit status, and a `while`
+# loop exits with the status of its last iteration. So whenever the last agent in
+# the config was not one of the broken ones — `builder` on this box — the grep
+# returned 1, the function returned 1, and the whole script died BEFORE sending
+# anything. Silently: exit 1, no message, no trace. Every credential-isolation
+# alert would have vanished. Caught by triage.test.sh only because its stub config
+# happens to end with an agent that is not in the journal.
+named_agents() {
+	jq -r '.agents.list[]?.id // empty' "$CONFIG" 2>/dev/null | while read -r a; do
+		[ -n "$a" ] || continue
+		# check-agent-auth.sh names an agent in TWO shapes, and both matter:
+		#   the verdict table   "liron   0   VIOLATION: inherits from 'main': …"
+		#   the stray report    "  owner: google:navegerc@gmail.com"
+		# `if` rather than `&&` so a non-match is a condition, not a failed command.
+		if printf '%s' "$log" | grep -qE "^$a[[:space:]]+[0-9]+[[:space:]]+(VIOLATION|warn)|^[[:space:]]+$a:[[:space:]]"; then
+			printf '%s ' "$a"
+		fi
+	done || true
+}
 
 # The per-unit fallback: what that alert said before NVB-41. Unmatched failures must
 # not get a WORSE message than they used to.
@@ -81,10 +122,120 @@ wpa-token-expiry)
 	;;
 esac
 
-# Ordered, first match wins. Ordering is deliberate where signatures overlap: a rate
-# limit also mentions 403, and a dead token also fails to parse JSON, so the more
-# specific cause has to be tested first.
-if has '\b401\b|bad credentials'; then
+cause=""
+fix=""
+
+# ---------------------------------------------------------------------------
+# 1. UNIT-SPECIFIC. Each of these scripts already writes a good diagnosis and the
+#    exact remediation to stderr — check-agent-auth.sh even prints the openclaw
+#    command with the flag order called out. All of that lands in the journal and
+#    none of it used to reach Signal, which is the whole complaint NVB-41 opens
+#    with. These rules recognise a unit's own vocabulary and restate its advice.
+#
+#    Runbook 05 §7 is a symptom/cause/fix table for wpa-oc-auth; the rows below
+#    are that table, encoded. Keep the two in step.
+# ---------------------------------------------------------------------------
+case "$unit" in
+wpa-agent-auth)
+	# Fill the placeholders in when we can. A command you can paste is the entire
+	# point of NVB-41 — "<id>" is still homework. Only substituted when exactly one
+	# agent is named, because with two the reader has to choose anyway and a
+	# half-filled command is worse than an honest template.
+	who=$(named_agents | sed 's/ *$//')
+	a_id="<id>"
+	case "$who" in
+	"") who_txt="Run the check to see which agent." ;;
+	*" "*) who_txt="Affected: $who" ;;
+	*) who_txt="Affected: $who"; a_id="$who" ;;
+	esac
+
+	# Same trick as the agent ids: the provider vocabulary is check-agent-auth.sh's
+	# own MODEL_PROFILE_PREFIXES, not anything lifted out of the journal.
+	a_prov="<p>"
+	for p in ${MODEL_PROFILE_PREFIXES:-xai: anthropic: openai: google-vertex:}; do
+		if printf '%s' "$log" | grep -qF "$p"; then
+			a_prov="${p%:}"
+			break
+		fi
+	done
+	if has 'Could not read the auth store of'; then
+		cause="The check could not READ some auth stores — this is not a clean bill of health, it is no reading at all."
+		fix="Usually the gateway is stopped: SQLite will not open a WAL database read-only once the -shm sidecar is gone.
+  systemctl is-active wpa-openclaw.service
+If it is running, the check was not run as root — the stores are 0700, uid 991."
+	elif has 'A TOOL credential is in the auth profile store'; then
+		cause="A TOOL credential is sitting in the auth profile store. ADR 0013 says it must not be — anything with a profile id gets mirrored into \`main\` on its next refresh and inherited by every agent that lacks it."
+		fix="$who_txt
+Move it to its own MCP server entry (one per principal, credential in that entry's env), then delete the profile:
+  sudo -u openclaw HOME=/var/lib/openclaw openclaw models auth --agent $a_id logout --provider $a_prov
+Tidying the store alone does NOT fix it — it comes back on the next refresh."
+	elif has "VIOLATION: inherits from|Credential isolation is not holding"; then
+		cause="An agent is resolving read-through to \`main\` for a profile it does not hold itself."
+		fix="$who_txt
+Give that agent its own profile — emptying \`main\` does NOT work, it refills on the next token refresh by design (NVB-32):
+  sudo -u openclaw HOME=/var/lib/openclaw openclaw models auth --agent $a_id login --provider $a_prov --method oauth
+  sudo -u openclaw HOME=/var/lib/openclaw openclaw models --agent $a_id status | grep effective=
+Note the flag order: --agent belongs to 'models auth', BEFORE 'login'.
+Full detail: sudo /opt/wpa/deploy/check-agent-auth.sh"
+	fi
+	;;
+
+wpa-oc-auth)
+	if has 'command not found'; then
+		cause="opencode is not on systemd's PATH — the installer puts it under \$HOME and systemd's PATH is minimal."
+		fix="The script prepends ~/.opencode/bin; check the install location has not moved:
+  ls ~/.opencode/bin/opencode"
+	elif has 'is a video model|not available on this endpoint'; then
+		cause="OC_MODEL is unset or stale, so opencode picked its own default — which has been a *video* model. The error reads like an auth problem and is not."
+		fix="  opencode models --all | grep -i grok
+Then update OC_MODEL in /etc/wpa-oc.env"
+	elif has 'network is unreachable'; then
+		cause="Go preferred an AAAA record and this Pi has no global IPv6."
+		fix="Handled by Environment=GODEBUG=netdns=cgo — check the unit still has it:
+  systemctl cat wpa-oc-auth.service | grep GODEBUG"
+	elif has 'refusing to publish'; then
+		cause="The refresh produced a token that failed its own safety check, so nothing was published. This is the check working."
+		fix="Read which rule tripped, then re-login:
+  journalctl -u wpa-oc-auth -n 50
+  opencode auth login"
+	elif has 'token expires in under 1h|the refresh did not take'; then
+		cause="The xai token refresh ran but did not actually refresh."
+		fix="On the Pi: opencode auth login
+Then: sudo systemctl start wpa-oc-auth"
+	elif has 'no auth store at'; then
+		cause="opencode has no local auth store — never logged in, or it was removed."
+		fix="On the Pi: opencode auth login"
+	fi
+	;;
+
+wpa-gh-watch)
+	if has 'waking .*:' && has 'error|failed|timed out'; then
+		cause="The event was detected but WAKING THE AGENT failed, so nothing was committed and the event will be replayed next tick."
+		fix="Usually a stale session key — it must name a session that already exists:
+  grep GH_SESSION_KEY /etc/wpa-project.env
+  sudo -u openclaw HOME=/var/lib/openclaw openclaw sessions list --agent qualety --json
+If the agent was renamed or its sessions cleared, the old key is gone; take one turn in the room, then copy the new key in."
+	fi
+	;;
+
+wpa-project-sync)
+	if has 'another sync holds the lock'; then
+		cause="A previous tick was still running, so this one exited rather than racing it."
+		fix="Benign once. If it repeats, the sync is taking longer than its interval:
+  systemctl list-timers wpa-project-sync.timer"
+	fi
+	;;
+esac
+
+# ---------------------------------------------------------------------------
+# 2. CROSS-CUTTING. Only consulted when the unit's own vocabulary matched nothing.
+#    Ordering is deliberate where signatures overlap: a rate limit also mentions
+#    403, and a dead token also fails to parse JSON, so the more specific cause
+#    has to be tested first.
+# ---------------------------------------------------------------------------
+if [ -n "$cause" ]; then
+	: # already diagnosed above
+elif has '\b401\b|bad credentials'; then
 	# Deliberately the per-unit fix, not a menu of every credential on the box:
 	# a wpa-gh-watch 401 is the issues PAT, and offering the push PAT's path
 	# beside it would send someone to replace the wrong credential at 2am.
@@ -102,26 +253,6 @@ elif has 'no GitHub token in the gateway config'; then
 	fix="Check it is still there:
   sudo jq '.mcp.servers.github.env|keys' /var/lib/openclaw/.openclaw/openclaw.json
 A config edit that dropped the key will do this."
-
-elif has 'another sync holds the lock'; then
-	cause="A previous tick was still running, so this one exited rather than racing it."
-	fix="Benign once. If it repeats, the sync is taking longer than its interval:
-  systemctl list-timers wpa-project-sync.timer"
-
-elif has 'no auth store at'; then
-	cause="opencode has no local auth store — it was never logged in, or the store was removed."
-	fix="On the Pi: opencode auth login"
-
-elif has 'token expires in under 1h|the refresh did not take'; then
-	cause="The xai token refresh ran but did not actually refresh."
-	fix="On the Pi: opencode auth login
-Then: sudo systemctl start wpa-oc-auth"
-
-elif has 'refusing to publish'; then
-	cause="The refresh produced a token that failed its own safety check, so nothing was published. This is the check working."
-	fix="Read the reason, then re-login:
-  journalctl -u wpa-oc-auth -n 50
-  opencode auth login"
 
 elif has 'could not resolve host|curl: \(6\)|curl: \(7\)|network is unreachable'; then
 	cause="The Pi could not reach the network — DNS or connectivity, not a credential."
