@@ -234,7 +234,40 @@ Then: sudo systemctl start wpa-oc-auth"
 	;;
 
 wpa-gh-watch)
-	if has 'waking .*:' && has 'error|failed|timed out'; then
+	# A wake can fail for four reasons that need four different actions, and the
+	# stale-key text below used to be given for all of them. It was the wrong
+	# instruction every time the room was merely busy (2026-08-27), which is the
+	# common case: a stale key does not time out, it fails immediately.
+	#
+	# Ordered most specific first. The Docker line MUST be read before the gateway
+	# timeout, because the timeout is what causes the CLI to run its own embedded
+	# agent, and it is that fallback — not the gateway — that has no Docker.
+	if has 'Docker daemon is not available|Cannot connect to the Docker daemon'; then
+		cause="The gateway did not answer, so the CLI ran its own embedded agent instead — and THAT fallback has no Docker, which is the error you see. Docker itself is almost certainly fine; the sandbox the gateway uses is a different one."
+		fix="Do not chase Docker. Check the gateway, which is the thing that did not answer:
+  systemctl is-active wpa-openclaw.service
+  sudo journalctl -u wpa-openclaw -o cat --since -15min | grep -v model-fetch
+The event is not lost — it replays on the next tick once the gateway answers again."
+	elif has 'session file locked|session file changed while embedded prompt lock|SessionTakeover'; then
+		cause="Two writers reached the room's session at once — the gateway's own turn and the CLI's embedded fallback — so each aborted the other and no reply was ever sent."
+		fix="Stop the timer, let the turn in flight finish, then start it again:
+  sudo systemctl stop wpa-gh-watch.timer
+  sudo journalctl -u wpa-openclaw -f -o cat | grep -v model-fetch     # until it goes quiet
+  sudo systemctl start wpa-gh-watch.timer
+Every tick that fires while the room is busy adds another writer, so the pile-up feeds itself until the timer is stopped."
+	elif has 'gateway timeout after|GatewayTransportError'; then
+		cause="The gateway did not answer within the wake timeout. The room is busy or slow, not misconfigured."
+		fix="See what it is doing — a long turn, or a model that is retrying:
+  sudo journalctl -u wpa-openclaw -o cat --since -15min | grep -v model-fetch
+If it says overloaded, that is the model provider and it clears on its own. Nothing needs fixing here; the event replays next tick."
+	elif has 'belongs to agent .*requested agent'; then
+		cause="The agent's database still carries the id it had BEFORE it was renamed, so its per-turn bookkeeping fails every turn. This is leftover from a rename (NVB-43), not a credential problem."
+		fix="Stamp the database with the id it actually has now, gateway stopped:
+  sudo systemctl stop wpa-openclaw.service
+  sudo sqlite3 /var/lib/openclaw/.openclaw/agents/qualety/agent/openclaw-agent.sqlite \\
+    \"UPDATE schema_meta SET agent_id='qualety' WHERE agent_id<>'qualety';\"
+  sudo systemctl start wpa-openclaw.service"
+	elif has 'waking .*:' && has 'error|failed|timed out'; then
 		cause="The event was detected but WAKING THE AGENT failed, so nothing was committed and the event will be replayed next tick."
 		fix="Usually a stale session key — it must name a session that already exists:
   grep GH_SESSION_KEY /etc/wpa-project.env

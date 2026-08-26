@@ -160,6 +160,30 @@ Error: request timed out'
 ok "a failed wake is not read as a credential problem" "WAKING THE AGENT failed"
 ok "and points at the session key" "GH_SESSION_KEY"
 
+# …but only when the wake failed for a reason a stale key explains. These four are
+# what the journal actually said the night the owner was told to check the session
+# key four times in a row while the room was simply busy (2026-08-27).
+run wpa-gh-watch 'waking agent:qualety:signal:group:abc: new comment
+EMBEDDED FALLBACK: Gateway agent timed out; running embedded agent
+Error: Sandbox mode requires Docker, but the Docker daemon is not available. Cannot connect to the Docker daemon at unix:///var/run/docker.sock'
+ok "the Docker error is named as the FALLBACK's, not the gateway's" "Do not chase Docker"
+absent "and is not blamed on the session key" "GH_SESSION_KEY"
+
+run wpa-gh-watch 'waking agent:qualety:signal:group:abc: new comment
+EmbeddedAttemptSessionTakeoverError: session file changed while embedded prompt lock was released'
+ok "two writers on one session says to stop the timer" "systemctl stop wpa-gh-watch.timer"
+absent "and is not blamed on the session key" "GH_SESSION_KEY"
+
+run wpa-gh-watch 'waking agent:qualety:signal:group:abc: new comment
+GatewayTransportError: gateway timeout after 150000ms'
+ok "a busy gateway is diagnosed as busy, not misconfigured" "busy or slow, not misconfigured"
+absent "and is not blamed on the session key" "GH_SESSION_KEY"
+
+run wpa-gh-watch 'waking agent:qualety:signal:group:abc: new comment
+error=OpenClaw agent database /var/lib/openclaw/.openclaw/agents/qualety/agent/openclaw-agent.sqlite belongs to agent code-invariants; requested agent qualety.'
+ok "a renamed agent's stale database stamp is its own diagnosis" "UPDATE schema_meta"
+absent "and is not blamed on the session key" "GH_SESSION_KEY"
+
 # --- the fallback, which must not be worse than what it replaced ---
 run wpa-gh-watch 'something nobody has ever seen before'
 ok "an unknown cause still names the unit" "wpa-gh-watch failed"

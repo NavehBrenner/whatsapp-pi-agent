@@ -11,6 +11,41 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — a failed wake blamed the session key four times while the room was just busy (2026-08-27)
+
+The owner was paged repeatedly by `wpa-gh-watch` and told, every time, to check
+`GH_SESSION_KEY`. The key was fine. The journal named four different causes that night,
+and the triage had one branch for all of them:
+
+```
+GatewayTransportError: gateway timeout after 150000ms
+EmbeddedAttemptSessionTakeoverError: session file changed while embedded prompt lock…
+Sandbox mode requires Docker … Cannot connect to the Docker daemon
+error=… database … belongs to agent code-invariants; requested agent qualety
+```
+
+**The Docker line is the trap.** Rootless Docker was running the whole time, on the
+socket the gateway is configured for. When the gateway does not answer in time the CLI
+runs its own embedded agent instead, and *that* process has no `DOCKER_HOST` — so the
+loudest error in the log belongs to the fallback, not to the failure. The triage now
+reads it first and says so outright: **do not chase Docker, check the gateway.**
+
+The other three each got their own branch and their own command. A stale key is now the
+*last* thing suggested rather than the first, which is where it belongs: a stale key
+fails immediately, it does not time out.
+
+**One of the four was a real bug, not a symptom.** The NVB-43 rename moved
+`agents/code-invariants/` to `agents/qualety/` but never restamped the database inside
+it — `schema_meta.agent_id` still read `code-invariants`, so every single turn failed its
+post-run auth bookkeeping. Fixed on the box, and all eight agents now verify:
+
+```
+UPDATE schema_meta SET agent_id='qualety' WHERE agent_id='code-invariants';
+```
+
+Renaming an agent is three moves, not two: the workspace, the agent directory, **and the
+id stamped inside its database**.
+
 ### Fixed — an hourly page said "credential leak" and meant "I could not read the file" (2026-08-26)
 
 `wpa-agent-auth` had failed every hour for over a day, always on `qualety` and only on

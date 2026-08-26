@@ -67,6 +67,26 @@ workspace and the auth profile are derived from that id**, at
 without moving both directories, with the gateway stopped, and the agent reads
 through to `main` — it works right up until `main` is the wrong answer (NVB-38).
 
+**Moving the directory is not enough: the database stamps its own agent id inside.**
+That was missed here and went unnoticed for three days — `schema_meta.agent_id` still
+read `code-invariants`, so every turn ended with *"database … belongs to agent
+code-invariants; requested agent qualety"* and failed its post-run auth bookkeeping.
+With the gateway stopped:
+
+```bash
+sudo sqlite3 /var/lib/openclaw/.openclaw/agents/<new-id>/agent/openclaw-agent.sqlite \
+  "UPDATE schema_meta SET agent_id='<new-id>' WHERE agent_id<>'<new-id>';"
+```
+
+Check every agent afterwards — the stamp should equal the directory name for all of
+them, and one command says so:
+
+```bash
+sudo bash -c 'for d in /var/lib/openclaw/.openclaw/agents/*/; do id=$(basename "$d");
+  echo "$id $(sqlite3 "file:$d/agent/openclaw-agent.sqlite?mode=ro" \
+  "select agent_id from schema_meta;" 2>/dev/null)"; done'
+```
+
 The name is worn by four things and they are not all the same thing: the OpenClaw
 agent id, the gate conversation `label`, the sender pair `name`, and the GitHub repo.
 The outbox directory follows the **agent**, not the label (`src/gate/signal.py`,
