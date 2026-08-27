@@ -370,6 +370,57 @@ Config needs one line to match — `sandbox.docker.user: "0:0"`, explained in
 [`config/openclaw.example.json5`](../../config/openclaw.example.json5). Without it the
 workspace bind is writable in name only.
 
+## Gateway logs stay out of journald (NVB-29)
+
+Threat model R4: **no message content in logs.** `signal-cli` and `wpa-gate` already
+honour that. `wpa-openclaw` did not — measured 2026-08-14 on a real Signal turn, the
+gateway wrote the assistant's reply body (and `Attachment:` paths) to stdout, which
+systemd puts in journald.
+
+OpenClaw has no "do not log message bodies" switch. What it does have is independent
+console vs file levels. The live config (mirrored in
+[`config/openclaw.example.json5`](../../config/openclaw.example.json5)) must carry:
+
+```json5
+logging: {
+  level: "info",
+  consoleLevel: "warn",   // unit stdout → journald; reply text is info-level
+  file: "/var/lib/openclaw/.openclaw/logs/openclaw.log",
+}
+```
+
+Create the directory once, as the gateway user, before the first write:
+
+```bash
+sudo -u openclaw mkdir -p /var/lib/openclaw/.openclaw/logs
+sudo -u openclaw chmod 700 /var/lib/openclaw/.openclaw/logs
+```
+
+Apply on the **live** file (`/var/lib/openclaw/.openclaw/openclaw.json`), then:
+
+```bash
+sudo systemctl restart wpa-openclaw.service
+# confirm the file exists and is not group/world-readable after the first log line
+sudo -u openclaw stat -c '%a %U %n' /var/lib/openclaw/.openclaw/logs/openclaw.log
+```
+
+**Where to look afterwards**
+
+| Need | Where |
+|---|---|
+| Unit start/stop, warn+ | `journalctl -u wpa-openclaw` |
+| `[gateway] ready`, tool-policy removal, model-fetch URL | `openclaw logs --follow` or the file above |
+| Message bodies | nowhere — if a known phrase appears in journald, this block is not live |
+
+**Probes must use neutral text.** `openclaw agent -m "…"` prints the reply into the
+gateway log path, and `sudo` records the command line. A probe that echoes a realistic
+message writes content twice. Use a throwaway token such as `ping-nvb29-check`, never a
+phrase from a real chat.
+
+**Residual.** Generated media filenames can embed prompt tokens
+(`red_bicycle---<uuid>.jpg`). Keeping those paths out of journald is this logging split;
+renaming the files is upstream and not claimed fixed here.
+
 Checks that the move actually took, rather than looked like it did:
 
 ```bash
@@ -408,7 +459,16 @@ sudo waydroid status
 - [ ] Confirmation hook fires on every outbound action and blocks until `YES`
 - [ ] A `YES` is matched to a specific pending action, not treated as a global proceed
 - [ ] Egress allowlist rejects an unknown recipient before the confirmation prompt appears
-- [ ] No message content in logs (`journalctl -u wpa-reader | grep` for a known phrase)
+- [ ] **No message content in journald** — a real Signal turn with a **known unique
+      phrase**, then grep all three units (not only the reader). The gateway was the one
+      that failed this on 2026-08-14 (NVB-29); ticking it on `wpa-reader` alone is how it
+      stayed open:
+      ```bash
+      PHRASE='your-unique-neutral-token'
+      sudo journalctl -u wpa-openclaw -u signal-cli -u wpa-gate -u wpa-reader --since "10 min ago" | grep -F "$PHRASE"
+      # must print nothing. Diagnostics that used to be in journald live in:
+      sudo -u openclaw grep -F "[gateway]" /var/lib/openclaw/.openclaw/logs/openclaw.log | tail
+      ```
 
 The tool-surface items are not a code-review nicety. They are the controls in
 [threat-model.md](../threat-model.md); if one is missing, the others are load-bearing alone
