@@ -10,4 +10,11 @@ Type=oneshot
 # The text is no longer inline here: wpa-triage reads this unit's journal and
 # composes a message naming the cause and the command that fixes it, falling
 # back to what this line used to say when nothing matches (NVB-41).
+# wpa-triage remembers which alerts it has already sent here, so a unit failing
+# on a 60s timer pages once rather than sixty times an hour. Shared by every
+# *-failed unit on purpose: one cause that breaks two units should be judged
+# against one window, not two.
+StateDirectory=wpa-triage
+StateDirectoryMode=0700
+
 ExecStart=/usr/local/bin/wpa-triage wpa-project-sync owner

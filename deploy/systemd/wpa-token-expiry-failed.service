@@ -10,4 +10,11 @@ Type=oneshot
 # unwatched AND appear watched. Note that an unreachable GitHub is NOT a failure —
 # the script exits 0 on that path deliberately — so reaching here means something
 # structural, not a network blip.
+# wpa-triage remembers which alerts it has already sent here, so a unit failing
+# on a 60s timer pages once rather than sixty times an hour. Shared by every
+# *-failed unit on purpose: one cause that breaks two units should be judged
+# against one window, not two.
+StateDirectory=wpa-triage
+StateDirectoryMode=0700
+
 ExecStart=/usr/local/bin/wpa-triage wpa-token-expiry owner

@@ -234,7 +234,12 @@ Then: sudo systemctl start wpa-oc-auth"
 	;;
 
 wpa-gh-watch)
-	if has 'waking .*:' && has 'error|failed|timed out'; then
+	# `! has FailoverError` because a provider failure ALSO looks like this: the
+	# wake is logged, then the turn dies, so both halves match and this branch
+	# would confidently send someone to check GH_SESSION_KEY for a key that is
+	# perfectly fine. Observed 2026-08-27, when credits ran out. The provider rule
+	# in pass 2 is the correct diagnosis; this one must yield to it.
+	if has 'waking .*:' && has 'error|failed|timed out' && ! has 'FailoverError'; then
 		cause="The event was detected but WAKING THE AGENT failed, so nothing was committed and the event will be replayed next tick."
 		fix="Usually a stale session key — it must name a session that already exists:
   grep GH_SESSION_KEY /etc/wpa-project.env
@@ -260,6 +265,27 @@ esac
 # ---------------------------------------------------------------------------
 if [ -n "$cause" ]; then
 	: # already diagnosed above
+
+elif has 'FailoverError'; then
+	# ⚠️ MATCHED ON `FailoverError`, NOT ON "run out of credits", AND THE DIFFERENCE
+	# IS NOT COSMETIC. wpa-gh-watch logs the events it found, and those include
+	# GitHub comment bodies verbatim — on 2026-08-27 the opencode bot posted its own
+	# quota error into issue #50, so the phrase "run out of credits" was sitting in
+	# the journal of a watcher whose actual failure could have been anything at all.
+	# `FailoverError` is OpenClaw's own error type: it can only be there because a
+	# turn on THIS box failed, which is the thing we are trying to classify.
+	#
+	# This outranks 401 and the rate-limit rule below because it is also a 403 and
+	# would otherwise be read as "GitHub rate-limited us — no action needed", which
+	# is the one message that would make the owner ignore it.
+	cause="The MODEL PROVIDER refused the turn — out of credits, or the plan needs upgrading. No agent on this box can answer until that is fixed; the watcher itself is fine and detected the event correctly."
+	fix="Add credits or upgrade, then do nothing else — no restart is needed and the next tick recovers on its own:
+  https://grok.com/?_s=usage
+
+Confirm it cleared:
+  journalctl -u wpa-openclaw -n 20 | grep -i -e credits -e FailoverError
+Nothing was lost: no state is committed until a wake lands, so every event since this started is replayed."
+
 elif has '\b401\b|bad credentials'; then
 	# Deliberately the per-unit fix, not a menu of every credential on the box:
 	# a wpa-gh-watch 401 is the issues PAT, and offering the push PAT's path
@@ -309,6 +335,43 @@ else
 	text="⚠️ $what
 
 $fix"
+fi
+
+# ---------------------------------------------------------------------------
+# REPEAT SUPPRESSION. A failing unit on a 60s timer pages every 60s. On 2026-08-27
+# that was 27 identical alerts for one cause the owner could fix exactly once, and
+# the useful information — WHICH failure — was in the first one. An alert that
+# arrives every minute is not monitoring; it is a mute button being installed by
+# hand, and once muted the next real failure is silent too. Same argument as
+# curl's --retry in gh-watch.sh, one layer up.
+#
+# Keyed on the composed MESSAGE, not on the unit, because the message already
+# names the cause. That falls out correctly in both directions with no per-branch
+# bookkeeping: two different failures of one unit both get through, and one cause
+# hitting two units is reported for each. wpa-agent-auth messages name the
+# affected agents, so a second agent breaking is a new message and pages.
+#
+# FAILS OPEN. If the state directory is missing or unwritable the alert is sent
+# anyway — a suppressor that cannot remember must not become a suppressor that
+# swallows. The stamp is also written BEFORE the notifier runs, so a send that
+# fails still counts against the window; the alternative is retrying a broken
+# notifier every 60s, which is the thing this exists to stop.
+#
+# ponytail: one file per distinct message, the epoch inside it is the clock.
+# Upgrade path if it ever needs escalation ("still broken after 6h"): keep a count
+# in the file beside the timestamp.
+state=${STATE_DIRECTORY:-/var/lib/wpa-triage}
+window=${WPA_TRIAGE_REPEAT_SECONDS:-43200}   # 12h — at most twice a day per cause
+if mkdir -p "$state" 2>/dev/null; then
+	stamp="$state/$(printf '%s' "$text" | md5sum | cut -d' ' -f1)"
+	now=$(date +%s)
+	last=$(cat "$stamp" 2>/dev/null || true)
+	case "$last" in '' | *[!0-9]*) last=0 ;; esac
+	if [ "$((now - last))" -lt "$window" ]; then
+		echo "wpa-triage: this exact alert was sent $((now - last))s ago; suppressed (window ${window}s)" >&2
+		exit 0
+	fi
+	printf '%s' "$now" >"$stamp" 2>/dev/null || true
 fi
 
 exec /usr/local/bin/wpa-outbox-notify "$agent" "$text"

@@ -58,11 +58,22 @@ JSON
 export PATH="$fx/bin:$PATH"
 export OUT="$fx/sent"
 export WPA_OPENCLAW_CONFIG="$fx/openclaw.json"
+# The repeat suppressor keys on the composed message, so every distinct case below
+# is a distinct key and passes through untouched. Pointed at the fixture dir
+# because the default is /var/lib and this suite does not run as root — without
+# this the suppressor would fail open and never be exercised at all.
+export STATE_DIRECTORY="$fx/state"
 
 fails=0
+# Each case starts with an empty suppressor. Cases below deliberately reuse
+# messages — several signatures share one fixed remediation string — and without
+# this reset the FIRST case to produce a given message would be the only one that
+# ever sends, failing every later case for a reason that has nothing to do with
+# what it is testing. The suppression block near the end manages its own state.
 run() { # run <unit> <journal>
 	JOURNAL=$2 ; export JOURNAL
 	rm -f "$OUT"
+	rm -rf "$STATE_DIRECTORY"
 	sh "$fx/triage.sh" "$1" owner >/dev/null 2>&1 || true
 	sent=$(cat "$OUT" 2>/dev/null || echo "")
 }
@@ -159,6 +170,67 @@ run wpa-gh-watch 'waking agent:qualety:signal:group:abc: 1 PR
 Error: request timed out'
 ok "a failed wake is not read as a credential problem" "WAKING THE AGENT failed"
 ok "and points at the session key" "GH_SESSION_KEY"
+
+# --- the model provider is out of credits (2026-08-27) --------------------------
+run wpa-gh-watch 'waking agent:qualety:signal:group:abc: new comment on issue #50
+GatewayClientRequestError: FailoverError: 403 "You have run out of credits or need a Grok subscription."'
+ok "a provider refusal names the provider, not the watcher" "MODEL PROVIDER refused"
+ok "and says no restart is needed" "no restart is needed"
+ok "and reassures that events are replayed" "replayed"
+absent "and is NOT misread as a stale session key" "GH_SESSION_KEY"
+absent "and is NOT misread as a GitHub rate limit" "rate-limited"
+absent "and does not tell you to mint a PAT" "Mint a fine-grained PAT"
+
+# The reason the rule matches `FailoverError` and not the human phrase: gh-watch
+# logs the GitHub comment bodies it found, and on 2026-08-27 the opencode bot had
+# posted its own quota error into an issue. That text in the journal says nothing
+# about whether THIS box failed, so it must not classify.
+run wpa-gh-watch 'waking agent:qualety:signal:group:abc: new comment by bot on issue #50: APIError: spending-limit: You have run out of credits
+Error: request timed out'
+absent "a quota phrase quoted from a GitHub comment does not fake a provider failure" "MODEL PROVIDER refused"
+ok "and the real cause is still diagnosed" "WAKING THE AGENT failed"
+
+# --- repeat suppression ---------------------------------------------------------
+# The 2026-08-27 case: one cause, 27 identical alerts, because the unit retried
+# every 60s. The first must send and the second must not.
+JOURNAL='GatewayClientRequestError: FailoverError: 403 out of credits' ; export JOURNAL
+rm -rf "$STATE_DIRECTORY"
+rm -f "$OUT"
+sh "$fx/triage.sh" wpa-gh-watch owner >/dev/null 2>&1 || true
+first=$(cat "$OUT" 2>/dev/null || echo "")
+rm -f "$OUT"
+sh "$fx/triage.sh" wpa-gh-watch owner >/dev/null 2>&1 || true
+second=$(cat "$OUT" 2>/dev/null || echo "")
+if [ -n "$first" ]; then printf '  ok   %s\n' "the first alert for a cause is sent"
+else printf '  FAIL %s\n' "the first alert for a cause is sent"; fails=$((fails + 1)); fi
+if [ -z "$second" ]; then printf '  ok   %s\n' "an identical repeat within the window is suppressed"
+else printf '  FAIL %s\n' "an identical repeat within the window is suppressed"; fails=$((fails + 1)); fi
+
+# A DIFFERENT failure of the same unit must still get through — suppression is
+# keyed on the cause, not on the unit, or the second outage of the day is silent.
+run wpa-gh-watch 'curl: (6) Could not resolve host: api.github.com'
+ok "a different cause on the same unit is not suppressed" "DNS or connectivity"
+
+# And the window is honoured rather than being a permanent mute.
+# Deliberately NOT via run(), which resets the suppressor: the whole assertion is
+# that a stamp already on disk stops mattering once the window has elapsed. Send
+# once, then send the identical thing again with the window at zero.
+JOURNAL='curl: (6) Could not resolve host: api.github.com' ; export JOURNAL
+rm -rf "$STATE_DIRECTORY"
+rm -f "$OUT"
+sh "$fx/triage.sh" wpa-gh-watch owner >/dev/null 2>&1 || true
+rm -f "$OUT"
+WPA_TRIAGE_REPEAT_SECONDS=0 ; export WPA_TRIAGE_REPEAT_SECONDS
+sh "$fx/triage.sh" wpa-gh-watch owner >/dev/null 2>&1 || true
+sent=$(cat "$OUT" 2>/dev/null || echo "")
+ok "the same cause sends again once the window has passed" "DNS or connectivity"
+unset WPA_TRIAGE_REPEAT_SECONDS
+
+# Suppression must FAIL OPEN: if the state dir cannot be created, still alert.
+STATE_DIRECTORY=/proc/nonexistent/state ; export STATE_DIRECTORY
+run wpa-gh-watch 'curl: (22) The requested URL returned error: 401'
+ok "an unwritable state dir still sends the alert" "rejected (401)"
+STATE_DIRECTORY="$fx/state" ; export STATE_DIRECTORY
 
 # --- the fallback, which must not be worse than what it replaced ---
 run wpa-gh-watch 'something nobody has ever seen before'
