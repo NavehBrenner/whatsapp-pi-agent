@@ -11,6 +11,35 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — gateway reply text stops at a private log file, not journald (NVB-29)
+
+`wpa-openclaw` had been writing the assistant's **reply body** (and `Attachment:` paths) to
+stdout. Under systemd that is journald. Found 2026-08-14 by the runbook's known-phrase
+grep on a real Signal turn; `signal-cli` and `wpa-gate` were already clean.
+
+OpenClaw exposes no "do not log message bodies" switch. `redactSensitive` masks tool/config
+fields, not free prose. What it does expose is independent `consoleLevel` and file `level`.
+The example config now sets:
+
+- `logging.consoleLevel: "warn"` — unit stdout / journald drops the info-level reply dump
+- `logging.file: /var/lib/openclaw/.openclaw/logs/openclaw.log` — diagnostics that used to
+  ride journald (`[gateway] ready`, tool-policy lines, model-fetch URLs) land in a
+  gateway-owned path instead of `/tmp/openclaw` or the system log
+
+Runbook 04 documents creating that directory `0700`, confirming the file is `0600`, and
+replaces the pre-live checklist item that only grepped `wpa-reader` — the unit that was
+never the leak. Probes must use neutral `-m` text; a realistic phrase is content in the log
+and in `sudo`'s command line.
+
+**Not claimed fixed here:** media filenames derived from the prompt
+(`red_bicycle---<uuid>.jpg`). Keeping those paths out of journald is this split; renaming
+the files is upstream.
+
+**Not verified from this PR's sandbox.** Applying the block is a live-config edit on the
+Pi plus `systemctl restart wpa-openclaw`, then a known-phrase Signal turn across
+`wpa-openclaw` / `signal-cli` / `wpa-gate`. Until that passes, treat the checklist item as
+open even though the mirror landed.
+
 ### Fixed — an hourly page said "credential leak" and meant "I could not read the file" (2026-08-26)
 
 `wpa-agent-auth` had failed every hour for over a day, always on `qualety` and only on

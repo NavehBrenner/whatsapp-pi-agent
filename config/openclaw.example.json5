@@ -1349,6 +1349,55 @@
     },
   },
 
+  // -------------------------------------------------------------------------
+  // Logging — journald must not hold message text (threat model R4 / NVB-29).
+  //
+  // Measured 2026-08-14 on a real Signal turn: wpa-openclaw wrote the assistant's
+  // reply body (and Attachment: paths) to stdout with no [component] tag. Under
+  // systemd that is journald. signal-cli and wpa-gate are clean; the adopted
+  // gateway was not.
+  //
+  // OpenClaw has no "do not log message bodies" switch. redactSensitive masks
+  // tool/config payload fields, not free prose; redactPatterns cannot match an
+  // arbitrary sentence. What it does have is independent console vs file levels.
+  //
+  // WHY consoleLevel warn: the unit's stdout is journald. Dropping info-level
+  // console output is what keeps reply text and prompt-derived media paths out of
+  // the system log. It also drops [gateway] ready, tool-policy removal lines and
+  // model-fetch diagnostics from journald — those move to the file below, they are
+  // not discarded.
+  //
+  // WHY file under the gateway home, not /tmp/openclaw: the default path is a
+  // daily JSONL under /tmp, world-reachable on a multi-user box and cleared on
+  // reboot. Message-adjacent diagnostics are residual content under R4; they get
+  // the same treatment as /var/lib/wpa-reader/messages.jsonl — gateway-owned, 0600,
+  // outside the system log. Create the directory once as the gateway user:
+  //
+  //     sudo -u openclaw mkdir -p /var/lib/openclaw/.openclaw/logs
+  //     sudo -u openclaw chmod 700 /var/lib/openclaw/.openclaw/logs
+  //
+  // OpenClaw creates the file itself; confirm it stays 0600 after the first write.
+  // Tail with `openclaw logs --follow` (or the path below), not journalctl, for
+  // gateway diagnostics. journalctl -u wpa-openclaw is for unit start/stop and
+  // warn+ only once this block is live.
+  //
+  // ⚠️ APPLYING THIS IS A LIVE-CONFIG EDIT on the Pi
+  // (/var/lib/openclaw/.openclaw/openclaw.json), then restart wpa-openclaw — the
+  // example file does not drive the box. Verify with a known phrase on a real
+  // Signal turn before ticking the runbook 04 checklist item.
+  //
+  // Residual: generated media filenames can still embed prompt tokens
+  // (red_bicycle---<uuid>.jpg). Keeping those paths out of journald is this
+  // block; renaming the files themselves is upstream and not claimed here.
+  // -------------------------------------------------------------------------
+  logging: {
+    level: "info",
+    consoleLevel: "warn",
+    file: "/var/lib/openclaw/.openclaw/logs/openclaw.log",
+    // redactSensitive stays at the schema default ("tools"). It does not solve
+    // R4 for free-text replies; do not set it to "off".
+  },
+
   gateway: {
     auth: {
       rateLimit: { maxAttempts: 10, windowMs: 60000, lockoutMs: 300000, exemptLoopback: true },
