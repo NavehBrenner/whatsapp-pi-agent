@@ -30,9 +30,14 @@ StateDirectoryMode=0700
 ExecStart=/usr/local/bin/wpa-gh-watch
 # A wake runs a real agent turn, so this unit can outlive its own timer interval.
 # Bounded so a hung turn fails and reports rather than pinning the watcher. The
-# script's own bounds are 90s for the inline mirror sync plus --timeout 120 for the
+# script's own bounds are 90s for the inline mirror sync plus --timeout 300 for the
 # agent; this is the outer backstop and must stay above their sum.
-TimeoutStartSec=300
+#
+# That sum is 90 + 330, not 90 + 300: `openclaw agent --timeout N` gives up on the
+# transport at N+30, so the CLI outlives the run budget it sets. Sizing this to
+# 90 + N would make systemd the thing that kills a healthy long turn, which is the
+# same failure the --timeout note in gh-watch.sh describes, one layer out.
+TimeoutStartSec=450
 
 NoNewPrivileges=yes
 PrivateTmp=yes

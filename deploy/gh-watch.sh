@@ -30,8 +30,8 @@ owner_file="$state/token-owner"
 
 # ONE WAKE AT A TIME. A room turn takes minutes — reading a PR diff is not fast —
 # while this unit fires every 60s, so ticks pile up: the second one waits on the
-# gateway until the transport gives up at 150s. `openclaw agent` then falls back to
-# an EMBEDDED agent with a fresh session, which is wrong twice over. It loses the
+# gateway until the transport gives up, and `openclaw agent` then falls back to an
+# EMBEDDED agent with a fresh session, which is wrong twice over. It loses the
 # room's memory and the conversation so far, which is the entire reason the wake
 # below uses --session-key. And it runs outside the gateway's environment, so it has
 # no DOCKER_HOST, cannot start a sandbox, and exits 1 — paging the owner about a
@@ -42,6 +42,9 @@ owner_file="$state/token-owner"
 # memory of is worse than a tick that skipped. The fallback is not wanted here at
 # any time, and `openclaw agent` has no flag to refuse it — so the fix is to never
 # be late enough to trigger it.
+#
+# The lock is necessary but was never sufficient: see the --timeout note below for
+# the second, larger way this unit was making itself late.
 #
 # Skipping costs nothing: no state is committed until a wake lands, so the next tick
 # re-reports whatever this one found.
@@ -235,8 +238,37 @@ fi
 #
 # A failure here must be loud: a detector that silently stops reporting is
 # indistinguishable from a quiet repo, which is the whole failure this guards.
+#
+# --timeout IS THE RUN BUDGET, NOT JUST A GIVE-UP TIME, AND 120 WAS BELOW THE COST OF
+# THE TURN IT ASKS FOR. It set two limits at once (openclaw 2026.7.1-2,
+# resolveGatewayAgentTimeoutMs): the agent run is killed at N seconds, and the CLI's
+# transport gives up at N+30 — which is where the unexplained "gateway timeout after
+# 150000ms" came from, 120+30, not from a tick pile-up.
+#
+# So every wake that ran long was killed by this flag and then produced BOTH of the
+# symptoms we were chasing separately:
+#
+#   1. The run's in-flight tool call is cancelled, and the agent posts the wreckage
+#      into the room — `⚠️ 🛠️ Exec failed: sleep 75 / echo done`. The trajectory says
+#      exitSignal=SIGTERM, exitReason=manual-cancel, timedOut=FALSE: exec did not
+#      time out, the run around it was aborted. Whichever tool happened to be running
+#      when the axe fell got the blame, which is why the message named a different
+#      command each time.
+#   2. Thirty seconds later the transport gives up, the embedded fallback fires, has
+#      no DOCKER_HOST, and exits 1 → OnFailure → the owner is paged about a watcher
+#      that was working correctly.
+#
+# Measured on 2026-08-27: a real wake spends 27–31s in session-resource-loader before
+# the model runs at all, and a PR review lands around 146s. 20 of 20 gateway-triggered
+# runs in that session carried timeoutMs=120000 while Naveh's own messages, which
+# inherit agents.defaults.timeoutSeconds, carried 600000 — the watcher was the only
+# caller holding the agent to a budget its own turns could not meet.
+#
+# 300 sits well above the observed turn and well under agents.defaults.timeoutSeconds,
+# so a genuinely hung turn still fails and still pages. TimeoutStartSec on the unit is
+# the outer backstop and must stay above 90s of sync plus this plus its own +30.
 echo "waking $GH_SESSION_KEY: $events"
-openclaw agent --session-key "$GH_SESSION_KEY" --deliver --timeout 120 \
+openclaw agent --session-key "$GH_SESSION_KEY" --deliver --timeout 300 \
   --message "GitHub activity on $GH_REPO — $events$stale. Open PRs are checked out under /workspace/pr-<N>/ with the diff at /workspace/pr-<N>.diff, and /workspace/repo-sync.json lists each one's head commit — read those rather than guessing, and say which commit you reviewed. Work out what it means for the work in flight, and tell Naveh only if it needs him."
 
 # Only now, and only because the wake returned 0. set -e means a failed wake never
