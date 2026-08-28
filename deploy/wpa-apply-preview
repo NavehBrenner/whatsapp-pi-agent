@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# Render what a wpa__deploy would do, from artifacts on disk — never from model text.
+#
+# Installed as /usr/local/bin/wpa-apply-preview. No arguments. openclaw may invoke
+# it via NOPASSWD sudo (deploy/sudoers.d/wpa-openclaw).
+#
+# Exit codes:
+#   0  preview ok (candidate absent, or present and passes gate.signal --check)
+#   2  candidate present and failed --check  (caller must refuse before prompting)
+#   1  other failure
+#
+# stdout carries key=value metadata plus a ---summary--- block short enough for
+# Signal's 512-char approval description. The full unified diff is written under
+# the builder workspace for a human who wants more than the summary.
+set -euo pipefail
+
+[ "$(id -u)" = 0 ] || { echo "wpa-apply-preview: must run as root" >&2; exit 2; }
+
+opt="${WPA_OPT:-/opt/wpa}"
+live="${WPA_LIVE_CONFIG:-$opt/config/config.toml}"
+workspace="${WPA_WORKSPACE:-/var/lib/openclaw/.openclaw/workspace-builder}"
+candidate="${WPA_CANDIDATE_CONFIG:-$workspace/config/config.toml}"
+diff_out="${WPA_PREVIEW_DIFF:-$workspace/config/last-deploy-preview.diff}"
+text_out="${WPA_PREVIEW_TEXT:-$workspace/config/last-deploy-preview.txt}"
+src="${WPA_GATE_SRC:-$opt/src}"
+
+if [ ! -d "$opt/.git" ]; then
+	echo "wpa-apply-preview: $opt is not a git checkout" >&2
+	exit 1
+fi
+
+# Fetch so target sha is real; do not move HEAD. apply is what resets.
+git -C "$opt" fetch --quiet origin main 2>/dev/null || {
+	echo "wpa-apply-preview: git fetch origin main failed" >&2
+	exit 1
+}
+
+sha=$(git -C "$opt" rev-parse origin/main)
+subject=$(git -C "$opt" log -1 --pretty=%s origin/main)
+sha8=$(printf '%s' "$sha" | cut -c1-8)
+# Subject clipped so the summary stays inside the approval budget.
+subject40=$(printf '%s' "$subject" | cut -c1-40)
+
+live_hash="missing"
+if [ -f "$live" ]; then
+	live_hash=$(sha256sum "$live" | awk '{print $1}')
+fi
+live8=$(printf '%s' "$live_hash" | cut -c1-8)
+
+has_candidate=0
+cand_hash="none"
+cand8="none"
+check_line="ok (no candidate — live config unchanged)"
+config_line="config: none — live unchanged"
+diff_lines="0"
+check_rc=0
+
+mkdir -p "$(dirname "$diff_out")"
+# Writable by openclaw so the agent can open the full diff after the prompt.
+if id openclaw >/dev/null 2>&1; then
+	chown openclaw:openclaw "$(dirname "$diff_out")" 2>/dev/null || true
+fi
+
+if [ -f "$candidate" ]; then
+	has_candidate=1
+	cand_hash=$(sha256sum "$candidate" | awk '{print $1}')
+	cand8=$(printf '%s' "$cand_hash" | cut -c1-8)
+
+	if [ ! -f "$live" ]; then
+		diff -u /dev/null "$candidate" >"$diff_out" || true
+		config_line="config: NEW file (${cand8})"
+	elif cmp -s "$live" "$candidate"; then
+		: >"$diff_out"
+		config_line="config: identical to live (${cand8})"
+	else
+		diff -u "$live" "$candidate" >"$diff_out" || true
+		# diff exits 1 on differences; keep going.
+		added=$(grep -c '^+' "$diff_out" 2>/dev/null || echo 0)
+		removed=$(grep -c '^-' "$diff_out" 2>/dev/null || echo 0)
+		# Subtract the ---/+++ headers that also start with those markers.
+		added=$((added > 2 ? added - 2 : 0))
+		removed=$((removed > 2 ? removed - 2 : 0))
+		diff_lines=$((added + removed))
+		config_line="config: +${added}/-${removed} live→cand"
+	fi
+
+	if [ -f "$src/gate/signal.py" ]; then
+		set +e
+		check_out=$(PYTHONPATH="$src" python3 -m gate.signal --check "$candidate" 2>&1)
+		check_rc=$?
+		set -e
+		if [ "$check_rc" -ne 0 ]; then
+			check_line="FAIL: $(printf '%s' "$check_out" | head -1 | cut -c1-80)"
+		else
+			n_conv=$(printf '%s' "$check_out" | grep -c 'pinned members' || true)
+			check_line="OK (${n_conv} conversation(s))"
+		fi
+	else
+		check_line="FAIL: gate source missing at $src"
+		check_rc=2
+	fi
+else
+	: >"$diff_out"
+fi
+
+if id openclaw >/dev/null 2>&1; then
+	chown openclaw:openclaw "$diff_out" 2>/dev/null || true
+	chmod 0600 "$diff_out" 2>/dev/null || true
+fi
+
+# Compact summary for the Signal approval card (plus plugin warning, under 512).
+summary=$(cat <<EOF
+main: ${sha8} ${subject40}
+code: reset ${opt} → origin/main
+${config_line}
+live:${live8} cand:${cand8}
+check: ${check_line}
+diff: ${diff_out}
+EOF
+)
+
+printf '%s\n' "$summary" >"$text_out"
+if id openclaw >/dev/null 2>&1; then
+	chown openclaw:openclaw "$text_out" 2>/dev/null || true
+	chmod 0600 "$text_out" 2>/dev/null || true
+fi
+
+printf 'sha=%s\n' "$sha"
+printf 'subject=%s\n' "$subject"
+printf 'has_candidate=%s\n' "$has_candidate"
+printf 'live_sha256=%s\n' "$live_hash"
+printf 'candidate_sha256=%s\n' "$cand_hash"
+printf 'check=%s\n' "$check_line"
+printf 'diff_path=%s\n' "$diff_out"
+printf '---summary---\n'
+printf '%s\n' "$summary"
+printf '---end---\n'
+
+if [ "$has_candidate" -eq 1 ] && [ "$check_rc" -ne 0 ]; then
+	exit 2
+fi
+exit 0

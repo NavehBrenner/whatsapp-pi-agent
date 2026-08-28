@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Put origin/main on the box, optionally install the candidate gate config, run install.sh.
+#
+# Installed as /usr/local/bin/wpa-apply. **No arguments.** openclaw may invoke it
+# via NOPASSWD sudo (deploy/sudoers.d/wpa-openclaw). A compromised gateway holds
+# this right whether or not a human approved the call — that is NVB-22, accepted
+# here with the trigger named rather than pretended away.
+#
+# Sequence (fixed; the agent chooses when, never what):
+#   1. re-validate candidate if present (gate.signal --check)
+#   2. git fetch + reset --hard origin/main in /opt/wpa
+#   3. install candidate over live config (root:wpa-config 0640) when present
+#   4. deploy/install.sh  (reports restarts; never performs them)
+#
+# Exit 2 = check failed before any mutation. Exit 1 = failure after partial work
+# (stdout names the step). Exit 0 = done.
+set -euo pipefail
+
+[ "$(id -u)" = 0 ] || { echo "wpa-apply: must run as root" >&2; exit 2; }
+
+opt="${WPA_OPT:-/opt/wpa}"
+live="${WPA_LIVE_CONFIG:-$opt/config/config.toml}"
+workspace="${WPA_WORKSPACE:-/var/lib/openclaw/.openclaw/workspace-builder}"
+candidate="${WPA_CANDIDATE_CONFIG:-$workspace/config/config.toml}"
+src="${WPA_GATE_SRC:-$opt/src}"
+
+if [ ! -d "$opt/.git" ]; then
+	echo "wpa-apply: $opt is not a git checkout" >&2
+	exit 1
+fi
+
+config_applied=0
+has_candidate=0
+
+# --- 1. validate candidate before mutating anything ---------------------------
+if [ -f "$candidate" ]; then
+	has_candidate=1
+	if [ ! -f "$src/gate/signal.py" ]; then
+		echo "wpa-apply: gate source missing at $src — refuse to proceed" >&2
+		exit 2
+	fi
+	set +e
+	check_out=$(PYTHONPATH="$src" python3 -m gate.signal --check "$candidate" 2>&1)
+	check_rc=$?
+	set -e
+	if [ "$check_rc" -ne 0 ]; then
+		echo "wpa-apply: candidate failed gate.signal --check:" >&2
+		printf '%s\n' "$check_out" >&2
+		exit 2
+	fi
+fi
+
+# --- 2. code: origin/main only ------------------------------------------------
+echo "wpa-apply: fetching origin/main in $opt"
+git -C "$opt" fetch --quiet origin main
+sha=$(git -C "$opt" rev-parse origin/main)
+subject=$(git -C "$opt" log -1 --pretty=%s origin/main)
+echo "wpa-apply: resetting to ${sha} (${subject})"
+git -C "$opt" reset --hard origin/main
+
+# After reset, gate source is the new tree — re-check candidate against it so a
+# schema change on main cannot install a config the new gate will not load.
+src="$opt/src"
+if [ "$has_candidate" -eq 1 ]; then
+	set +e
+	check_out=$(PYTHONPATH="$src" python3 -m gate.signal --check "$candidate" 2>&1)
+	check_rc=$?
+	set -e
+	if [ "$check_rc" -ne 0 ]; then
+		echo "wpa-apply: candidate failed --check against new tree; config NOT installed." >&2
+		echo "wpa-apply: code is at $sha; live config unchanged. install.sh still runs." >&2
+		printf '%s\n' "$check_out" >&2
+		has_candidate=0
+	fi
+fi
+
+# --- 3. config ----------------------------------------------------------------
+if [ "$has_candidate" -eq 1 ]; then
+	echo "wpa-apply: installing candidate → $live"
+	# wpa-config group must exist (install-reader creates it). Mode and owner are
+	# load-bearing — see AGENTS.md / runbook 04.
+	if getent group wpa-config >/dev/null 2>&1; then
+		install -o root -g wpa-config -m 0640 "$candidate" "$live"
+	else
+		# Fresh fixture / test host without the group: still root-only readable.
+		install -o root -g root -m 0640 "$candidate" "$live"
+		echo "wpa-apply: warning — wpa-config group missing; installed root:root 0640" >&2
+	fi
+	config_applied=1
+else
+	echo "wpa-apply: no candidate (or post-reset check failed) — live config left alone"
+fi
+
+# --- 4. install.sh ------------------------------------------------------------
+echo "wpa-apply: running deploy/install.sh"
+# install.sh is non-fatal on its internal checks; surface its exit if it hard-fails.
+if ! "$opt/deploy/install.sh"; then
+	echo "wpa-apply: install.sh failed (code is at $sha; config_applied=$config_applied)" >&2
+	printf 'sha=%s\n' "$sha"
+	printf 'subject=%s\n' "$subject"
+	printf 'config_applied=%s\n' "$config_applied"
+	printf 'reason=install.sh failed after reset\n'
+	exit 1
+fi
+
+printf 'sha=%s\n' "$sha"
+printf 'subject=%s\n' "$subject"
+printf 'config_applied=%s\n' "$config_applied"
+printf 'has_candidate=%s\n' "$has_candidate"
+printf 'reason=deployed %s config_applied=%s\n' "$(printf '%s' "$sha" | cut -c1-8)" "$config_applied"
+printf '---summary---\n'
+printf 'deployed %s %s\n' "$(printf '%s' "$sha" | cut -c1-8)" "$subject"
+printf 'config_applied=%s\n' "$config_applied"
+printf '---end---\n'
+echo "wpa-apply: done"

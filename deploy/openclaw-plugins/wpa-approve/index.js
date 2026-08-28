@@ -40,6 +40,8 @@
 // tool where that distinction matters — NVB-37's deploy — the description is rendered
 // by host code from artifacts on disk, and this hook passes it through untouched.
 
+import { execFileSync } from "node:child_process";
+
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
 import { approvalRouteExists } from "./route.js";
@@ -56,28 +58,83 @@ const DESCRIPTION_MAX = 512;
 // The longest wait core will honour. Passing more is silently clamped, so say it here.
 const MAX_TIMEOUT_MS = 600_000;
 
+// Preview binary installed by deploy/install.sh. No arguments; sudoers pins that.
+const PREVIEW_BIN = process.env.WPA_PREVIEW_BIN || "/usr/local/bin/wpa-apply-preview";
+
+/**
+ * Host-rendered deploy summary from disk artifacts. Never from `event.params`.
+ *
+ * Exit 2 from the helper means the candidate failed `gate.signal --check`. We turn
+ * that into a hard block *here* so a bad config never reaches a human decision and
+ * never spends an approval id. Other failures also block rather than prompt on an
+ * empty description — prompting on "preview failed" would train allow-once taps.
+ */
+function deployDescribe(_event, _ctx) {
+  let stdout = "";
+  let stderr = "";
+  let status = 0;
+  try {
+    stdout = execFileSync("sudo", ["-n", PREVIEW_BIN], {
+      encoding: "utf8",
+      timeout: 60_000,
+      // PATH only — no agent-controlled env reaches the helper.
+      env: { PATH: "/usr/bin:/bin", LANG: "C" },
+    });
+  } catch (err) {
+    status = typeof err.status === "number" ? err.status : 1;
+    stdout = String(err.stdout ?? "");
+    stderr = String(err.stderr ?? "");
+  }
+
+  const summary = extractSummary(stdout);
+  if (status === 2) {
+    // Throw-free: before_tool_call returns block below via describe raising? We
+    // cannot return block from describe. Signal failure by a sentinel the outer
+    // hook checks — see register().
+    const err = new Error(summary || stderr || "candidate failed gate.signal --check");
+    err.code = "WPA_DEPLOY_CHECK_FAILED";
+    err.summary = summary || stderr || "candidate failed gate.signal --check";
+    throw err;
+  }
+  if (status !== 0) {
+    const err = new Error(stderr || summary || "deploy preview failed");
+    err.code = "WPA_DEPLOY_PREVIEW_FAILED";
+    err.summary = stderr || summary || "deploy preview failed";
+    throw err;
+  }
+  return summary || "(preview produced no summary)";
+}
+
+/** Pull the ---summary--- block the bash helper emits; fall back to whole stdout. */
+function extractSummary(text) {
+  const src = String(text ?? "");
+  const start = src.indexOf("---summary---");
+  if (start < 0) return src.trim();
+  const after = src.slice(start + "---summary---".length);
+  const end = after.indexOf("---end---");
+  const body = (end >= 0 ? after.slice(0, end) : after).trim();
+  return body;
+}
+
 // WHY A CONSTANT AND NOT CONFIG. The set of tools that must ask is a security
 // boundary, and `openclaw config set` can rewrite config. A change here is a diff in
 // a pull request; a change in config is a chat message away from being a capability
 // grant, which ADR 0010 forbids.
-// Nothing is gated yet. The mechanism was proven on 2026-08-19 against `web_search`
-// as a throwaway probe (NVB-16), and that entry was removed once it had done its
-// job: an approval prompt on every web search is a tax nobody agreed to pay, and a
-// gate that cries wolf is a gate people learn to tap through.
 //
-// `wpa__deploy` is the first real entry, and it arrives with NVB-37. The shape:
-//
-//   wpa__deploy: {
-//     title: "Deploy to the Pi",
-//     severity: "critical",
-//     warning: "Installs merged code and your config change on the Pi, as root.",
-//     agents: ["builder"],
-//     allowedDecisions: ["allow-once", "deny"],   // never allow-always
-//     timeoutMs: 120_000,
-//     describe: () => renderedByHostCodeFromDiskNotFromParams(),
-//   }
-const GATED = {};
-
+// `wpa__deploy` is the first real entry (NVB-37). allow-always is intentionally
+// absent: a standing grant here is a standing root grant.
+const GATED = {
+  wpa__deploy: {
+    title: "Deploy to the Pi",
+    severity: "critical",
+    warning:
+      "Installs origin/main and any candidate config as root. Does not restart services.",
+    agents: ["builder"],
+    allowedDecisions: ["allow-once", "deny"],
+    timeoutMs: 120_000,
+    describe: deployDescribe,
+  },
+};
 
 export default definePluginEntry({
   id: "wpa-approve",
@@ -112,6 +169,34 @@ export default definePluginEntry({
         };
       }
 
+      let detail;
+      try {
+        detail = rule.describe(event, ctx);
+      } catch (err) {
+        const code = err && err.code;
+        const summary = (err && err.summary) || (err && err.message) || "refused";
+        api.logger.warn?.(
+          `wpa-approve: blocking ${event.toolName} agent=${ctx.agentId ?? "?"} ` +
+            `code=${code ?? "describe_error"}: ${String(summary).slice(0, 200)}`,
+        );
+        if (code === "WPA_DEPLOY_CHECK_FAILED") {
+          return {
+            block: true,
+            blockReason:
+              "Candidate config failed gate.signal --check. Refused before asking " +
+              "for approval so a YES cannot wedge the gate. " +
+              clamp(String(summary), 300),
+          };
+        }
+        return {
+          block: true,
+          blockReason:
+            "Deploy preview failed; refused rather than prompt on incomplete " +
+            "information. " +
+            clamp(String(summary), 300),
+        };
+      }
+
       api.logger.info?.(
         `wpa-approve: requiring approval for ${event.toolName} agent=${ctx.agentId ?? "?"}`,
       );
@@ -123,9 +208,7 @@ export default definePluginEntry({
           // the same 512-character budget as the detail, so a rule with a long
           // warning gets a short description rather than a truncated warning.
           description: clamp(
-            [rule.warning ? `⚠️ ${rule.warning}` : "", rule.describe(event, ctx)]
-              .filter(Boolean)
-              .join("\n\n"),
+            [rule.warning ? `⚠️ ${rule.warning}` : "", detail].filter(Boolean).join("\n\n"),
             DESCRIPTION_MAX,
           ),
           severity: rule.severity,
@@ -150,3 +233,13 @@ export default definePluginEntry({
     });
   },
 });
+
+// Test surface: pure helpers without loading the OpenClaw plugin SDK.
+export {
+  GATED,
+  clamp,
+  extractSummary,
+  deployDescribe,
+  DESCRIPTION_MAX,
+  TITLE_MAX,
+};

@@ -150,11 +150,39 @@ done <<-'EOF'
 	outbox-notify.sh       wpa-outbox-notify   0700
 	triage.sh              wpa-triage          0700
 	token-expiry.sh        wpa-token-expiry    0700
+	wpa-apply              wpa-apply           0755
+	wpa-apply-preview      wpa-apply-preview   0755
+	wpa-config-pull        wpa-config-pull     0755
 EOF
 # 0700 on the notifier is not a typo: it writes into an agent outbox owned by the
 # gate, and nothing but root has any business invoking it. wpa-triage inherits
 # that for the same reason (it execs the notifier), and wpa-token-expiry because
 # it reads two PATs.
+#
+# wpa-apply{,-preview} and wpa-config-pull are the NVB-37 root helpers. openclaw
+# reaches them only through /etc/sudoers.d/wpa-openclaw (exact path, no args).
+
+# ---------------------------------------------------------------------------
+# sudoers for the deploy path. A compromised gateway holds these rights whether
+# or not a human approved a call — NVB-22, named rather than papered over. The
+# file is validated with visudo before it replaces anything live.
+# ---------------------------------------------------------------------------
+echo
+echo "== sudoers (NVB-37 deploy path) =="
+sudoers_src="$repo/deploy/sudoers.d/wpa-openclaw"
+sudoers_dst=/etc/sudoers.d/wpa-openclaw
+if [ ! -f "$sudoers_src" ]; then
+	echo "  ! $sudoers_src missing — deploy helpers will not be invocable via sudo"
+elif ! command -v visudo >/dev/null 2>&1; then
+	echo "  ! visudo not installed — refusing to write $sudoers_dst"
+elif ! visudo -cf "$sudoers_src" >/dev/null 2>&1; then
+	echo "  ! $sudoers_src failed visudo -cf — left $sudoers_dst untouched"
+	visudo -cf "$sudoers_src" || true
+else
+	install -m 0440 -o root -g root "$sudoers_src" "$sudoers_dst"
+	echo "  $sudoers_dst  0440  (wpa-apply, wpa-apply-preview, wpa-config-pull)"
+	echo "  a compromised gateway uid holds these rights — see runbook 07"
+fi
 
 # ---------------------------------------------------------------------------
 # OpenClaw plugins we own. These run INSIDE the gateway process, so they are the
