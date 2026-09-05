@@ -1,19 +1,23 @@
-"""The `wpa` MCP server — stdio, spawned by the gateway, two tools.
+"""The `wpa` MCP server — stdio, spawned by the gateway.
 
 Stdio deliberately: no loopback port, so nothing to firewall. That is runbook 06's
 rule and NVB-27's lesson, applied before it can bite.
 
-⚠️ WHAT THIS PROCESS HOLDS, AND THIS CHANGED IN NVB-36: a GitHub push token, in
-`WPA_PUSH_TOKEN`. Through phase 2 this server held nothing at all — `wpa__sync` fetches
-a public repo — and that claim was printed in bold here and in runbook 06 §2a. It is no
-longer true. `wpa__push` needs a credential and there is nowhere else for it to live:
+⚠️ WHAT THIS PROCESS HOLDS: a GitHub push token in `WPA_PUSH_TOKEN` (NVB-36), and —
+from NVB-37 — the ability to ask root to run three fixed binaries via sudoers
+(`wpa-apply`, `wpa-apply-preview`, `wpa-config-pull`). The MCP server is a child of
+`wpa-openclaw`, so a compromised gateway holds those rights whether or not a human
+approved a particular call. That is NVB-22, accepted with the trigger named rather
+than pretended away. What the per-call approval buys is that the *code* was merged
+by a human and the *config* is the candidate whose host-rendered diff a human read.
+
 ADR 0013 puts a tool credential in its own MCP server entry's `env`, one entry per
 principal, and `builder` is the only agent that names `wpa__*`.
 
-Two consequences worth carrying: this process is now worth compromising, so `push.py`
-scrubs git's output rather than passing it to the model; and a rotated token needs a
-**gateway restart**, not `openclaw mcp reload`, because the child is spawned per turn
-from in-memory config.
+Two consequences worth carrying: this process is now worth compromising, so
+`push.py` scrubs git's output rather than passing it to the model; and a rotated
+token needs a **gateway restart**, not `openclaw mcp reload`, because the child is
+spawned per turn from in-memory config.
 
 ⚠️ THE CLASS IS `MCPServer`, NOT `FastMCP`. `mcp.server.fastmcp` was removed in the
 SDK's 2.0.0; every tutorial and most model memory still says FastMCP, and the failure
@@ -43,6 +47,11 @@ from mcp.types import ToolAnnotations
 # Imported under another name so the decorated function below can be called `sync`:
 # the SDK derives the input schema's title from the function name, and
 # `sync_toolArguments` is a Python detail the model has no use for.
+from wpa_mcp.config_pull import ConfigPullError, ConfigPullResult
+from wpa_mcp.config_pull import config_pull as run_config_pull
+from wpa_mcp.deploy import DeployCheckError, DeployError, DeployResult
+from wpa_mcp.deploy import apply as run_apply
+from wpa_mcp.deploy import preview as run_preview
 from wpa_mcp.push import PushError, PushResult
 from wpa_mcp.push import push as run_push
 from wpa_mcp.sync import SyncError, SyncResult
@@ -65,7 +74,10 @@ server: MCPServer[None] = MCPServer(
     # versions indistinguishable at exactly the moment someone is debugging which is
     # running. Tracks the version in pyproject.toml by hand — there is one of each.
     version="0.1.0",
-    instructions="Tools for the checkout of this assistant's own source repository.",
+    instructions=(
+        "Tools for the checkout of this assistant's own source repository, and for "
+        "deploying origin/main (plus an optional candidate gate config) onto the Pi."
+    ),
 )
 
 
@@ -122,6 +134,68 @@ def push(branch: str) -> PushResult:
         # Already scrubbed — `push.py` builds these strings itself and logs git's own
         # output separately. Logged here too so the journal shows which tool failed.
         print(f"wpa__push: {exc}", file=sys.stderr, flush=True)
+        raise
+
+
+@server.tool(
+    name="config_pull",
+    description=(
+        "Copy the live gate config into the builder workspace candidate path so you "
+        "can edit real ACIs there. Never writes the live file. Returns paths and "
+        "hashes, not the file body — read the candidate on disk when you need to edit. "
+        "No parameters."
+    ),
+    annotations=ToolAnnotations(
+        read_only_hint=False, destructive_hint=False, idempotent_hint=True
+    ),
+)
+def config_pull() -> ConfigPullResult:
+    """No parameters — host-fixed paths only."""
+    try:
+        return run_config_pull()
+    except ConfigPullError as exc:
+        print(f"wpa__config_pull: {exc}", file=sys.stderr, flush=True)
+        raise
+
+
+@server.tool(
+    name="deploy",
+    description=(
+        "Deploy origin/main onto the Pi, and install the workspace candidate gate "
+        "config over the live one when present. No parameters: the code is whatever "
+        "is already on origin/main, the config is the candidate on disk. Validates "
+        "the candidate with gate.signal --check before asking for approval; a bad "
+        "config never reaches a human decision. On approval runs a fixed root "
+        "sequence (fetch+reset, install config, install.sh). Reports restart notices "
+        "and never restarts anything itself. allow-once only — no standing grant."
+    ),
+    # Destructive in the operational sense (root mutates /opt/wpa). Still no force
+    # push and no openclaw.json write — those stay out of scope.
+    annotations=ToolAnnotations(
+        read_only_hint=False, destructive_hint=True, idempotent_hint=False
+    ),
+)
+def deploy() -> DeployResult:
+    """No parameters. Approval is enforced by the wpa-approve plugin before this runs.
+
+    We still re-run preview's check path conceptually via apply's own --check, so a
+    TOCTOU edit between prompt and YES cannot wedge the gate. Calling preview here
+    would double-fetch; apply is the mutation and it validates again.
+    """
+    # Fail closed on a bad candidate *before* spending an approval, when the plugin
+    # did not already block. The plugin's describe() also runs preview; this is the
+    # belt for callers that bypass the plugin in tests or misconfiguration.
+    try:
+        run_preview()
+    except DeployCheckError:
+        raise
+    except DeployError as exc:
+        print(f"wpa__deploy: {exc}", file=sys.stderr, flush=True)
+        raise
+    try:
+        return run_apply()
+    except (DeployCheckError, DeployError) as exc:
+        print(f"wpa__deploy: {exc}", file=sys.stderr, flush=True)
         raise
 
 

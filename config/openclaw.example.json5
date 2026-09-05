@@ -295,6 +295,9 @@
         //     allow: [
         //       "read", "write", "edit", "apply_patch", "session_status", "web_search",
         //       "wpa__sync",
+        //       "wpa__push",         // NVB-36
+        //       "wpa__config_pull",  // NVB-37 — seed live → candidate
+        //       "wpa__deploy",       // NVB-37 — approval-gated; wpa-approve must load
         //       "exec",   // NVB-42 — THE SECOND OF TWO EDITS again, same as wpa__sync
         //     ],
         //   },
@@ -780,8 +783,11 @@
       //   tools: {
       //     alsoAllow: [
       //       "read", "write", "edit", "apply_patch", "web_search",  // global set, repeated
-      //       "wpa__sync",   // NVB-35 — read the resolved name off `mcp probe wpa`
-      //       "exec",        // NVB-42 — AND IT HAD TO BE ADDED HERE, not just globally
+      //       "wpa__sync",         // NVB-35 — read the resolved name off `mcp probe wpa`
+      //       "wpa__push",         // NVB-36
+      //       "wpa__config_pull",  // NVB-37 — seed live → candidate (real ACIs)
+      //       "wpa__deploy",       // NVB-37 — approval-gated by wpa-approve
+      //       "exec",              // NVB-42 — AND IT HAD TO BE ADDED HERE, not just globally
       //     ],
       //   },
       // },
@@ -1298,7 +1304,9 @@
         // The allowlists would have contained them anyway — neither the agent list
         // nor the room ceiling names them — but a tool nobody can reach is still a
         // tool in the surface, and ADR 0010 asks for absent rather than refused.
-        toolFilter: { include: ["sync"] },
+        toolFilter: { include: ["sync", "push", "config_pull", "deploy"] },
+        // NVB-36 added push; NVB-37 added config_pull + deploy. Probe the resolved
+        // names before pinning them in alsoAllow — prefix is derived, not assumed.
       },
     },
   },

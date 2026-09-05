@@ -152,6 +152,12 @@ file's `root:wpa-config 0640` ownership. A hand-rolled `rsync -a --delete` into
 the only copy** — deleting it is not recoverable from the repo. This is not
 hypothetical; see the 2026-08-17 entry in [`CHANGELOG.md`](CHANGELOG.md).
 
+**Candidate config for the builder (NVB-37)** lives outside the git tree at
+`/var/lib/openclaw/.openclaw/workspace-builder/config/config.toml` (sandbox:
+`/workspace/config/config.toml`). Real ACIs; never commit it. Seed with
+`wpa__config_pull`, apply only via approval-gated `wpa__deploy` — see
+[runbook 07](docs/runbooks/07-wpa-deploy.md).
+
 ## Invariants — changing these means reopening an ADR
 
 These aren't style preferences. Each one is load-bearing, and each was either

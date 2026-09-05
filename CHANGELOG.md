@@ -11,6 +11,38 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added — `wpa__deploy` and candidate gate config (NVB-37)
+
+One approval-gated intent puts `origin/main` on the Pi and optionally installs a
+sandbox **candidate** over live `config/config.toml`. The agent chooses when, never
+what: code is whatever a human already merged; config is the file whose host-rendered
+diff a human just approved.
+
+- MCP tools: `wpa__config_pull` (live → candidate, real ACIs) and `wpa__deploy` (no args)
+- Host helpers: `wpa-apply`, `wpa-apply-preview`, `wpa-config-pull` — exact path, no argv
+- sudoers: `openclaw` NOPASSWD on those three only (`deploy/sudoers.d/wpa-openclaw`)
+- `wpa-approve` gates `wpa__deploy` for agent `builder`: allow-once | deny, never
+  allow-always; description from `wpa-apply-preview`, not from model params
+- Candidate failing `gate.signal --check` is refused **before** any approval prompt
+- `install.sh` still restarts nothing; apply reports restart notices only
+- Candidate path is outside the git tree:
+  `workspace-builder/config/config.toml` (not under `repo/`)
+- Runbook 07 documents first-time enable (live `openclaw.json` is still hand-edited)
+
+**Honesty:** a compromised gateway holds these sudo rights whether or not a call was
+approved. That is NVB-22, named rather than papered over.
+
+**Not verified from this PR's sandbox.** First supervised deploy on the Pi still has
+to prove deny=hash-identical, check-before-prompt, and `sudo -u openclaw sudo -l`.
+
+### Fixed — deploy tests no longer assume `/workspace` exists (NVB-37 CI)
+
+`tests/test_wpa_mcp_deploy.py` overrode `tmp_path` to `/workspace/.pytest-tmp` so
+executable shell stubs survive a noexec sandbox `/tmp`. That path does not exist on
+GitHub Actions, so eight tests errored at fixture setup (`PermissionError: /workspace`)
+while the rest of the suite stayed green. The fixture now tries the workspace path
+first and falls back to pytest's own temp root.
+
 ### Fixed — gateway reply text stops at a private log file, not journald (NVB-29)
 
 `wpa-openclaw` had been writing the assistant's **reply body** (and `Attachment:` paths) to

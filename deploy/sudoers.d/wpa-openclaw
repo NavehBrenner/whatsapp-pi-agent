@@ -1,0 +1,21 @@
+# Privilege for the wpa MCP deploy path (NVB-37).
+#
+# Installed by deploy/install.sh to /etc/sudoers.d/wpa-openclaw (mode 0440).
+# visudo -cf runs before the file is moved into place.
+#
+# WHAT THIS MEANS, STATED PLAINLY: the gateway uid (`openclaw`) can run these three
+# fixed binaries as root with no password and no arguments. The MCP server is a
+# child of wpa-openclaw, so a compromised gateway holds root whether or not a human
+# approved a particular call. The sandbox bounds a compromised *agent*; it does not
+# bound the process that spawns the MCP child. That is NVB-22 — accepted here with
+# the trigger named rather than pretended away.
+#
+# What the per-call approval actually buys: the code was merged by a human, and the
+# config is the candidate whose host-rendered diff a human just read.
+#
+# A command listed with no arguments may only be run with no arguments (sudoers(5)).
+# Do not add ALL, wildcards, or a wrapper that takes flags.
+
+openclaw ALL=(root) NOPASSWD: /usr/local/bin/wpa-apply
+openclaw ALL=(root) NOPASSWD: /usr/local/bin/wpa-apply-preview
+openclaw ALL=(root) NOPASSWD: /usr/local/bin/wpa-config-pull

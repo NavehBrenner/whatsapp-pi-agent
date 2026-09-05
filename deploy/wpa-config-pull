@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Copy the live gate config into the builder's candidate path.
+#
+# Installed as /usr/local/bin/wpa-config-pull. openclaw may invoke it via
+# NOPASSWD sudo with **no arguments** (see deploy/sudoers.d/wpa-openclaw).
+#
+# WHY THIS EXISTS. Live config is root:wpa-config 0640 — the gateway uid cannot
+# read it, and the sandbox cannot either. The agent still has to edit real ACIs
+# (NVB-37) before proposing a deploy, so root copies live → a workspace file the
+# agent owns. This never writes the live file.
+set -euo pipefail
+
+[ "$(id -u)" = 0 ] || { echo "wpa-config-pull: must run as root" >&2; exit 2; }
+
+live="${WPA_LIVE_CONFIG:-/opt/wpa/config/config.toml}"
+workspace="${WPA_WORKSPACE:-/var/lib/openclaw/.openclaw/workspace-builder}"
+dest_dir="$workspace/config"
+dest="${WPA_CANDIDATE_CONFIG:-$dest_dir/config.toml}"
+
+if [ ! -f "$live" ]; then
+	echo "wpa-config-pull: no live config at $live" >&2
+	exit 1
+fi
+
+# openclaw must be able to edit the candidate after this. Directory is traversable
+# by the gateway user; the file is 0600 so other service accounts cannot read ACIs.
+install -d -m 0755 -o openclaw -g openclaw "$dest_dir"
+install -m 0600 -o openclaw -g openclaw "$live" "$dest"
+
+live_hash=$(sha256sum "$live" | awk '{print $1}')
+cand_hash=$(sha256sum "$dest" | awk '{print $1}')
+size=$(wc -c <"$dest" | tr -d ' ')
+
+printf 'live_path=%s\n' "$live"
+printf 'candidate_path=%s\n' "$dest"
+printf 'live_sha256=%s\n' "$live_hash"
+printf 'candidate_sha256=%s\n' "$cand_hash"
+printf 'bytes=%s\n' "$size"
+printf 'ok=1\n'
