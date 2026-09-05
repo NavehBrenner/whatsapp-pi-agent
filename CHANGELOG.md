@@ -35,6 +35,14 @@ approved. That is NVB-22, named rather than papered over.
 **Not verified from this PR's sandbox.** First supervised deploy on the Pi still has
 to prove deny=hash-identical, check-before-prompt, and `sudo -u openclaw sudo -l`.
 
+### Fixed — deploy tests no longer assume `/workspace` exists (NVB-37 CI)
+
+`tests/test_wpa_mcp_deploy.py` overrode `tmp_path` to `/workspace/.pytest-tmp` so
+executable shell stubs survive a noexec sandbox `/tmp`. That path does not exist on
+GitHub Actions, so eight tests errored at fixture setup (`PermissionError: /workspace`)
+while the rest of the suite stayed green. The fixture now tries the workspace path
+first and falls back to pytest's own temp root.
+
 ### Fixed — gateway reply text stops at a private log file, not journald (NVB-29)
 
 `wpa-openclaw` had been writing the assistant's **reply body** (and `Attachment:` paths) to

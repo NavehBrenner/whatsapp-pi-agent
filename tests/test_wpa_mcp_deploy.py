@@ -31,15 +31,32 @@ from wpa_mcp.deploy import (
 
 
 @pytest.fixture
-def tmp_path() -> Path:
-    """Workspace-backed temp dir — sandbox /tmp is often noexec."""
+def tmp_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Temp dir that can hold executable stub helpers.
+
+    Prefer `/workspace/.pytest-tmp` when it exists and is writable — the builder
+    sandbox mounts the workspace rw and often mounts `/tmp` noexec, so shell
+    stubs must live under the workspace there. CI has neither that path nor a
+    noexec `/tmp`, so fall back to pytest's own temp root.
+    """
     import secrets
 
-    base = Path("/workspace/.pytest-tmp")
-    base.mkdir(parents=True, exist_ok=True)
-    path = base / f"deploy-{secrets.token_hex(4)}"
-    path.mkdir()
-    return path
+    bases = (
+        Path("/workspace/.pytest-tmp"),
+        Path(tmp_path_factory.getbasetemp()),
+    )
+    last_err: OSError | None = None
+    for base in bases:
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            path = base / f"deploy-{secrets.token_hex(4)}"
+            path.mkdir()
+            return path
+        except OSError as exc:
+            last_err = exc
+            continue
+    assert last_err is not None
+    raise last_err
 
 
 def _write_exec(path: Path, body: str) -> Path:
