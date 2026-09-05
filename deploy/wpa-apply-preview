@@ -30,7 +30,13 @@ if [ ! -d "$opt/.git" ]; then
 fi
 
 # Fetch so target sha is real; do not move HEAD. apply is what resets.
-git -C "$opt" fetch --quiet origin main 2>/dev/null || {
+#
+# stderr is NOT discarded. It was, and it hid the whole reason this path was broken:
+# git refused with "dubious ownership" because /opt/wpa is owned by a login user and
+# root's exemption keys on $SUDO_UID, which is 991 here and 1000 for a human. All the
+# operator saw was "git fetch origin main failed". The helper's stderr lands in the
+# gateway journal, which is where the next person will look.
+git -C "$opt" fetch --quiet origin main || {
 	echo "wpa-apply-preview: git fetch origin main failed" >&2
 	exit 1
 }
@@ -132,9 +138,9 @@ printf 'live_sha256=%s\n' "$live_hash"
 printf 'candidate_sha256=%s\n' "$cand_hash"
 printf 'check=%s\n' "$check_line"
 printf 'diff_path=%s\n' "$diff_out"
-printf '---summary---\n'
+printf '%s\n' '---summary---'
 printf '%s\n' "$summary"
-printf '---end---\n'
+printf '%s\n' '---end---'
 
 if [ "$has_candidate" -eq 1 ] && [ "$check_rc" -ne 0 ]; then
 	exit 2

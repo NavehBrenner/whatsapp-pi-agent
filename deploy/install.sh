@@ -184,6 +184,23 @@ else
 	echo "  a compromised gateway uid holds these rights — see runbook 07"
 fi
 
+# git's dubious-ownership check, which refuses root as hard as anyone else.
+#
+# /opt/wpa is owned by a login user, and root's exemption keys on $SUDO_UID: a human
+# running `sudo git pull` is uid 1000 and matches, the gateway sudoing in is uid 991
+# and does not. So every helper's `git fetch` failed while every manual deploy
+# worked — the one asymmetry that hides a broken deploy path from the person testing
+# it. Declaring the path here is narrower than chowning the checkout to root, which
+# would take the human's own git with it.
+if command -v git >/dev/null 2>&1; then
+	if git config --system --get-all safe.directory 2>/dev/null | grep -qxF "$repo"; then
+		echo "  safe.directory already names $repo"
+	else
+		git config --system --add safe.directory "$repo"
+		echo "  git config --system safe.directory += $repo"
+	fi
+fi
+
 # ---------------------------------------------------------------------------
 # OpenClaw plugins we own. These run INSIDE the gateway process, so they are the
 # most privileged code this repo installs — and OpenClaw enforces that: it refuses

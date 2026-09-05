@@ -61,6 +61,47 @@ sudo -u openclaw sudo -l
 # must show only wpa-apply, wpa-apply-preview, wpa-config-pull — no ALL, no args
 ```
 
+### Two prerequisites `sudo -l` will not tell you about
+
+Both were found the first time a human tried to use `wpa__deploy`, on 2026-09-05, and
+both let `sudo -l` look perfectly correct while every call failed.
+
+**1. `wpa-openclaw.service` must not set `NoNewPrivileges=`.** NNP is inherited by every
+descendant and cannot be dropped, so `sudo` — setuid — can never escalate from the MCP
+child. The symptom is `sudo: The "no new privileges" flag is set, which prevents sudo
+from running as root`, raised before any approval prompt, on all three helpers.
+
+`PrivateDevices=yes` has to go with it. It is seccomp-backed, and systemd re-implies
+`NoNewPrivileges=yes` in order to install a seccomp filter on a `User=`-scoped unit.
+**`systemctl show` lies about this** — it reported `NoNewPrivileges=no` while the running
+process still had `NoNewPrivs: 1`. Check the process, not the property:
+
+```bash
+sudo grep NoNewPrivs /proc/$(systemctl show wpa-openclaw.service -p MainPID --value)/status
+# NoNewPrivs:    0
+```
+
+`ProtectSystem=full` and `ProtectHome=yes` are mount-based, imply nothing, and stay. The
+unit is hand-installed and **not** in `deploy/systemd/`, so `install.sh` will neither fix
+nor undo this.
+
+**2. git must accept `/opt/wpa` as safe for root.** The checkout is owned by a login user,
+and root's exemption from the dubious-ownership check keys on `$SUDO_UID` — uid 1000 for a
+human running `sudo git pull`, uid 991 for the gateway. So `git fetch` fails on the deploy
+path and only on the deploy path, which is why no manual deploy ever revealed it.
+`install.sh` now adds `safe.directory` system-wide; on a box that predates it:
+
+```bash
+sudo git config --system --add safe.directory /opt/wpa
+```
+
+Prove the whole privilege path in one command before handing it to the agent:
+
+```bash
+sudo -u openclaw sudo -n /usr/local/bin/wpa-apply-preview
+# exit 0 and a summary block; anything else is one of the two above
+```
+
 ---
 
 ## Agent flow
@@ -114,10 +155,15 @@ Open it for large config edits; the Signal card will not hold a real diff.
 
 ## Honesty about root
 
-`openclaw` has `NOPASSWD` on those three paths. The MCP child inherits that. A
-compromised **gateway** is root on this path whether or not you tapped allow-once. The
-sandbox bounds a compromised **agent**. Closing the gateway half is
-[NVB-22](https://linear.app/naveh-brenner/issue/NVB-22/containerize-the-gateway-when-the-trigger-fires).
+`openclaw` has `NOPASSWD` on those three paths, and the MCP child inherits it **only
+because `wpa-openclaw.service` no longer sets `NoNewPrivileges=`** — see the two
+prerequisites above. A compromised **gateway** is root on this path whether or not you
+tapped allow-once. The sandbox bounds a compromised **agent**. Closing the gateway half
+is [NVB-22](https://linear.app/naveh-brenner/issue/NVB-22/containerize-the-gateway-when-the-trigger-fires).
+
+That sentence used to read "the MCP child inherits that" with no condition, and it was
+false for as long as it existed: the unit set `NoNewPrivileges=yes`, so the sudoers file
+shipped, installed, and could never be used.
 
 What approval actually buys: merged code + a config diff a human saw.
 
