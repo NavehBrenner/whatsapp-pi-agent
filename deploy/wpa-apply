@@ -108,8 +108,8 @@ printf 'subject=%s\n' "$subject"
 printf 'config_applied=%s\n' "$config_applied"
 printf 'has_candidate=%s\n' "$has_candidate"
 printf 'reason=deployed %s config_applied=%s\n' "$(printf '%s' "$sha" | cut -c1-8)" "$config_applied"
-printf '---summary---\n'
+printf '%s\n' '---summary---'
 printf 'deployed %s %s\n' "$(printf '%s' "$sha" | cut -c1-8)" "$subject"
 printf 'config_applied=%s\n' "$config_applied"
-printf '---end---\n'
+printf '%s\n' '---end---'
 echo "wpa-apply: done"

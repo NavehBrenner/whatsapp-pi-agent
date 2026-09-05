@@ -15,6 +15,7 @@ test. Root sudo is not exercised here; use_sudo=False points at the stubs.
 from __future__ import annotations
 
 import stat
+import subprocess
 import textwrap
 from pathlib import Path
 
@@ -247,3 +248,41 @@ def test_apply_scripts_declare_no_args_contract() -> None:
         body = Path("deploy") / name
         text = body.read_text()
         assert "No arguments" in text or "no arguments" in text or "No arguments." in text
+
+
+def test_helper_summary_markers_survive_bash_printf() -> None:
+    """`printf '---summary---\\n'` exits 2 under bash — the dashes parse as options.
+
+    Not theoretical: it shipped in NVB-37 and broke both helpers, in opposite and
+    equally misleading ways. In preview it aborts before any approval prompt and the
+    exit code makes `deploy.py` report a candidate check failure when there is no
+    candidate. In apply it fires *after* the reset and install.sh have run, and the
+    agent is told "nothing was modified" about a deploy that modified everything.
+
+    The stub helpers the rest of this file uses print the markers correctly, which is
+    exactly why nothing caught it. This runs the real scripts' marker lines.
+    """
+    for name in ("wpa-apply", "wpa-apply-preview", "wpa-config-pull"):
+        script = Path("deploy") / name
+        for lineno, line in enumerate(script.read_text().splitlines(), 1):
+            stripped = line.strip()
+            if not stripped.startswith("printf "):
+                continue
+            fmt = stripped[len("printf ") :].lstrip()
+            if fmt.startswith(("'", '"')):
+                fmt = fmt[1:]
+            assert not fmt.startswith("-"), (
+                f"{script}:{lineno} passes an option-like format to printf: "
+                f"{stripped!r} — use printf '%s\\n' '<literal>' instead"
+            )
+
+    # And prove the claim rather than trusting the rule: bash really does reject it.
+    rejected = subprocess.run(
+        ["bash", "-c", "printf '---summary---\\n'"], capture_output=True, text=True
+    )
+    assert rejected.returncode != 0
+    accepted = subprocess.run(
+        ["bash", "-c", "printf '%s\\n' '---summary---'"], capture_output=True, text=True
+    )
+    assert accepted.returncode == 0
+    assert accepted.stdout == "---summary---\n"

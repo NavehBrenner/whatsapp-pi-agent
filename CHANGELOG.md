@@ -11,6 +11,54 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — `wpa__deploy` could never have run: three defects, none in the config
+
+NVB-37 shipped, was wired into live config on 2026-09-05, and the first supervised call
+failed before any approval prompt. Three independent faults, each of which alone was
+enough, and none of which any test or `sudo -l` would show.
+
+**`NoNewPrivileges=yes` on `wpa-openclaw.service` made the sudoers grant inert.** NNP is
+inherited by every descendant and cannot be dropped, so `sudo` — setuid — could never
+escalate from the MCP child. The runbook's claim that "the MCP child inherits that" was
+false for the whole life of the file: the sudoers rules installed correctly and were
+unusable. All three helpers, not just deploy — `wpa-config-pull` is root-only too, so the
+"config pull still works" reading was also wrong.
+
+Removing it is what makes NVB-22 real rather than theoretical, and it was chosen with
+that stated: uid 991 can now run `wpa-apply` as root, and `wpa-apply` runs
+`deploy/install.sh`, which is arbitrary root code.
+
+`PrivateDevices=yes` had to go with it, and the reason is worth keeping: it is
+seccomp-backed, and systemd re-implies `NoNewPrivileges=yes` to install a seccomp filter
+on a `User=`-scoped unit. **`systemctl show` reported `NoNewPrivileges=no` while
+`/proc/<pid>/status` still read `NoNewPrivs: 1`.** Trust the proc bit. `ProtectSystem`
+and `ProtectHome` are mount-based, imply nothing, and stay.
+
+**git refused root's `fetch` because `/opt/wpa` is owned by a login user.** Root's
+exemption from the dubious-ownership check keys on `$SUDO_UID`: uid 1000 for a human
+running `sudo git pull`, uid 991 for the gateway. So the fetch failed on the deploy path
+and only on the deploy path — the asymmetry that hides a broken deploy from the person
+testing it manually. `install.sh` now declares `safe.directory` system-wide, which is
+narrower than chowning the checkout to root and taking the human's own git with it.
+
+`wpa-apply-preview` also stopped discarding the fetch's stderr. Hiding it is what turned
+"dubious ownership in repository at /opt/wpa", which names its own fix, into "git fetch
+origin main failed".
+
+**`printf '---summary---\n'` exits 2 under bash** — the leading dashes parse as options
+(`printf: --: invalid option`). Four sites across `wpa-apply` and `wpa-apply-preview`, and
+the two failure modes are opposites, both misleading:
+
+- in **preview** it aborts before any prompt, and exit 2 makes `deploy.py` report that the
+  *candidate failed `gate.signal --check`*. There was no candidate. The message was
+  invented by the exit code.
+- in **apply** it fires *after* the reset and `install.sh` have both run, and the agent is
+  told "nothing was modified" about a deploy that modified everything.
+
+It survived CI because every test drives *stub* helpers that print the markers correctly.
+The new check reads the real scripts, and asserts against bash itself rather than trusting
+the rule it enforces.
+
 ### Added — `wpa__deploy` and candidate gate config (NVB-37)
 
 One approval-gated intent puts `origin/main` on the Pi and optionally installs a
