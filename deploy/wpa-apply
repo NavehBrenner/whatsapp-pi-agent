@@ -98,9 +98,25 @@ echo "wpa-apply: running deploy/install.sh"
 # 2>&1 because the operator trail is stdout and the *reason* is stderr. Without it a
 # failure here is unattributable: deploy.py keeps only the stdout tail, the gateway
 # does not forward the MCP child's stderr to journald, and nothing else records it.
-# That happened on 2026-09-06 — install.sh died one second in, and the only evidence
-# that survived anywhere was the line it had printed before it.
-if ! "$opt/deploy/install.sh" 2>&1; then
+#
+# ⚠️ install.sh MUST NOT RUN IN THE CALLER'S MOUNT NAMESPACE. The MCP child is a
+# descendant of wpa-openclaw.service, whose ProtectSystem=full mounts /etc and /usr
+# read-only — and sudo does not escape a mount namespace, so root in there still
+# cannot write /etc/group or /usr/local/bin. /opt IS writable, which is why the reset
+# above succeeds and install.sh then dies three lines into install-reader.sh, at
+# `groupadd`. That is the 2026-09-06 failure: three identical runs from the agent,
+# and the identical command from a login shell working every time, because a login
+# shell is the host namespace.
+#
+# systemd-run hands the job to PID 1, which starts it outside our namespace. --pipe
+# returns its output, --wait its exit status. The fallback keeps this runnable on a
+# test host with no systemd.
+install_cmd=("$opt/deploy/install.sh")
+if [ -d /run/systemd/system ] && command -v systemd-run >/dev/null 2>&1; then
+	install_cmd=(systemd-run --pipe --wait --collect --quiet
+		--unit=wpa-apply-install "$opt/deploy/install.sh")
+fi
+if ! "${install_cmd[@]}" 2>&1; then
 	echo "wpa-apply: install.sh failed (code is at $sha; config_applied=$config_applied)" >&2
 	printf 'sha=%s\n' "$sha"
 	printf 'subject=%s\n' "$subject"

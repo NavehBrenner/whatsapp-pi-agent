@@ -11,6 +11,40 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — `install.sh` cannot run in the gateway's mount namespace
+
+The real cause of the failing `wpa__deploy`, and it was never transient. Three agent runs
+failed identically; the identical command from a login shell succeeded every time.
+
+`wpa-openclaw.service` sets `ProtectSystem=full`, which mounts **`/etc` and `/usr`
+read-only for the unit and every descendant**. The MCP child is a descendant, and **`sudo`
+does not escape a mount namespace** — being root inside it does not make a read-only mount
+writable. `/opt` *is* writable, so `git reset --hard` lands and only the install half dies:
+
+```
+871 751 179:2 /etc /etc ro,noatime shared:359 master:1
+787 751 179:2 /usr /usr ro,noatime shared:415 master:1
+```
+
+The failing command is `groupadd -f --system wpa-config`, three lines past
+`already running from /opt/wpa — skipping the tree sync`, which is precisely where the
+output stopped. `install -m 0755 … /usr/local/bin` would have failed next. The earlier
+"`cannot lock /etc/passwd` under contention" guess was the right neighbourhood and the
+wrong mechanism: the lock file cannot be *created*, and no amount of retrying helps.
+
+`wpa-apply` now runs `install.sh` through `systemd-run --pipe --wait --collect`, which
+asks PID 1 to start it in the host namespace and hands back both its output and its exit
+status. Rejected the one-line alternative — dropping `ProtectSystem=full` — because it is
+the last namespace hardening the gateway has, `/usr` being read-only is a genuine
+constraint on a process holding every credential here, and nothing about a system-wide
+install belongs inside a service's private view of the filesystem anyway.
+
+**A login shell is the host namespace.** Verifying a privileged helper by running it over
+ssh proves it works somewhere the MCP child never is. `sudo -u openclaw sudo -n
+/usr/local/bin/wpa-apply` is *not* the agent's environment, and this cost three runs and a
+wrong hypothesis to learn.
+
+
 ### Fixed — a failed deploy that could not say what failed
 
 The first `wpa__deploy` after NVB-99 got through the approval, reset `/opt/wpa` to
