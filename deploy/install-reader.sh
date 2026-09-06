@@ -4,7 +4,11 @@
 #
 # The code lives in /opt/wpa and not in a home directory, because the reader
 # runs with ProtectHome=yes and cannot see /home at all.
-set -euo pipefail
+set -Eeuo pipefail
+# `set -e` with no trap aborts silently on whichever command failed, and the
+# caller is left with the last line install-reader.sh happened to print. -E so the trap
+# survives into functions and subshells.
+trap 'echo "install-reader.sh: aborted at line $LINENO" >&2' ERR
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
 

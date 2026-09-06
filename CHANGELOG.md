@@ -11,6 +11,34 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — a failed deploy that could not say what failed
+
+The first `wpa__deploy` after NVB-99 got through the approval, reset `/opt/wpa` to
+`origin/main`, left live config alone, and then `install.sh` exited non-zero one second
+in. The complete evidence it left, anywhere on the box, was the last line it had printed
+before dying — `already running from /opt/wpa — skipping the tree sync`.
+
+Three separate things were discarding the reason:
+
+- `set -euo pipefail` with no `ERR` trap aborts silently, so the failing command names
+  itself nowhere. Both installers now `set -Eeuo pipefail` and trap `ERR` to print
+  `<script>: aborted at line N`.
+- `wpa-apply` ran `install.sh` without capturing stderr. The trail that reaches the agent
+  is stdout; the reason is stderr. Now merged with `2>&1`.
+- `deploy.py` keeps only the stdout tail for a non-2 exit and refers the reader to "the
+  gateway journal", which does not receive the MCP child's stderr at all. The merge above
+  is what actually puts the reason in front of whoever is looking.
+
+The underlying failure did not reproduce — `wpa-apply` through the real privilege path
+now exits 0, and `install.sh` is idempotent — so this is a transient that will come back
+without any of the above. `useradd`/`groupadd`/`usermod` sit three lines past the last
+line printed and fail with `cannot lock /etc/passwd; try again later` under contention,
+which fits, but it is a hypothesis and was not proven.
+
+The regression check runs `install-reader.sh` as an unprivileged user, where it fails at
+its first root-only command, and asserts the abort names a line.
+
+
 ### Fixed — `wpa__deploy` could never have run: three defects, none in the config
 
 NVB-37 shipped, was wired into live config on 2026-09-05, and the first supervised call
