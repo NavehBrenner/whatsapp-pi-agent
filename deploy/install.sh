@@ -13,7 +13,11 @@
 # change the process already running from the old one, so this reports what needs a
 # restart and leaves the timing to you — restarting the gateway interrupts every
 # agent mid-conversation, which is not a thing a deploy script should decide.
-set -euo pipefail
+set -Eeuo pipefail
+# `set -e` with no trap aborts silently on whichever command failed, and the
+# caller is left with the last line install.sh happened to print. -E so the trap
+# survives into functions and subshells.
+trap 'echo "install.sh: aborted at line $LINENO" >&2' ERR
 
 [ "$(id -u)" = 0 ] || { echo "run with sudo" >&2; exit 2; }
 repo=$(cd "$(dirname "$0")/.." && pwd)

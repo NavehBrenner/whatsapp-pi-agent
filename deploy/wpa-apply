@@ -94,7 +94,13 @@ fi
 # --- 4. install.sh ------------------------------------------------------------
 echo "wpa-apply: running deploy/install.sh"
 # install.sh is non-fatal on its internal checks; surface its exit if it hard-fails.
-if ! "$opt/deploy/install.sh"; then
+#
+# 2>&1 because the operator trail is stdout and the *reason* is stderr. Without it a
+# failure here is unattributable: deploy.py keeps only the stdout tail, the gateway
+# does not forward the MCP child's stderr to journald, and nothing else records it.
+# That happened on 2026-09-06 — install.sh died one second in, and the only evidence
+# that survived anywhere was the line it had printed before it.
+if ! "$opt/deploy/install.sh" 2>&1; then
 	echo "wpa-apply: install.sh failed (code is at $sha; config_applied=$config_applied)" >&2
 	printf 'sha=%s\n' "$sha"
 	printf 'subject=%s\n' "$subject"

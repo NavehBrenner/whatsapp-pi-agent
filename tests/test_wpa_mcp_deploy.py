@@ -14,6 +14,8 @@ test. Root sudo is not exercised here; use_sudo=False points at the stubs.
 
 from __future__ import annotations
 
+import os
+import re
 import stat
 import subprocess
 import textwrap
@@ -286,3 +288,28 @@ def test_helper_summary_markers_survive_bash_printf() -> None:
     )
     assert accepted.returncode == 0
     assert accepted.stdout == "---summary---\n"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="as root the installer would really install")
+def test_installer_failure_names_its_own_line() -> None:
+    """A failed install must say *where*, not just that it failed.
+
+    On 2026-09-06 `install.sh` died one second into a real `wpa__deploy`, and nothing
+    anywhere recorded why: `set -e` aborts silently, `deploy.py` keeps only the stdout
+    tail, and the gateway does not forward the MCP child's stderr to journald. The last
+    line printed before the abort was the entire evidence base.
+
+    Run as an unprivileged user the script fails at its first root-only command, which
+    is the cheapest way to prove the trap fires and carries a line number.
+    """
+    proc = subprocess.run(
+        ["bash", "deploy/install-reader.sh"], capture_output=True, text=True
+    )
+    assert proc.returncode != 0
+    assert re.search(r"install-reader\.sh: aborted at line \d+", proc.stderr), proc.stderr
+
+
+def test_apply_does_not_discard_install_stderr() -> None:
+    """`install.sh`'s stderr is the reason; its stdout is only the trail."""
+    text = Path("deploy/wpa-apply").read_text()
+    assert '"$opt/deploy/install.sh" 2>&1' in text
