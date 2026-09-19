@@ -312,4 +312,17 @@ def test_installer_failure_names_its_own_line() -> None:
 def test_apply_does_not_discard_install_stderr() -> None:
     """`install.sh`'s stderr is the reason; its stdout is only the trail."""
     text = Path("deploy/wpa-apply").read_text()
-    assert '"$opt/deploy/install.sh" 2>&1' in text
+    assert '"${install_cmd[@]}" 2>&1' in text
+
+
+def test_apply_runs_install_outside_the_caller_mount_namespace() -> None:
+    """install.sh writes /etc and /usr, which the gateway's namespace mounts read-only.
+
+    `sudo` does not escape a mount namespace, so the MCP child is root in a place where
+    `groupadd` and `install -m 0755 … /usr/local/bin` cannot work. /opt is writable, so
+    the git reset lands and only the install half fails — which is why it looked
+    transient and why every check from a login shell (the host namespace) passed.
+    """
+    text = Path("deploy/wpa-apply").read_text()
+    assert "systemd-run" in text
+    assert "--pipe" in text and "--wait" in text, "need both output and exit status back"
