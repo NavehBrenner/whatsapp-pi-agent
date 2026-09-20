@@ -11,6 +11,49 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — a long `builder` turn died at a 120s idle watchdog, and poisoned later turns doing it
+
+`builder` writing a substantial amount of code stopped before finishing. Three separate
+things were being read as one "timeout", and the one that fired first was not the one
+anybody was looking at.
+
+`models.providers.xai.timeoutSeconds` was unset, so OpenClaw's implicit **~120s LLM
+idle/stream watchdog** applied — measured from the last byte on the wire, not from the
+request. grok-4.5 thinking quietly through a long write trips it, and the cost is not the
+aborted turn:
+
+```
+[agent/embedded] Profile xai:… idle timeout (model silent). Trying next account...
+[agent/embedded] auth profile failure state updated: reason=timeout window=cooldown
+[agent/embedded] embedded run failover decision: decision=surface_error reason=timeout
+                 rawError=LLM idle timeout (120s): no response from model
+```
+
+The profile goes into **cooldown**, so the damage lands on *later, unrelated* turns and the
+symptom appears nowhere near the cause. Now `timeoutSeconds: 900`, above
+`agents.defaults.timeoutSeconds` (600) on purpose so the run cap is what fires and the
+watchdog stops pre-empting it.
+
+**The tell was in the log the whole time and reads as a non-event**: every request logged
+`[model-fetch] start provider=xai … timeoutMs=undefined`. That `undefined` *is* the unset
+provider timeout. It now reads `timeoutMs=900000`, verified on hardware 2026-09-20, and
+the change **did** hot-reload — no restart, unlike the sandbox path in NVB-42 where the
+same "applies without restarting" message was false.
+
+**Two other things were being blamed for this and were not the cause.** The 600s
+`agents.defaults.timeoutSeconds` run cap fired exactly once in 14 days, and there is no
+per-agent override anywhere in `agents.list[]` — it is global, so raising it would slow
+every family DM's failure too. It stays where it is until a turn hits 600s with the
+watchdog already fixed. And **nothing was ever lost to either timeout**: the five files
+written before the 13:34 abort were still in the checkout, the session was `status: done`
+with `abortedLastRun: false`, and it answered normally afterwards. A timeout costs a turn,
+not the session — the recovery is to say "continue" in the room.
+
+**Residual, not claimed fixed.** One request at 15:50:49 still logged `timeoutMs=undefined`
+while a minimal-profile (compaction) run was in flight; every request after it reads
+`900000`. Whether the compaction/utility path carries the provider timeout at all, or
+whether that was simply a run that had started before the write, is unproven on one sample.
+
 ### Fixed — `install.sh` cannot run in the gateway's mount namespace
 
 The real cause of the failing `wpa__deploy`, and it was never transient. Three agent runs
