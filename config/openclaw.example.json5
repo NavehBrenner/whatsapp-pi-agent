@@ -1348,11 +1348,31 @@
   //
   // Verified on hardware 2026-08-14: adding this line moved the request to
   // api.x.ai/v1/responses on the next restart, with no other change.
+  //
+  // WHY timeoutSeconds: without it the provider falls to OpenClaw's implicit ~120s
+  // LLM idle/stream watchdog — "no response from model" measured from the last byte
+  // on the wire, not from the request. grok-4.5 thinking quietly through a long code
+  // write trips it, and the cost is NOT the aborted turn:
+  //
+  //     [agent/embedded] Profile xai:… idle timeout (model silent). Trying next account...
+  //     [agent/embedded] auth profile failure state updated: reason=timeout window=cooldown
+  //
+  // The profile goes into COOLDOWN, and that breaks later, unrelated turns — the
+  // symptom lands nowhere near the cause (NVB-104, measured 2026-09-20 13:20).
+  // The schema names this case: raise the per-provider ceiling for "providers that
+  // buffer reasoning tokens silently on the wire", rather than the global agent
+  // timeout. 900 sits ABOVE agents.defaults.timeoutSeconds (600) on purpose, so the
+  // run cap stays the thing that fires and the watchdog stops pre-empting it.
+  //
+  // The tell either way is in the gateway log, on every request:
+  //   [model-fetch] start provider=xai … timeoutMs=undefined   <- unset, ~120s applies
+  //   [model-fetch] start provider=xai … timeoutMs=900000      <- this line is live
   models: {
     providers: {
       xai: {
         agentRuntime: { id: "openclaw" },
         baseUrl: "https://api.x.ai/v1",
+        timeoutSeconds: 900,
       },
     },
   },
