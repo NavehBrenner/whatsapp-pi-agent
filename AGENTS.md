@@ -141,10 +141,12 @@ ssh pi 'sudo ~/whatsapp-pi-agent/deploy/install.sh'
 `install.sh` calls `install-reader.sh` for the tree sync and the reader's own users and
 units; run the latter directly only if the reader is all you are touching.
 
-**It does not deploy the gateway's config.** `/var/lib/openclaw/.openclaw/openclaw.json`
+**Gateway config is not deployed as a whole file.** `/var/lib/openclaw/.openclaw/openclaw.json`
 is outside this repo and outside git; `config/openclaw.example.json5` documents it and
-does not drive it. Agent and tool-policy changes are edited on the box, then mirrored
-back into the example.
+does not drive it. Structural edits are still hand-done on the box and mirrored back into
+the example. **Single-tool grants** go through approval-gated `wpa__gateway_grant_tool`
+(NVB-103 / [runbook 08](docs/runbooks/08-gateway-grant.md)) — intent args only, never a
+sandbox full-file candidate.
 
 The installer's own rsync carries `--exclude config/config.toml` and restores the
 file's `root:wpa-config 0640` ownership. A hand-rolled `rsync -a --delete` into

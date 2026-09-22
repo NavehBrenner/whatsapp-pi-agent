@@ -11,6 +11,28 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Added — governed gateway tool grants (NVB-103)
+
+Builder can propose a **single-tool grant** into live `openclaw.json` without a hand edit
+and without a full-file candidate of the gateway config.
+
+- MCP tool `wpa__gateway_grant_tool(agent_id, tool_name)` — typed args only; host writes
+  the intent file; model never free-edits mutation JSON.
+- Host mutates agent `alsoAllow` (seed-from-global on first alsoAllow), existing room
+  ceilings, and sandbox `tools.allow`; validates before approval; focused redacted
+  policy diff in the prompt.
+- Root helpers `wpa-grant-preview` / `wpa-grant-apply` (no argv), sudoers-extended,
+  `wpa-approve` gates the tool allow-once only.
+- Atomic install + dated backup; **reports gateway restart required, never restarts**.
+- Full live JSON is never pulled into the workspace; MCP env secrets stay out of diffs.
+- `channels.signal.configWrites` stays false — MCP intent + sudoers, not channel writes.
+
+Docs: ADR 0014, runbook 08. Live enable still needs toolFilter + builder allowlist edits
+and a gateway restart after install (same shape as NVB-37).
+
+Residual risk is the same honesty as deploy: compromised gateway uid already holds the
+helpers (NVB-22).
+
 ### Fixed — a long `builder` turn died at a 120s idle watchdog, and poisoned later turns doing it
 
 `builder` writing a substantial amount of code stopped before finishing. Three separate
@@ -53,6 +75,7 @@ not the session — the recovery is to say "continue" in the room.
 while a minimal-profile (compaction) run was in flight; every request after it reads
 `900000`. Whether the compaction/utility path carries the provider timeout at all, or
 whether that was simply a run that had started before the write, is unproven on one sample.
+
 
 ### Fixed — `install.sh` cannot run in the gateway's mount namespace
 

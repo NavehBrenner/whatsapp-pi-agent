@@ -229,11 +229,13 @@ def test_config_pull_helper_failure(tmp_path: Path) -> None:
 
 
 def test_sudoers_file_is_exact_paths_no_args() -> None:
-    """The standing root grant is three fixed binaries — nothing else."""
+    """The standing root grant is five fixed binaries — nothing else."""
     text = Path("deploy/sudoers.d/wpa-openclaw").read_text()
     assert "NOPASSWD: /usr/local/bin/wpa-apply\n" in text
     assert "NOPASSWD: /usr/local/bin/wpa-apply-preview\n" in text
     assert "NOPASSWD: /usr/local/bin/wpa-config-pull\n" in text
+    assert "NOPASSWD: /usr/local/bin/wpa-grant-preview\n" in text
+    assert "NOPASSWD: /usr/local/bin/wpa-grant-apply\n" in text
     assert "ALL=(ALL)" not in text
     # No argument placeholders after the binary names on the rule lines.
     for line in text.splitlines():
@@ -246,7 +248,13 @@ def test_sudoers_file_is_exact_paths_no_args() -> None:
 
 
 def test_apply_scripts_declare_no_args_contract() -> None:
-    for name in ("wpa-apply", "wpa-apply-preview", "wpa-config-pull"):
+    for name in (
+        "wpa-apply",
+        "wpa-apply-preview",
+        "wpa-config-pull",
+        "wpa-grant-preview",
+        "wpa-grant-apply",
+    ):
         body = Path("deploy") / name
         text = body.read_text()
         assert "No arguments" in text or "no arguments" in text or "No arguments." in text

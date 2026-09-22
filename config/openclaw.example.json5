@@ -298,6 +298,7 @@
         //       "wpa__push",         // NVB-36
         //       "wpa__config_pull",  // NVB-37 — seed live → candidate
         //       "wpa__deploy",       // NVB-37 — approval-gated; wpa-approve must load
+        //       "wpa__gateway_grant_tool", // NVB-103 — grant one tool; approval-gated
         //       "exec",   // NVB-42 — THE SECOND OF TWO EDITS again, same as wpa__sync
         //     ],
         //   },
@@ -787,6 +788,7 @@
       //       "wpa__push",         // NVB-36
       //       "wpa__config_pull",  // NVB-37 — seed live → candidate (real ACIs)
       //       "wpa__deploy",       // NVB-37 — approval-gated by wpa-approve
+      //       "wpa__gateway_grant_tool", // NVB-103 — must also be in the room ceiling
       //       "exec",              // NVB-42 — AND IT HAD TO BE ADDED HERE, not just globally
       //     ],
       //   },
@@ -1304,9 +1306,11 @@
         // The allowlists would have contained them anyway — neither the agent list
         // nor the room ceiling names them — but a tool nobody can reach is still a
         // tool in the surface, and ADR 0010 asks for absent rather than refused.
-        toolFilter: { include: ["sync", "push", "config_pull", "deploy"] },
-        // NVB-36 added push; NVB-37 added config_pull + deploy. Probe the resolved
-        // names before pinning them in alsoAllow — prefix is derived, not assumed.
+        toolFilter: {
+          include: ["sync", "push", "config_pull", "deploy", "gateway_grant_tool"],
+        },
+        // NVB-36 push; NVB-37 config_pull + deploy; NVB-103 gateway_grant_tool.
+        // Probe resolved names before pinning in alsoAllow — prefix is derived.
       },
     },
   },

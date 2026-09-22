@@ -21,7 +21,7 @@ This runbook is the operator half. The design lives in the issue and in
 | Apply helper | `/usr/local/bin/wpa-apply` |
 | Seed helper | `/usr/local/bin/wpa-config-pull` |
 | Sudoers | `/etc/sudoers.d/wpa-openclaw` |
-| Ask-first plugin | `wpa-approve` gates **`wpa__deploy` only** |
+| Ask-first plugin | `wpa-approve` gates **`wpa__deploy`** (and grant — see runbook 08) |
 
 Candidate path is **outside the git checkout** on purpose: real ACIs, never staged by a
 confused `git add -A`. Still under the builder workspace bind, so `read` / `write` work
@@ -54,11 +54,12 @@ Then, on the live gateway config (mirror the comments in
 5. Restart the gateway when the plugin or MCP env changed:
    `sudo systemctl restart wpa-openclaw.service`
 
-Verify privilege is exactly three binaries:
+Verify privilege is the fixed binaries only (deploy + grant after NVB-103):
 
 ```bash
 sudo -u openclaw sudo -l
-# must show only wpa-apply, wpa-apply-preview, wpa-config-pull — no ALL, no args
+# wpa-apply, wpa-apply-preview, wpa-config-pull,
+# wpa-grant-preview, wpa-grant-apply — no ALL, no args
 ```
 
 ### Two prerequisites `sudo -l` will not tell you about
@@ -155,7 +156,7 @@ Open it for large config edits; the Signal card will not hold a real diff.
 
 ## Honesty about root
 
-`openclaw` has `NOPASSWD` on those three paths, and the MCP child inherits it **only
+`openclaw` has `NOPASSWD` on those fixed paths, and the MCP child inherits it **only
 because `wpa-openclaw.service` no longer sets `NoNewPrivileges=`** — see the two
 prerequisites above. A compromised **gateway** is root on this path whether or not you
 tapped allow-once. The sandbox bounds a compromised **agent**. Closing the gateway half
@@ -171,7 +172,7 @@ What approval actually buys: merged code + a config diff a human saw.
 
 ## Out of scope here
 
-- Writing `openclaw.json` by tool
+- Full-file writing of `openclaw.json` by tool (narrow grants: [runbook 08](08-gateway-grant.md))
 - Service restarts by tool ([NVB-48](https://linear.app/naveh-brenner/issue/NVB-48))
 - Placeholder ACIs (rejected — real ACIs in the candidate)
 - Rollback tool

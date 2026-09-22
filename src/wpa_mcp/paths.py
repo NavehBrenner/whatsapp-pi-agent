@@ -62,3 +62,41 @@ PULL_BIN = Path(os.environ.get("WPA_PULL_BIN", "/usr/local/bin/wpa-config-pull")
 # Signal approval description budget (core clamps at 512; keep headroom for the warning).
 DESCRIPTION_MAX = 512
 SUMMARY_MAX = 400
+
+# Live gateway config. root-owned; the sandbox must never open this path for write.
+# Default matches the Pi layout; override in tests via env.
+LIVE_OPENCLAW_CONFIG = Path(
+    os.environ.get(
+        "WPA_LIVE_OPENCLAW_CONFIG",
+        "/var/lib/openclaw/.openclaw/openclaw.json",
+    )
+)
+
+# Privileged helpers for the NVB-103 grant path. No arguments, ever.
+GRANT_PREVIEW_BIN = Path(
+    os.environ.get("WPA_GRANT_PREVIEW_BIN", "/usr/local/bin/wpa-grant-preview")
+)
+GRANT_APPLY_BIN = Path(
+    os.environ.get("WPA_GRANT_APPLY_BIN", "/usr/local/bin/wpa-grant-apply")
+)
+
+# Host-written intent + focused policy diff (outside git; openclaw-owned).
+GRANT_INTENT = Path(
+    os.environ.get(
+        "WPA_GRANT_INTENT",
+        str(WORKSPACE / "config" / "last-grant-intent.json"),
+    )
+)
+GRANT_PREVIEW_DIFF = Path(
+    os.environ.get(
+        "WPA_GRANT_PREVIEW_DIFF",
+        str(WORKSPACE / "config" / "last-grant-preview.diff"),
+    )
+)
+GRANT_PREVIEW_TEXT = Path(
+    os.environ.get(
+        "WPA_GRANT_PREVIEW_TEXT",
+        str(WORKSPACE / "config" / "last-grant-preview.txt"),
+    )
+)
+

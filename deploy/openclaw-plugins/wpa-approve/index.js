@@ -58,8 +58,32 @@ const DESCRIPTION_MAX = 512;
 // The longest wait core will honour. Passing more is silently clamped, so say it here.
 const MAX_TIMEOUT_MS = 600_000;
 
-// Preview binary installed by deploy/install.sh. No arguments; sudoers pins that.
+// Preview binaries installed by deploy/install.sh. No arguments; sudoers pins that.
 const PREVIEW_BIN = process.env.WPA_PREVIEW_BIN || "/usr/local/bin/wpa-apply-preview";
+const GRANT_PREVIEW_BIN =
+  process.env.WPA_GRANT_PREVIEW_BIN || "/usr/local/bin/wpa-grant-preview";
+
+/**
+ * Run a fixed no-arg root helper and return {status, stdout, stderr}.
+ * No agent-controlled env reaches the helper — PATH only.
+ */
+function runPreviewHelper(bin) {
+  let stdout = "";
+  let stderr = "";
+  let status = 0;
+  try {
+    stdout = execFileSync("sudo", ["-n", bin], {
+      encoding: "utf8",
+      timeout: 60_000,
+      env: { PATH: "/usr/bin:/bin", LANG: "C" },
+    });
+  } catch (err) {
+    status = typeof err.status === "number" ? err.status : 1;
+    stdout = String(err.stdout ?? "");
+    stderr = String(err.stderr ?? "");
+  }
+  return { status, stdout, stderr };
+}
 
 /**
  * Host-rendered deploy summary from disk artifacts. Never from `event.params`.
@@ -70,27 +94,9 @@ const PREVIEW_BIN = process.env.WPA_PREVIEW_BIN || "/usr/local/bin/wpa-apply-pre
  * empty description — prompting on "preview failed" would train allow-once taps.
  */
 function deployDescribe(_event, _ctx) {
-  let stdout = "";
-  let stderr = "";
-  let status = 0;
-  try {
-    stdout = execFileSync("sudo", ["-n", PREVIEW_BIN], {
-      encoding: "utf8",
-      timeout: 60_000,
-      // PATH only — no agent-controlled env reaches the helper.
-      env: { PATH: "/usr/bin:/bin", LANG: "C" },
-    });
-  } catch (err) {
-    status = typeof err.status === "number" ? err.status : 1;
-    stdout = String(err.stdout ?? "");
-    stderr = String(err.stderr ?? "");
-  }
-
+  const { status, stdout, stderr } = runPreviewHelper(PREVIEW_BIN);
   const summary = extractSummary(stdout);
   if (status === 2) {
-    // Throw-free: before_tool_call returns block below via describe raising? We
-    // cannot return block from describe. Signal failure by a sentinel the outer
-    // hook checks — see register().
     const err = new Error(summary || stderr || "candidate failed gate.signal --check");
     err.code = "WPA_DEPLOY_CHECK_FAILED";
     err.summary = summary || stderr || "candidate failed gate.signal --check";
@@ -103,6 +109,32 @@ function deployDescribe(_event, _ctx) {
     throw err;
   }
   return summary || "(preview produced no summary)";
+}
+
+/**
+ * Host-rendered grant summary. Intent was written by MCP host code before this
+ * hook runs; the helper re-reads live openclaw.json and emits a focused policy
+ * diff. Params are never trusted for the description body.
+ *
+ * Exit 2 = validation failed (unknown agent, bad tool name, schema). Block before
+ * any approval id is spent.
+ */
+function grantDescribe(_event, _ctx) {
+  const { status, stdout, stderr } = runPreviewHelper(GRANT_PREVIEW_BIN);
+  const summary = extractSummary(stdout);
+  if (status === 2) {
+    const err = new Error(summary || stderr || "grant failed validation");
+    err.code = "WPA_GRANT_CHECK_FAILED";
+    err.summary = summary || stderr || "grant failed validation";
+    throw err;
+  }
+  if (status !== 0) {
+    const err = new Error(stderr || summary || "grant preview failed");
+    err.code = "WPA_GRANT_PREVIEW_FAILED";
+    err.summary = stderr || summary || "grant preview failed";
+    throw err;
+  }
+  return summary || "(grant preview produced no summary)";
 }
 
 /** Pull the ---summary--- block the bash helper emits; fall back to whole stdout. */
@@ -121,8 +153,8 @@ function extractSummary(text) {
 // a pull request; a change in config is a chat message away from being a capability
 // grant, which ADR 0010 forbids.
 //
-// `wpa__deploy` is the first real entry (NVB-37). allow-always is intentionally
-// absent: a standing grant here is a standing root grant.
+// `wpa__deploy` (NVB-37) and `wpa__gateway_grant_tool` (NVB-103). allow-always is
+// intentionally absent: a standing grant here is a standing root grant.
 const GATED = {
   wpa__deploy: {
     title: "Deploy to the Pi",
@@ -133,6 +165,16 @@ const GATED = {
     allowedDecisions: ["allow-once", "deny"],
     timeoutMs: 120_000,
     describe: deployDescribe,
+  },
+  wpa__gateway_grant_tool: {
+    title: "Grant tool in openclaw.json",
+    severity: "critical",
+    warning:
+      "Writes live openclaw.json policy layers as root. Does not restart the gateway.",
+    agents: ["builder"],
+    allowedDecisions: ["allow-once", "deny"],
+    timeoutMs: 120_000,
+    describe: grantDescribe,
   },
 };
 
@@ -188,10 +230,23 @@ export default definePluginEntry({
               clamp(String(summary), 300),
           };
         }
+        if (code === "WPA_GRANT_CHECK_FAILED") {
+          return {
+            block: true,
+            blockReason:
+              "Grant failed validation. Refused before asking for approval so a " +
+              "YES cannot write a bad openclaw.json. " +
+              clamp(String(summary), 300),
+          };
+        }
+        const kind =
+          code === "WPA_GRANT_PREVIEW_FAILED" || String(event.toolName || "").includes("grant")
+            ? "Grant"
+            : "Deploy";
         return {
           block: true,
           blockReason:
-            "Deploy preview failed; refused rather than prompt on incomplete " +
+            `${kind} preview failed; refused rather than prompt on incomplete ` +
             "information. " +
             clamp(String(summary), 300),
         };
@@ -240,6 +295,7 @@ export {
   clamp,
   extractSummary,
   deployDescribe,
+  grantDescribe,
   DESCRIPTION_MAX,
   TITLE_MAX,
 };
