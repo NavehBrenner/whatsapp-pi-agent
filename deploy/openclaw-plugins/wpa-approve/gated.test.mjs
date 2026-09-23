@@ -1,7 +1,8 @@
 // node deploy/openclaw-plugins/wpa-approve/gated.test.mjs
 //
-// Guards the NVB-37 policy constants: wpa__deploy is gated, allow-always is not
-// offered, and the description budget is what core actually clamps to.
+// Guards the NVB-37 / NVB-103 policy constants: wpa__deploy and
+// wpa__gateway_grant_tool are gated, allow-always is not offered, and the
+// description budget is what core actually clamps to.
 
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -39,6 +40,7 @@ async function load() {
     fs.readFileSync(join(here, "index.js"), "utf8"),
   );
   assert.match(src, /wpa__deploy\s*:/);
+  assert.match(src, /wpa__gateway_grant_tool\s*:/);
   assert.match(src, /allowedDecisions:\s*\[\s*"allow-once"\s*,\s*"deny"\s*\]/);
   assert.doesNotMatch(
     src.replace(/\/\/.*$/gm, ""),
@@ -48,6 +50,10 @@ async function load() {
   assert.match(src, /severity:\s*"critical"/);
   assert.match(src, /timeoutBehavior:\s*"deny"/);
   assert.match(src, /DESCRIPTION_MAX\s*=\s*512/);
+  assert.match(src, /WPA_GRANT_CHECK_FAILED/);
+  assert.match(src, /stageGrantIntent/);
+  assert.match(src, /\/run\/wpa\/grant-intent\.json/);
+  assert.match(src, /writeFileSync\(GRANT_INTENT_PATH/);
   console.log("wpa-approve gated (source): all assertions passed");
   process.exit(0);
 }
@@ -55,12 +61,16 @@ async function load() {
 await load();
 
 assert.ok(GATED.wpa__deploy, "wpa__deploy must be gated");
-const rule = GATED.wpa__deploy;
-assert.deepEqual(rule.allowedDecisions, ["allow-once", "deny"]);
-assert.ok(!rule.allowedDecisions.includes("allow-always"));
-assert.deepEqual(rule.agents, ["builder"]);
-assert.equal(rule.severity, "critical");
-assert.equal(typeof rule.describe, "function");
+assert.ok(GATED.wpa__gateway_grant_tool, "wpa__gateway_grant_tool must be gated");
+
+for (const name of ["wpa__deploy", "wpa__gateway_grant_tool"]) {
+  const rule = GATED[name];
+  assert.deepEqual(rule.allowedDecisions, ["allow-once", "deny"], name);
+  assert.ok(!rule.allowedDecisions.includes("allow-always"), name);
+  assert.deepEqual(rule.agents, ["builder"], name);
+  assert.equal(rule.severity, "critical", name);
+  assert.equal(typeof rule.describe, "function", name);
+}
 
 assert.equal(DESCRIPTION_MAX, 512);
 assert.equal(clamp("abcd", 3), "...");
@@ -71,7 +81,15 @@ const block = extractSummary(
 );
 assert.equal(block, "line one\nline two");
 
-// Only deploy is gated today — a free tool must not appear here by accident.
-assert.equal(Object.keys(GATED).length, 1);
+// Exactly the two privileged tools — a free tool must not appear here by accident.
+assert.equal(Object.keys(GATED).length, 2);
+
+// Grant describe must stage intent from params before preview (PR #55 ordering).
+const src = await import("node:fs").then((fs) =>
+  fs.readFileSync(join(here, "index.js"), "utf8"),
+);
+assert.match(src, /stageGrantIntent\(event\)/);
+assert.match(src, /\/run\/wpa\/grant-intent\.json/);
+assert.doesNotMatch(src, /Intent was written by MCP host code before this/);
 
 console.log("wpa-approve gated: all assertions passed");

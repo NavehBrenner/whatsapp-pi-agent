@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Validate a host-written grant intent and render a focused policy diff.
+#
+# Installed as /usr/local/bin/wpa-grant-preview. **No arguments.** openclaw may
+# invoke it via NOPASSWD sudo (deploy/sudoers.d/wpa-openclaw). NVB-103.
+#
+# Exit 0 = ok to prompt. Exit 2 = validation failed (must not prompt).
+# Exit 1 = other failure.
+set -euo pipefail
+
+[ "$(id -u)" = 0 ] || { echo "wpa-grant-preview: must run as root" >&2; exit 2; }
+
+venv="${WPA_VENV_PYTHON:-/opt/wpa/.venv/bin/python}"
+src="${WPA_GATE_SRC:-/opt/wpa/src}"
+if [ ! -x "$venv" ]; then
+	echo "wpa-grant-preview: $venv missing — run deploy/install.sh" >&2
+	exit 1
+fi
+if [ ! -d "$src/wpa_mcp" ]; then
+	echo "wpa-grant-preview: wpa_mcp missing under $src" >&2
+	exit 1
+fi
+
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH="$src${PYTHONPATH:+:$PYTHONPATH}"
+exec "$venv" -m wpa_mcp.gateway_grant_cli preview

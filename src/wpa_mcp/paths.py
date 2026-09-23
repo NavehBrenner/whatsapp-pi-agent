@@ -62,3 +62,43 @@ PULL_BIN = Path(os.environ.get("WPA_PULL_BIN", "/usr/local/bin/wpa-config-pull")
 # Signal approval description budget (core clamps at 512; keep headroom for the warning).
 DESCRIPTION_MAX = 512
 SUMMARY_MAX = 400
+
+# Live gateway config. root-owned; the sandbox must never open this path for write.
+# Default matches the Pi layout; override in tests via env.
+LIVE_OPENCLAW_CONFIG = Path(
+    os.environ.get(
+        "WPA_LIVE_OPENCLAW_CONFIG",
+        "/var/lib/openclaw/.openclaw/openclaw.json",
+    )
+)
+
+# Privileged helpers for the NVB-103 grant path. No arguments, ever.
+GRANT_PREVIEW_BIN = Path(
+    os.environ.get("WPA_GRANT_PREVIEW_BIN", "/usr/local/bin/wpa-grant-preview")
+)
+GRANT_APPLY_BIN = Path(
+    os.environ.get("WPA_GRANT_APPLY_BIN", "/usr/local/bin/wpa-grant-apply")
+)
+
+# Host-written grant intent spool. MUST stay outside the sandbox bind mount.
+# The wpa-approve before_tool_call hook stages it from validated event.params;
+# the MCP tool body must never overwrite it (compare-and-refuse on mismatch).
+# Default: /run/wpa/grant-intent.json (install.sh: root:openclaw 0770 dir).
+GRANT_INTENT = Path(
+    os.environ.get("WPA_GRANT_INTENT", "/run/wpa/grant-intent.json")
+)
+
+# Focused redacted policy diff/text for humans (and the agent after the fact).
+# These are secret-free snapshots; workspace is fine. Intent is not.
+GRANT_PREVIEW_DIFF = Path(
+    os.environ.get(
+        "WPA_GRANT_PREVIEW_DIFF",
+        str(WORKSPACE / "config" / "last-grant-preview.diff"),
+    )
+)
+GRANT_PREVIEW_TEXT = Path(
+    os.environ.get(
+        "WPA_GRANT_PREVIEW_TEXT",
+        str(WORKSPACE / "config" / "last-grant-preview.txt"),
+    )
+)

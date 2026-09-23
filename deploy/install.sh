@@ -157,14 +157,42 @@ done <<-'EOF'
 	wpa-apply              wpa-apply           0755
 	wpa-apply-preview      wpa-apply-preview   0755
 	wpa-config-pull        wpa-config-pull     0755
+	wpa-grant-preview      wpa-grant-preview   0755
+	wpa-grant-apply        wpa-grant-apply     0755
 EOF
 # 0700 on the notifier is not a typo: it writes into an agent outbox owned by the
 # gate, and nothing but root has any business invoking it. wpa-triage inherits
 # that for the same reason (it execs the notifier), and wpa-token-expiry because
 # it reads two PATs.
 #
-# wpa-apply{,-preview} and wpa-config-pull are the NVB-37 root helpers. openclaw
-# reaches them only through /etc/sudoers.d/wpa-openclaw (exact path, no args).
+# wpa-apply{,-preview} and wpa-config-pull are the NVB-37 root helpers.
+# wpa-grant-{preview,apply} are the NVB-103 grant helpers. openclaw reaches them
+# only through /etc/sudoers.d/wpa-openclaw (exact path, no args).
+
+# ---------------------------------------------------------------------------
+# Host spool for NVB-103 grant intent. MUST sit outside the builder sandbox
+# bind mount — the wpa-approve hook stages validated event.params here, and the
+# MCP tool body only compares against it (never overwrites). /run is tmpfs, so
+# this is recreated on boot; mode 0770 root:openclaw so the gateway uid can write
+# the intent without the agent container seeing the path.
+# ---------------------------------------------------------------------------
+echo
+echo "== grant intent spool (/run/wpa) =="
+if getent group openclaw >/dev/null 2>&1; then
+	install -d -m 0770 -o root -g openclaw /run/wpa
+	echo "  /run/wpa  0770  root:openclaw  (grant-intent.json lives here)"
+else
+	install -d -m 0750 -o root -g root /run/wpa
+	echo "  /run/wpa  0750  root:root  (openclaw group missing — fix before first grant)"
+fi
+# Survive reboot: tmpfiles.d recreates the dir with the same ownership.
+tmpfiles_dst=/etc/tmpfiles.d/wpa-grant.conf
+cat >"$tmpfiles_dst" <<'EOF'
+# NVB-103 grant intent spool — outside sandbox mounts; gateway-writable.
+d /run/wpa 0770 root openclaw -
+EOF
+chmod 0644 "$tmpfiles_dst"
+echo "  $tmpfiles_dst"
 
 # ---------------------------------------------------------------------------
 # sudoers for the deploy path. A compromised gateway holds these rights whether
@@ -184,8 +212,9 @@ elif ! visudo -cf "$sudoers_src" >/dev/null 2>&1; then
 	visudo -cf "$sudoers_src" || true
 else
 	install -m 0440 -o root -g root "$sudoers_src" "$sudoers_dst"
-	echo "  $sudoers_dst  0440  (wpa-apply, wpa-apply-preview, wpa-config-pull)"
-	echo "  a compromised gateway uid holds these rights — see runbook 07"
+	echo "  $sudoers_dst  0440  (wpa-apply, wpa-apply-preview, wpa-config-pull,"
+	echo "                         wpa-grant-preview, wpa-grant-apply)"
+	echo "  a compromised gateway uid holds these rights — see runbook 07 / 08"
 fi
 
 # git's dubious-ownership check, which refuses root as hard as anyone else.

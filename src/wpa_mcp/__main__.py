@@ -52,6 +52,9 @@ from wpa_mcp.config_pull import config_pull as run_config_pull
 from wpa_mcp.deploy import DeployCheckError, DeployError, DeployResult
 from wpa_mcp.deploy import apply as run_apply
 from wpa_mcp.deploy import preview as run_preview
+from wpa_mcp.gateway_grant_ops import GrantOpsError, GrantResult, GrantValidateError
+from wpa_mcp.gateway_grant_ops import apply_grant_tool as run_grant_apply
+from wpa_mcp.gateway_grant_ops import preview_grant as run_grant_preview
 from wpa_mcp.push import PushError, PushResult
 from wpa_mcp.push import push as run_push
 from wpa_mcp.sync import SyncError, SyncResult
@@ -75,8 +78,9 @@ server: MCPServer[None] = MCPServer(
     # running. Tracks the version in pyproject.toml by hand — there is one of each.
     version="0.1.0",
     instructions=(
-        "Tools for the checkout of this assistant's own source repository, and for "
-        "deploying origin/main (plus an optional candidate gate config) onto the Pi."
+        "Tools for the checkout of this assistant's own source repository, for "
+        "deploying origin/main (plus an optional candidate gate config) onto the Pi, "
+        "and for approval-gated grants of one tool into openclaw.json policy layers."
     ),
 )
 
@@ -196,6 +200,43 @@ def deploy() -> DeployResult:
         return run_apply()
     except (DeployCheckError, DeployError) as exc:
         print(f"wpa__deploy: {exc}", file=sys.stderr, flush=True)
+        raise
+
+
+@server.tool(
+    name="gateway_grant_tool",
+    description=(
+        "Grant one existing tool name to one existing agent in live openclaw.json "
+        "policy layers (agent alsoAllow, room ceilings when present, sandbox allow). "
+        "Typed args only — no free-form JSON path. Host code mutates a working copy, "
+        "validates before approval, installs on allow-once, writes a backup, and "
+        "reports that a gateway restart is still required (never restarts). "
+        "allow-once only — no standing grant."
+    ),
+    annotations=ToolAnnotations(
+        read_only_hint=False, destructive_hint=True, idempotent_hint=False
+    ),
+)
+def gateway_grant_tool(agent_id: str, tool_name: str) -> GrantResult:
+    """agent_id + tool_name only. Approval is enforced by wpa-approve before this runs.
+
+    The hook stages /run/wpa/grant-intent.json from validated params and renders
+    the approval card from root preview. This body never overwrites that spool:
+    preview/apply compare typed args against it and refuse on mismatch.
+    """
+    try:
+        # Re-check the already-staged spool matches these args (anti-swap), then
+        # re-run preview. The hook already did the first preview for the card.
+        run_grant_preview(agent_id, tool_name)
+    except GrantValidateError:
+        raise
+    except GrantOpsError as exc:
+        print(f"wpa__gateway_grant_tool: {exc}", file=sys.stderr, flush=True)
+        raise
+    try:
+        return run_grant_apply(agent_id, tool_name)
+    except (GrantValidateError, GrantOpsError) as exc:
+        print(f"wpa__gateway_grant_tool: {exc}", file=sys.stderr, flush=True)
         raise
 
 

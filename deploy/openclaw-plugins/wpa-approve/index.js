@@ -41,6 +41,8 @@
 // by host code from artifacts on disk, and this hook passes it through untouched.
 
 import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
@@ -58,8 +60,43 @@ const DESCRIPTION_MAX = 512;
 // The longest wait core will honour. Passing more is silently clamped, so say it here.
 const MAX_TIMEOUT_MS = 600_000;
 
-// Preview binary installed by deploy/install.sh. No arguments; sudoers pins that.
+// Preview binaries installed by deploy/install.sh. No arguments; sudoers pins that.
 const PREVIEW_BIN = process.env.WPA_PREVIEW_BIN || "/usr/local/bin/wpa-apply-preview";
+const GRANT_PREVIEW_BIN =
+  process.env.WPA_GRANT_PREVIEW_BIN || "/usr/local/bin/wpa-grant-preview";
+// Host spool outside the sandbox bind mount. install.sh creates /run/wpa as
+// root:openclaw 0770. The MCP tool body never writes this file — it only
+// compares typed args against it (PR #55 / NVB-103 review).
+const GRANT_INTENT_PATH =
+  process.env.WPA_GRANT_INTENT || "/run/wpa/grant-intent.json";
+
+// Same shape as wpa_mcp.gateway_grant — keep the denylist in lockstep.
+const GRANT_TOOL_NAME_RE =
+  /^[A-Za-z][A-Za-z0-9_]*(?:__[A-Za-z0-9_]+)*(?::[A-Za-z][A-Za-z0-9_]*)?$/;
+const GRANT_AGENT_ID_RE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+const GRANT_DENIED_TOOLS = new Set(["wpa__gateway_grant_tool", "gateway_grant_tool"]);
+
+/**
+ * Run a fixed no-arg root helper and return {status, stdout, stderr}.
+ * No agent-controlled env reaches the helper — PATH only.
+ */
+function runPreviewHelper(bin) {
+  let stdout = "";
+  let stderr = "";
+  let status = 0;
+  try {
+    stdout = execFileSync("sudo", ["-n", bin], {
+      encoding: "utf8",
+      timeout: 60_000,
+      env: { PATH: "/usr/bin:/bin", LANG: "C" },
+    });
+  } catch (err) {
+    status = typeof err.status === "number" ? err.status : 1;
+    stdout = String(err.stdout ?? "");
+    stderr = String(err.stderr ?? "");
+  }
+  return { status, stdout, stderr };
+}
 
 /**
  * Host-rendered deploy summary from disk artifacts. Never from `event.params`.
@@ -70,27 +107,9 @@ const PREVIEW_BIN = process.env.WPA_PREVIEW_BIN || "/usr/local/bin/wpa-apply-pre
  * empty description — prompting on "preview failed" would train allow-once taps.
  */
 function deployDescribe(_event, _ctx) {
-  let stdout = "";
-  let stderr = "";
-  let status = 0;
-  try {
-    stdout = execFileSync("sudo", ["-n", PREVIEW_BIN], {
-      encoding: "utf8",
-      timeout: 60_000,
-      // PATH only — no agent-controlled env reaches the helper.
-      env: { PATH: "/usr/bin:/bin", LANG: "C" },
-    });
-  } catch (err) {
-    status = typeof err.status === "number" ? err.status : 1;
-    stdout = String(err.stdout ?? "");
-    stderr = String(err.stderr ?? "");
-  }
-
+  const { status, stdout, stderr } = runPreviewHelper(PREVIEW_BIN);
   const summary = extractSummary(stdout);
   if (status === 2) {
-    // Throw-free: before_tool_call returns block below via describe raising? We
-    // cannot return block from describe. Signal failure by a sentinel the outer
-    // hook checks — see register().
     const err = new Error(summary || stderr || "candidate failed gate.signal --check");
     err.code = "WPA_DEPLOY_CHECK_FAILED";
     err.summary = summary || stderr || "candidate failed gate.signal --check";
@@ -103,6 +122,103 @@ function deployDescribe(_event, _ctx) {
     throw err;
   }
   return summary || "(preview produced no summary)";
+}
+
+/**
+ * Validate grant tool params and stage the host-owned intent spool.
+ *
+ * Ordering that must not break (PR #55 review):
+ *   1. this hook writes /run/wpa/grant-intent.json from validated event.params
+ *   2. root preview renders the focused diff the human sees
+ *   3. on allow-once the MCP tool compares its typed args to that spool and
+ *      refuses on mismatch — it never overwrites the intent
+ *
+ * Params are validated here, then frozen on disk outside the sandbox mount.
+ * The description body still comes from the host helper, not from the model.
+ */
+function stageGrantIntent(event) {
+  const params = event && event.params && typeof event.params === "object" ? event.params : {};
+  const agentRaw = params.agent_id;
+  const toolRaw = params.tool_name;
+  if (typeof agentRaw !== "string" || !agentRaw.trim()) {
+    const err = new Error("agent_id must be a non-empty string");
+    err.code = "WPA_GRANT_CHECK_FAILED";
+    err.summary = err.message;
+    throw err;
+  }
+  if (typeof toolRaw !== "string" || !toolRaw.trim()) {
+    const err = new Error("tool_name must be a non-empty string");
+    err.code = "WPA_GRANT_CHECK_FAILED";
+    err.summary = err.message;
+    throw err;
+  }
+  const agent_id = agentRaw.trim();
+  const tool_name = toolRaw.trim();
+  if (!GRANT_AGENT_ID_RE.test(agent_id)) {
+    const err = new Error(`invalid agent_id: ${JSON.stringify(agent_id)}`);
+    err.code = "WPA_GRANT_CHECK_FAILED";
+    err.summary = err.message;
+    throw err;
+  }
+  if (!GRANT_TOOL_NAME_RE.test(tool_name)) {
+    const err = new Error(`invalid tool_name: ${JSON.stringify(tool_name)}`);
+    err.code = "WPA_GRANT_CHECK_FAILED";
+    err.summary = err.message;
+    throw err;
+  }
+  if (GRANT_DENIED_TOOLS.has(tool_name)) {
+    const err = new Error(
+      `refusing to grant ${JSON.stringify(tool_name)}: the grant tool itself is not grantable through this path`,
+    );
+    err.code = "WPA_GRANT_CHECK_FAILED";
+    err.summary = err.message;
+    throw err;
+  }
+
+  const payload = JSON.stringify(
+    { op: "grant_tool", agent_id, tool_name },
+    null,
+    2,
+  ) + "\n";
+  try {
+    mkdirSync(dirname(GRANT_INTENT_PATH), { recursive: true, mode: 0o770 });
+    writeFileSync(GRANT_INTENT_PATH, payload, { encoding: "utf8", mode: 0o600 });
+  } catch (writeErr) {
+    const err = new Error(
+      `failed to stage grant intent at ${GRANT_INTENT_PATH}: ${writeErr && writeErr.message ? writeErr.message : writeErr}`,
+    );
+    err.code = "WPA_GRANT_PREVIEW_FAILED";
+    err.summary = err.message;
+    throw err;
+  }
+  return { agent_id, tool_name };
+}
+
+/**
+ * Host-rendered grant summary. Stages intent from validated event.params, then
+ * shells the fixed root preview helper. The helper re-reads live openclaw.json
+ * and emits a focused policy diff — that body is what the human sees.
+ *
+ * Exit 2 = validation failed (unknown agent, bad tool name, schema). Block before
+ * any approval id is spent.
+ */
+function grantDescribe(event, _ctx) {
+  stageGrantIntent(event);
+  const { status, stdout, stderr } = runPreviewHelper(GRANT_PREVIEW_BIN);
+  const summary = extractSummary(stdout);
+  if (status === 2) {
+    const err = new Error(summary || stderr || "grant failed validation");
+    err.code = "WPA_GRANT_CHECK_FAILED";
+    err.summary = summary || stderr || "grant failed validation";
+    throw err;
+  }
+  if (status !== 0) {
+    const err = new Error(stderr || summary || "grant preview failed");
+    err.code = "WPA_GRANT_PREVIEW_FAILED";
+    err.summary = stderr || summary || "grant preview failed";
+    throw err;
+  }
+  return summary || "(grant preview produced no summary)";
 }
 
 /** Pull the ---summary--- block the bash helper emits; fall back to whole stdout. */
@@ -121,8 +237,8 @@ function extractSummary(text) {
 // a pull request; a change in config is a chat message away from being a capability
 // grant, which ADR 0010 forbids.
 //
-// `wpa__deploy` is the first real entry (NVB-37). allow-always is intentionally
-// absent: a standing grant here is a standing root grant.
+// `wpa__deploy` (NVB-37) and `wpa__gateway_grant_tool` (NVB-103). allow-always is
+// intentionally absent: a standing grant here is a standing root grant.
 const GATED = {
   wpa__deploy: {
     title: "Deploy to the Pi",
@@ -133,6 +249,16 @@ const GATED = {
     allowedDecisions: ["allow-once", "deny"],
     timeoutMs: 120_000,
     describe: deployDescribe,
+  },
+  wpa__gateway_grant_tool: {
+    title: "Grant tool in openclaw.json",
+    severity: "critical",
+    warning:
+      "Writes live openclaw.json policy layers as root. Does not restart the gateway.",
+    agents: ["builder"],
+    allowedDecisions: ["allow-once", "deny"],
+    timeoutMs: 120_000,
+    describe: grantDescribe,
   },
 };
 
@@ -188,10 +314,23 @@ export default definePluginEntry({
               clamp(String(summary), 300),
           };
         }
+        if (code === "WPA_GRANT_CHECK_FAILED") {
+          return {
+            block: true,
+            blockReason:
+              "Grant failed validation. Refused before asking for approval so a " +
+              "YES cannot write a bad openclaw.json. " +
+              clamp(String(summary), 300),
+          };
+        }
+        const kind =
+          code === "WPA_GRANT_PREVIEW_FAILED" || String(event.toolName || "").includes("grant")
+            ? "Grant"
+            : "Deploy";
         return {
           block: true,
           blockReason:
-            "Deploy preview failed; refused rather than prompt on incomplete " +
+            `${kind} preview failed; refused rather than prompt on incomplete ` +
             "information. " +
             clamp(String(summary), 300),
         };
@@ -240,6 +379,9 @@ export {
   clamp,
   extractSummary,
   deployDescribe,
+  grantDescribe,
+  stageGrantIntent,
+  GRANT_INTENT_PATH,
   DESCRIPTION_MAX,
   TITLE_MAX,
 };
