@@ -51,6 +51,9 @@ async function load() {
   assert.match(src, /timeoutBehavior:\s*"deny"/);
   assert.match(src, /DESCRIPTION_MAX\s*=\s*512/);
   assert.match(src, /WPA_GRANT_CHECK_FAILED/);
+  assert.match(src, /stageGrantIntent/);
+  assert.match(src, /\/run\/wpa\/grant-intent\.json/);
+  assert.match(src, /writeFileSync\(GRANT_INTENT_PATH/);
   console.log("wpa-approve gated (source): all assertions passed");
   process.exit(0);
 }
@@ -80,5 +83,13 @@ assert.equal(block, "line one\nline two");
 
 // Exactly the two privileged tools — a free tool must not appear here by accident.
 assert.equal(Object.keys(GATED).length, 2);
+
+// Grant describe must stage intent from params before preview (PR #55 ordering).
+const src = await import("node:fs").then((fs) =>
+  fs.readFileSync(join(here, "index.js"), "utf8"),
+);
+assert.match(src, /stageGrantIntent\(event\)/);
+assert.match(src, /\/run\/wpa\/grant-intent\.json/);
+assert.doesNotMatch(src, /Intent was written by MCP host code before this/);
 
 console.log("wpa-approve gated: all assertions passed");

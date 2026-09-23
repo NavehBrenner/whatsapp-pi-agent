@@ -17,17 +17,18 @@ That left no path for builder to grant a tool (e.g. `skill_workshop` for NVB-102
 
 **v1 is option B: narrow intent tools.** Not full-file candidate edit of `openclaw.json`.
 
-1. **Typed MCP args only** — `wpa__gateway_grant_tool(agent_id, tool_name)`. Host writes the intent file; the model never free-edits a mutation artifact.
-2. **Host mutates a working copy** of live config outside the sandbox, applying structured multi-layer rules:
+1. **Typed MCP args only** — `wpa__gateway_grant_tool(agent_id, tool_name)`. The model never free-edits a mutation artifact.
+2. **Hook stages intent outside the sandbox mount** — `wpa-approve` `before_tool_call` validates `event.params` and writes `/run/wpa/grant-intent.json` (root:openclaw spool from install.sh). The MCP tool body **never overwrites** that file; on allow-once it compares typed args to the spool and refuses on mismatch (closes the approve-one/apply-another swap).
+3. **Host mutates a working copy** of live config outside the sandbox, applying structured multi-layer rules:
    - agent `tools.alsoAllow` (seed from global on first alsoAllow — replaces, does not merge)
    - room `channels.signal.groups[*].tools.allow` only when a group binding already has a ceiling
    - `tools.sandbox.tools.allow`
-3. **Validate before approval** — bad intent / unknown agent / failed schema check never reaches YES.
-4. **Host-rendered focused policy diff** in the approval prompt (redacted; no MCP `env` values).
-5. **allow-once only** — `wpa-approve` gates the tool; no `allow-always`.
-6. **Atomic install + dated backup**; **report restart required, never restart**.
-7. **Live full JSON never pulled into the workspace** as a candidate. Secrets stay out of sandbox diffs.
-8. **`configWrites` stays false** — this path is MCP intent + fixed sudoers helpers, not channel configWrites.
+4. **Validate before approval** — bad intent / unknown agent / self-grant of the grant tool / failed schema check never reaches YES.
+5. **Host-rendered focused policy diff** in the approval prompt (redacted; no MCP `env` values).
+6. **allow-once only** — `wpa-approve` gates the tool; no `allow-always`.
+7. **Atomic install + dated backup** (O_EXCL temp in live.parent); **report restart required, never restart**.
+8. **Live full JSON never pulled into the workspace** as a candidate. Secrets stay out of sandbox diffs. Intent is not workspace-resident either.
+9. **`configWrites` stays false** — this path is MCP intent + fixed sudoers helpers, not channel configWrites.
 
 ## What approval buys (honest)
 

@@ -80,13 +80,16 @@ GRANT_APPLY_BIN = Path(
     os.environ.get("WPA_GRANT_APPLY_BIN", "/usr/local/bin/wpa-grant-apply")
 )
 
-# Host-written intent + focused policy diff (outside git; openclaw-owned).
+# Host-written grant intent spool. MUST stay outside the sandbox bind mount.
+# The wpa-approve before_tool_call hook stages it from validated event.params;
+# the MCP tool body must never overwrite it (compare-and-refuse on mismatch).
+# Default: /run/wpa/grant-intent.json (install.sh: root:openclaw 0770 dir).
 GRANT_INTENT = Path(
-    os.environ.get(
-        "WPA_GRANT_INTENT",
-        str(WORKSPACE / "config" / "last-grant-intent.json"),
-    )
+    os.environ.get("WPA_GRANT_INTENT", "/run/wpa/grant-intent.json")
 )
+
+# Focused redacted policy diff/text for humans (and the agent after the fact).
+# These are secret-free snapshots; workspace is fine. Intent is not.
 GRANT_PREVIEW_DIFF = Path(
     os.environ.get(
         "WPA_GRANT_PREVIEW_DIFF",
@@ -99,4 +102,3 @@ GRANT_PREVIEW_TEXT = Path(
         str(WORKSPACE / "config" / "last-grant-preview.txt"),
     )
 )
-

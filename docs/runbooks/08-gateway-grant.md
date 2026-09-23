@@ -17,8 +17,8 @@ bindings). It is the vertical slice that unblocks common tool grants (e.g.
 | MCP tool | `wpa__gateway_grant_tool` (probe the resolved name) |
 | Preview helper | `/usr/local/bin/wpa-grant-preview` |
 | Apply helper | `/usr/local/bin/wpa-grant-apply` |
-| Intent artifact | `…/workspace-builder/config/last-grant-intent.json` (host-written) |
-| Focused diff | `…/workspace-builder/config/last-grant-preview.diff` |
+| Intent spool | `/run/wpa/grant-intent.json` (hook-staged; **outside** sandbox mount) |
+| Focused diff | `…/workspace-builder/config/last-grant-preview.diff` (secret-free) |
 | Sudoers | same `/etc/sudoers.d/wpa-openclaw` as deploy (two extra binaries) |
 | Ask-first plugin | `wpa-approve` gates **deploy and grant** |
 
@@ -60,12 +60,16 @@ sudo -u openclaw sudo -l
 #           wpa-grant-preview, wpa-grant-apply — no ALL, no args
 ```
 
-Prove the grant preview path:
+Prove the grant preview path (after the hook would have staged intent):
 
 ```bash
-# host must have written intent first; normally the MCP tool does that
+# Simulate what wpa-approve stages from validated event.params (not the agent):
+sudo install -d -m 0770 -o root -g openclaw /run/wpa
+printf '%s\n' '{"op":"grant_tool","agent_id":"builder","tool_name":"skill_workshop"}' \
+  | sudo tee /run/wpa/grant-intent.json >/dev/null
+sudo chmod 0600 /run/wpa/grant-intent.json
 sudo -u openclaw sudo -n /usr/local/bin/wpa-grant-preview
-# exit 0 + summary, or exit 2 on validation failure
+# exit 0 + summary, or exit 2 on validation failure / missing intent
 ```
 
 ---
@@ -73,11 +77,13 @@ sudo -u openclaw sudo -n /usr/local/bin/wpa-grant-preview
 ## Agent flow
 
 1. Call `wpa__gateway_grant_tool(agent_id="builder", tool_name="skill_workshop")`
-   (or another **existing** agent id / tool name).
-2. Host writes intent → root preview validates + focused policy diff.
-3. Bad intent / unknown agent / validate fail → **refused before approval**.
+   (or another **existing** agent id / tool name that is not the grant tool itself).
+2. **`before_tool_call` hook** validates `event.params`, writes `/run/wpa/grant-intent.json`
+   (outside the sandbox mount), then root preview validates + focused policy diff.
+3. Bad intent / unknown agent / self-grant / validate fail → **refused before approval**.
 4. Good → Signal approval with host summary (allow-once / deny only).
-5. On allow: re-validate → backup live → atomic install.
+5. On allow: MCP tool **compares** typed args to the on-disk spool (refuse on mismatch;
+   never overwrites it) → re-validate → backup live → atomic install.
 6. Output says **gateway restart still required**. Nothing restarts itself.
 
 ```bash
@@ -119,9 +125,12 @@ values.
 ## Honesty about root
 
 Same as runbook 07: compromised **gateway** holds these helpers. Compromised **agent**
-is still sandboxed. Approval is host diff review, not a bound on gateway compromise.
+cannot rewrite the intent spool (it lives under `/run/wpa`, not the workspace mount).
+Approval is host diff review, not a bound on gateway compromise (NVB-22).
 
 `channels.signal.configWrites` stays **false**.
+
+Self-grant of `wpa__gateway_grant_tool` / `gateway_grant_tool` is refused outright.
 
 ---
 

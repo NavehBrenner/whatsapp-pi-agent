@@ -285,17 +285,37 @@ def cmd_apply(_args: argparse.Namespace) -> int:
             pass
 
         st = live.stat()
-        install_tmp = live.with_name(live.name + ".wpa-grant-tmp")
-        shutil.copyfile(candidate, install_tmp)
+        # O_EXCL|O_NOFOLLOW mkstemp in live.parent — never a fixed name + copyfile
+        # (which follows symlinks). A pre-created openclaw.json.wpa-grant-tmp
+        # must not become a root write-through (PR #55 review).
+        tmp_fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{live.name}.",
+            suffix=".wpa-grant-tmp",
+            dir=str(live.parent),
+        )
+        install_tmp = Path(tmp_name)
+        installed = False
         try:
-            os.chown(install_tmp, st.st_uid, st.st_gid)
-        except OSError:
-            pass
-        try:
-            install_tmp.chmod(st.st_mode & 0o777)
-        except OSError:
-            pass
-        os.replace(install_tmp, live)
+            with os.fdopen(tmp_fd, "wb") as out:
+                out.write(candidate.read_bytes())
+                out.flush()
+                os.fsync(out.fileno())
+            try:
+                os.chown(install_tmp, st.st_uid, st.st_gid)
+            except OSError:
+                pass
+            try:
+                install_tmp.chmod(st.st_mode & 0o777)
+            except OSError:
+                pass
+            os.replace(install_tmp, live)
+            installed = True
+        finally:
+            if not installed:
+                try:
+                    install_tmp.unlink()
+                except OSError:
+                    pass
 
     layers = ",".join(c.layer + ":" + c.action for c in report.changes)
     print(f"agent_id={intent.agent_id}")

@@ -170,6 +170,31 @@ EOF
 # only through /etc/sudoers.d/wpa-openclaw (exact path, no args).
 
 # ---------------------------------------------------------------------------
+# Host spool for NVB-103 grant intent. MUST sit outside the builder sandbox
+# bind mount — the wpa-approve hook stages validated event.params here, and the
+# MCP tool body only compares against it (never overwrites). /run is tmpfs, so
+# this is recreated on boot; mode 0770 root:openclaw so the gateway uid can write
+# the intent without the agent container seeing the path.
+# ---------------------------------------------------------------------------
+echo
+echo "== grant intent spool (/run/wpa) =="
+if getent group openclaw >/dev/null 2>&1; then
+	install -d -m 0770 -o root -g openclaw /run/wpa
+	echo "  /run/wpa  0770  root:openclaw  (grant-intent.json lives here)"
+else
+	install -d -m 0750 -o root -g root /run/wpa
+	echo "  /run/wpa  0750  root:root  (openclaw group missing — fix before first grant)"
+fi
+# Survive reboot: tmpfiles.d recreates the dir with the same ownership.
+tmpfiles_dst=/etc/tmpfiles.d/wpa-grant.conf
+cat >"$tmpfiles_dst" <<'EOF'
+# NVB-103 grant intent spool — outside sandbox mounts; gateway-writable.
+d /run/wpa 0770 root openclaw -
+EOF
+chmod 0644 "$tmpfiles_dst"
+echo "  $tmpfiles_dst"
+
+# ---------------------------------------------------------------------------
 # sudoers for the deploy path. A compromised gateway holds these rights whether
 # or not a human approved a call — NVB-22, named rather than papered over. The
 # file is validated with visudo before it replaces anything live.

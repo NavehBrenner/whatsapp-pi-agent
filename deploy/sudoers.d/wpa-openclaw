@@ -6,9 +6,11 @@
 # WHAT THIS MEANS, STATED PLAINLY: the gateway uid (`openclaw`) can run these five
 # fixed binaries as root with no password and no arguments. The MCP server is a
 # child of wpa-openclaw, so a compromised gateway holds root whether or not a human
-# approved a particular call. The sandbox bounds a compromised *agent*; it does not
-# bound the process that spawns the MCP child. That is NVB-22 — accepted here with
-# the trigger named rather than pretended away.
+# approved a particular call. The sandbox bounds a compromised *agent*'s exec/fs
+# for ordinary tools; it does not bound the process that spawns the MCP child, and
+# the grant intent spool lives outside the sandbox mount for that reason
+# (/run/wpa/grant-intent.json, staged by wpa-approve — not by the agent). That is
+# NVB-22 — accepted here with the trigger named rather than pretended away.
 #
 # What the per-call approval actually buys: the code was merged by a human, and the
 # config/intent is the one whose host-rendered diff a human just read.

@@ -9,6 +9,9 @@ Security properties:
 5. Successful apply writes backup, mutates only policy layers, never restarts.
 6. focused diff artifacts never contain secret env values.
 7. sudoers lists exact path-only grant helpers.
+8. MCP path never overwrites the intent spool — compare-and-refuse on mismatch.
+9. Missing intent fails closed (describe→tool ordering; PR #55 review).
+10. Intent default path is outside the sandbox workspace mount (/run/wpa/...).
 """
 
 from __future__ import annotations
@@ -20,16 +23,19 @@ from pathlib import Path
 
 import pytest
 
+from wpa_mcp import paths as wpa_paths
 from wpa_mcp.gateway_grant import GrantIntent, JsonObject, apply_grant
 from wpa_mcp.gateway_grant_cli import main as grant_cli_main
 from wpa_mcp.gateway_grant_ops import (
     GrantOpsError,
     GrantValidateError,
     apply_grant_tool,
-    parse_grant_meta,
+    load_intent,
     preview_grant,
+    require_intent_matches,
     write_intent,
 )
+from wpa_mcp.gateway_grant_ops import _parse_meta
 
 
 @pytest.fixture
@@ -94,9 +100,17 @@ def test_parse_grant_meta_summary_block() -> None:
         ---end---
         """
     )
-    meta = parse_grant_meta(text)
+    meta = _parse_meta(text)
     assert meta["agent_id"] == "builder"
     assert "skill_workshop" in meta["summary"]
+
+
+def test_grant_intent_default_is_outside_workspace() -> None:
+    """Intent spool must not live under the sandbox rw mount (PR #55)."""
+    assert str(wpa_paths.GRANT_INTENT) == "/run/wpa/grant-intent.json"
+    workspace = str(wpa_paths.WORKSPACE)
+    assert not str(wpa_paths.GRANT_INTENT).startswith(workspace + "/")
+    assert "/run/wpa/" in str(wpa_paths.GRANT_INTENT)
 
 
 def test_preview_rejects_bad_intent_before_helper(tmp_path: Path) -> None:
@@ -108,6 +122,11 @@ def test_preview_rejects_bad_intent_before_helper(tmp_path: Path) -> None:
         exit 0
         """,
     )
+    # Even with a staged intent, invalid args fail closed before the helper.
+    write_intent(
+        GrantIntent(agent_id="builder", tool_name="skill_workshop"),
+        path=tmp_path / "intent.json",
+    )
     with pytest.raises(GrantValidateError, match="invalid tool_name"):
         preview_grant(
             "builder",
@@ -118,7 +137,101 @@ def test_preview_rejects_bad_intent_before_helper(tmp_path: Path) -> None:
         )
 
 
+def test_preview_missing_intent_fails_closed(tmp_path: Path) -> None:
+    """describe→tool ordering: no prior intent ⇒ refuse (PR #55 blocker)."""
+    helper = _write_exec(
+        tmp_path / "preview",
+        """\
+        #!/bin/sh
+        echo 'should not run' >&2
+        exit 0
+        """,
+    )
+    missing = tmp_path / "no-such-intent.json"
+    with pytest.raises(GrantValidateError, match="intent missing"):
+        preview_grant(
+            "builder",
+            "skill_workshop",
+            preview_bin=helper,
+            intent_path=missing,
+            use_sudo=False,
+        )
+    assert not missing.exists()
+
+
+def test_apply_missing_intent_fails_closed(tmp_path: Path) -> None:
+    helper = _write_exec(
+        tmp_path / "apply",
+        """\
+        #!/bin/sh
+        echo 'should not run' >&2
+        exit 0
+        """,
+    )
+    with pytest.raises(GrantValidateError, match="intent missing"):
+        apply_grant_tool(
+            "builder",
+            "skill_workshop",
+            apply_bin=helper,
+            intent_path=tmp_path / "absent.json",
+            use_sudo=False,
+        )
+
+
+def test_preview_and_apply_refuse_intent_mismatch(tmp_path: Path) -> None:
+    """Human approved skill_workshop; tool args must not silently grant exec."""
+    intent_path = tmp_path / "intent.json"
+    write_intent(
+        GrantIntent(agent_id="builder", tool_name="skill_workshop"),
+        path=intent_path,
+    )
+    before = intent_path.read_text()
+    helper = _write_exec(
+        tmp_path / "helper",
+        """\
+        #!/bin/sh
+        echo 'should not run' >&2
+        exit 0
+        """,
+    )
+    with pytest.raises(GrantValidateError, match="mismatch"):
+        preview_grant(
+            "builder",
+            "exec",
+            preview_bin=helper,
+            intent_path=intent_path,
+            use_sudo=False,
+        )
+    with pytest.raises(GrantValidateError, match="mismatch"):
+        apply_grant_tool(
+            "builder",
+            "exec",
+            apply_bin=helper,
+            intent_path=intent_path,
+            use_sudo=False,
+        )
+    # MCP path must not overwrite the spool on mismatch.
+    assert intent_path.read_text() == before
+
+
+def test_require_intent_matches_ok(tmp_path: Path) -> None:
+    path = tmp_path / "intent.json"
+    write_intent(
+        GrantIntent(agent_id="builder", tool_name="skill_workshop"),
+        path=path,
+    )
+    got = require_intent_matches("builder", "skill_workshop", path=path)
+    assert got.agent_id == "builder"
+    assert got.tool_name == "skill_workshop"
+    assert load_intent(path=path).tool_name == "skill_workshop"
+
+
 def test_preview_helper_exit_2_is_validate_error(tmp_path: Path) -> None:
+    intent_path = tmp_path / "intent.json"
+    write_intent(
+        GrantIntent(agent_id="builder", tool_name="skill_workshop"),
+        path=intent_path,
+    )
     helper = _write_exec(
         tmp_path / "preview",
         """\
@@ -132,12 +245,17 @@ def test_preview_helper_exit_2_is_validate_error(tmp_path: Path) -> None:
             "builder",
             "skill_workshop",
             preview_bin=helper,
-            intent_path=tmp_path / "intent.json",
+            intent_path=intent_path,
             use_sudo=False,
         )
 
 
 def test_preview_other_failure_is_ops_error(tmp_path: Path) -> None:
+    intent_path = tmp_path / "intent.json"
+    write_intent(
+        GrantIntent(agent_id="builder", tool_name="skill_workshop"),
+        path=intent_path,
+    )
     helper = _write_exec(
         tmp_path / "preview",
         """\
@@ -151,12 +269,18 @@ def test_preview_other_failure_is_ops_error(tmp_path: Path) -> None:
             "builder",
             "skill_workshop",
             preview_bin=helper,
-            intent_path=tmp_path / "intent.json",
+            intent_path=intent_path,
             use_sudo=False,
         )
 
 
-def test_preview_ok_parses_summary(tmp_path: Path) -> None:
+def test_preview_ok_parses_summary_without_rewriting_intent(tmp_path: Path) -> None:
+    intent_path = tmp_path / "intent.json"
+    write_intent(
+        GrantIntent(agent_id="builder", tool_name="skill_workshop"),
+        path=intent_path,
+    )
+    before = intent_path.read_text()
     helper = _write_exec(
         tmp_path / "preview",
         """\
@@ -176,13 +300,14 @@ def test_preview_ok_parses_summary(tmp_path: Path) -> None:
         "builder",
         "skill_workshop",
         preview_bin=helper,
-        intent_path=tmp_path / "intent.json",
+        intent_path=intent_path,
         use_sudo=False,
     )
-    assert result.check_ok
     assert result.agent_id == "builder"
     assert "skill_workshop" in result.summary
-    intent = json.loads((tmp_path / "intent.json").read_text())
+    # MCP path must leave the hook-staged intent untouched.
+    assert intent_path.read_text() == before
+    intent = json.loads(before)
     assert intent == {
         "op": "grant_tool",
         "agent_id": "builder",
@@ -191,6 +316,12 @@ def test_preview_ok_parses_summary(tmp_path: Path) -> None:
 
 
 def test_apply_ok_parses_result(tmp_path: Path) -> None:
+    intent_path = tmp_path / "intent.json"
+    write_intent(
+        GrantIntent(agent_id="builder", tool_name="skill_workshop"),
+        path=intent_path,
+    )
+    before = intent_path.read_text()
     helper = _write_exec(
         tmp_path / "apply",
         """\
@@ -211,16 +342,19 @@ def test_apply_ok_parses_result(tmp_path: Path) -> None:
         "builder",
         "skill_workshop",
         apply_bin=helper,
-        intent_path=tmp_path / "intent.json",
+        intent_path=intent_path,
         use_sudo=False,
     )
     assert result.ok
     assert result.restart_needed
     assert result.backup_path == "/tmp/bak"
     assert "restart" in result.reason
+    assert intent_path.read_text() == before
 
 
-def test_cli_preview_and_apply_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_preview_and_apply_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     live = tmp_path / "openclaw.json"
     _live_config(live)
     intent_path = tmp_path / "intent.json"
@@ -228,6 +362,7 @@ def test_cli_preview_and_apply_end_to_end(tmp_path: Path, monkeypatch: pytest.Mo
     text_path = tmp_path / "preview.txt"
     backup_dir = tmp_path / "backups"
 
+    # Simulate the approval hook staging intent before CLI preview/apply.
     write_intent(
         GrantIntent(agent_id="builder", tool_name="skill_workshop"),
         path=intent_path,
@@ -295,33 +430,36 @@ def test_cli_preview_and_apply_end_to_end(tmp_path: Path, monkeypatch: pytest.Mo
     assert hashlib.sha256(live.read_bytes()).hexdigest() == mid_hash
 
 
+def test_cli_preview_without_intent_exit_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    live = tmp_path / "openclaw.json"
+    _live_config(live)
+    monkeypatch.setenv("WPA_LIVE_OPENCLAW_CONFIG", str(live))
+    monkeypatch.setenv("WPA_GRANT_INTENT", str(tmp_path / "missing-intent.json"))
+    monkeypatch.setenv("WPA_GRANT_PREVIEW_DIFF", str(tmp_path / "d.diff"))
+    monkeypatch.setenv("WPA_GRANT_PREVIEW_TEXT", str(tmp_path / "t.txt"))
+    assert grant_cli_main(["preview"]) == 2
+
+
 def test_cli_preview_unknown_agent_exit_2(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     live = tmp_path / "openclaw.json"
     _live_config(live)
     intent_path = tmp_path / "intent.json"
-    write_intent(
-        GrantIntent(agent_id="ghost", tool_name="skill_workshop"),
-        path=intent_path,
-    )
-    # ghost is syntactically valid but absent from config — rewrite after validation
-    # of the GrantIntent constructor: from_mapping accepts it; CLI finds unknown.
+    # ghost is syntactically valid but absent from config.
     intent_path.write_text(
         json.dumps(
             {"op": "grant_tool", "agent_id": "ghost", "tool_name": "skill_workshop"}
         )
         + "\n"
     )
-    # Need a valid agent id pattern — "ghost" is fine; config lacks it.
     monkeypatch.setenv("WPA_LIVE_OPENCLAW_CONFIG", str(live))
     monkeypatch.setenv("WPA_GRANT_INTENT", str(intent_path))
     monkeypatch.setenv("WPA_GRANT_PREVIEW_DIFF", str(tmp_path / "d.diff"))
     monkeypatch.setenv("WPA_GRANT_PREVIEW_TEXT", str(tmp_path / "t.txt"))
     assert grant_cli_main(["preview"]) == 2
-    assert hashlib.sha256(live.read_bytes()).hexdigest() == hashlib.sha256(
-        live.read_bytes()
-    ).hexdigest()
 
 
 def test_cli_deny_path_hash_identical_when_preview_only(
@@ -347,6 +485,7 @@ def test_sudoers_includes_grant_helpers_path_only() -> None:
     text = Path("deploy/sudoers.d/wpa-openclaw").read_text()
     assert "NOPASSWD: /usr/local/bin/wpa-grant-preview\n" in text
     assert "NOPASSWD: /usr/local/bin/wpa-grant-apply\n" in text
+    assert "/run/wpa" in text
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("#") or "NOPASSWD:" not in line:
@@ -354,6 +493,24 @@ def test_sudoers_includes_grant_helpers_path_only() -> None:
         rhs = line.split("NOPASSWD:", 1)[1].strip()
         assert " " not in rhs
         assert "*" not in rhs
+
+
+def test_install_sh_creates_run_wpa_spool() -> None:
+    text = Path("deploy/install.sh").read_text()
+    assert 'install -d -m 0770 -o root -g openclaw /run/wpa' in text
+    assert "wpa-grant.conf" in text
+    assert "d /run/wpa 0770 root openclaw -" in text
+
+
+def test_approve_plugin_stages_intent_from_params() -> None:
+    src = Path("deploy/openclaw-plugins/wpa-approve/index.js").read_text()
+    assert "stageGrantIntent" in src
+    assert "GRANT_INTENT_PATH" in src
+    assert "/run/wpa/grant-intent.json" in src
+    assert "writeFileSync(GRANT_INTENT_PATH" in src
+    assert "stageGrantIntent(event)" in src
+    # Must not claim MCP already wrote the intent before the hook.
+    assert "Intent was written by MCP host code before this" not in src
 
 
 def test_grant_scripts_declare_no_args_contract() -> None:

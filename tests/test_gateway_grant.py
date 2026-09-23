@@ -131,6 +131,18 @@ def test_intent_rejects_bad_tool_and_agent() -> None:
         GrantIntent.from_mapping({"agent_id": "no spaces", "tool_name": "read"})
 
 
+def test_intent_refuses_self_grant() -> None:
+    """Granting the grant tool itself is cheaper to refuse than to trust a summary."""
+    with pytest.raises(GrantError, match="not grantable"):
+        GrantIntent.from_mapping(
+            {"agent_id": "builder", "tool_name": "wpa__gateway_grant_tool"}
+        )
+    with pytest.raises(GrantError, match="not grantable"):
+        GrantIntent.from_mapping(
+            {"agent_id": "owner", "tool_name": "gateway_grant_tool"}
+        )
+
+
 def test_unknown_agent_refuses() -> None:
     cfg = _base_config()
     intent = GrantIntent(agent_id="nope", tool_name="skill_workshop")

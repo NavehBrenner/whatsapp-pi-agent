@@ -26,6 +26,16 @@ _TOOL_NAME_RE = re.compile(
 )
 _AGENT_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 
+# Tools that must never be granted through this path. Granting the grant tool
+# itself turns one approval into a second grant-capable agent; cheaper to refuse
+# than to trust a 400-char summary (PR #55 review).
+_DENIED_TOOL_NAMES = frozenset(
+    {
+        "wpa__gateway_grant_tool",
+        "gateway_grant_tool",
+    }
+)
+
 _SECRET_KEY_HINTS = (
     "token",
     "secret",
@@ -76,6 +86,11 @@ class GrantIntent:
             raise GrantError(f"invalid agent_id: {agent_id!r}")
         if not _TOOL_NAME_RE.fullmatch(tool_name):
             raise GrantError(f"invalid tool_name: {tool_name!r}")
+        if tool_name in _DENIED_TOOL_NAMES:
+            raise GrantError(
+                f"refusing to grant {tool_name!r}: the grant tool itself is "
+                "not grantable through this path"
+            )
         return cls(agent_id=agent_id, tool_name=tool_name)
 
 
@@ -264,6 +279,10 @@ def apply_grant(
 
     When ``mutate`` is False, compute the report against a deep copy and leave
     ``config`` untouched. When True, mutate ``config`` in place and return the report.
+
+    Tool *existence* in OpenClaw's catalogue is not fully checkable from JSON
+    alone (first-time grants like skill_workshop are the point). Shape + denylist
+    are enforced at GrantIntent construction; unknown agent is enforced here.
     """
     target: MutableMapping[str, object]
     if mutate:

@@ -11,13 +11,32 @@ several of them are the kind of thing that costs an evening to rediscover.
 
 ## [Unreleased]
 
+### Fixed — grant approval rendered from an intent file nothing had written yet (NVB-103)
+
+PR review on the NVB-103 vertical slice: `grantDescribe` shelled `wpa-grant-preview`, which
+read `last-grant-intent.json`, but only the MCP tool body wrote that file — **after**
+approval. First call always failed closed; a leftover file made the gate decorative (approve
+`skill_workshop`, apply could still target `exec`). Same ordering class as NVB-99.
+
+Also: the intent path lived under the builder workspace rw mount, so the agent could author
+the diff the human saw. Sudoers claimed the sandbox bounds a compromised agent; for this op
+it did not.
+
+- `wpa-approve` stages `/run/wpa/grant-intent.json` from validated `event.params` **before**
+  root preview (install.sh: `root:openclaw` 0770 + tmpfiles.d).
+- MCP `preview`/`apply` **compare** typed args to that spool and refuse on mismatch; they
+  never overwrite it.
+- Self-grant of `wpa__gateway_grant_tool` refused; install temp uses `mkstemp` in live.parent
+  (no fixed-name `copyfile` symlink write-through).
+- Tests cover missing intent, mismatch, and “intent default is outside WORKSPACE”.
+
 ### Added — governed gateway tool grants (NVB-103)
 
 Builder can propose a **single-tool grant** into live `openclaw.json` without a hand edit
 and without a full-file candidate of the gateway config.
 
-- MCP tool `wpa__gateway_grant_tool(agent_id, tool_name)` — typed args only; host writes
-  the intent file; model never free-edits mutation JSON.
+- MCP tool `wpa__gateway_grant_tool(agent_id, tool_name)` — typed args only; model never
+  free-edits mutation JSON.
 - Host mutates agent `alsoAllow` (seed-from-global on first alsoAllow), existing room
   ceilings, and sandbox `tools.allow`; validates before approval; focused redacted
   policy diff in the prompt.

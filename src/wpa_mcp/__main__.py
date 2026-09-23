@@ -218,10 +218,15 @@ def deploy() -> DeployResult:
     ),
 )
 def gateway_grant_tool(agent_id: str, tool_name: str) -> GrantResult:
-    """agent_id + tool_name only. Approval is enforced by wpa-approve before this runs."""
+    """agent_id + tool_name only. Approval is enforced by wpa-approve before this runs.
+
+    The hook stages /run/wpa/grant-intent.json from validated params and renders
+    the approval card from root preview. This body never overwrites that spool:
+    preview/apply compare typed args against it and refuse on mismatch.
+    """
     try:
-        # Fail closed on a bad intent before spending approval when the plugin did not
-        # already block. apply re-validates again (TOCTOU).
+        # Re-check the already-staged spool matches these args (anti-swap), then
+        # re-run preview. The hook already did the first preview for the card.
         run_grant_preview(agent_id, tool_name)
     except GrantValidateError:
         raise
